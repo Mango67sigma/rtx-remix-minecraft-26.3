@@ -42,9 +42,16 @@ if not exist "%VSWHERE%" (
     exit /b 1
 )
 
-for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -property installationPath`) do set "VS_PATH=%%i"
+REM    -latest alone can pick a newer install without any C++ workload (a bare
+REM    Build Tools shell, for example), whose vcvarsall.bat does not exist.
+REM    Require the toolset components the build actually needs.
+set "VSWHERE_REQUIRES=Microsoft.VisualStudio.Component.VC.Tools.x86.x64"
+if /I "%ARCH%"=="arm64" set "VSWHERE_REQUIRES=%VSWHERE_REQUIRES% Microsoft.VisualStudio.Component.VC.Tools.ARM64"
+for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -requires %VSWHERE_REQUIRES% -property installationPath`) do set "VS_PATH=%%i"
 if not defined VS_PATH (
-    echo ERROR: No Visual Studio installation found.
+    echo ERROR: No Visual Studio installation with the MSVC C++ toolset found.
+    echo        Install the "Desktop development with C++" workload ^(v143^).
+    if /I "%ARCH%"=="arm64" echo        ARM64 builds also need the "C++ ARM64/ARM64EC build tools" component.
     exit /b 1
 )
 

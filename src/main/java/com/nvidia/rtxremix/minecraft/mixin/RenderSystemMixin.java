@@ -20,9 +20,13 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 @Mixin(RenderSystem.class)
 public abstract class RenderSystemMixin {
 
+    // flipFrame keeps its name in the obfuscated jar, so the official mappings
+    // carry no entry for it; without remap = false the annotation processor
+    // rejects the injector for lacking one.
     @Redirect(
         method = "flipFrame",
-        at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers(J)V")
+        at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers(J)V"),
+        remap = false
     )
     private static void rtxremix$redirectSwapBuffers(long window) {
         RemixRenderer renderer = RtxRemixMod.renderer;
