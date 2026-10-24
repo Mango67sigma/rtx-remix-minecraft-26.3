@@ -7,7 +7,7 @@ package com.nvidia.rtxremix.minecraft.block;
 import com.nvidia.rtxremix.minecraft.RtxRemixCommonMod;
 import com.nvidia.rtxremix.minecraft.light.LightEntry;
 import com.nvidia.rtxremix.minecraft.light.OverridesItemLight;
-import net.fabricmc.fabric.api.itemgroup.v1.ItemGroupEvents;
+import net.fabricmc.fabric.api.creativetab.v1.CreativeModeTabEvents;
 import net.minecraft.core.Direction;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -15,7 +15,7 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.item.BlockItem;
-import net.minecraft.world.item.CreativeModeTab;
+import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.block.Block;
@@ -64,15 +64,6 @@ public abstract class SpotLightBlock extends DirectionalBlock implements Overrid
     /** Full block light level, matching a lantern. */
     protected static final int LUMINANCE = 15;
 
-    /**
-     * Vanilla's "Functional Blocks" creative tab, where torches and lanterns live.
-     *
-     * <p>Built from the registry id rather than {@code ItemGroups.FUNCTIONAL},
-     * which is private in 1.21.1 and would otherwise need an access-widener entry.
-     */
-    private static final ResourceKey<CreativeModeTab> FUNCTIONAL_BLOCKS =
-            ResourceKey.create(Registries.CREATIVE_MODE_TAB, Identifier.withDefaultNamespace("functional_blocks"));
-
     private final LightEntry.ColorOverride beamColor;
 
     protected SpotLightBlock(BlockBehaviour.Properties settings, LightEntry.ColorOverride beamColor) {
@@ -82,8 +73,11 @@ public abstract class SpotLightBlock extends DirectionalBlock implements Overrid
     }
 
     /** Shared settings for every beacon variant. */
-    protected static BlockBehaviour.Properties beaconSettings() {
+    protected static BlockBehaviour.Properties beaconSettings(String path) {
         return BlockBehaviour.Properties.of()
+                .setId(ResourceKey.create(
+                        Registries.BLOCK,
+                        Identifier.fromNamespaceAndPath(RtxRemixCommonMod.MOD_ID, path)))
                 .strength(3.0f)
                 .sound(SoundType.METAL)
                 .lightLevel(state -> LUMINANCE);
@@ -113,8 +107,18 @@ public abstract class SpotLightBlock extends DirectionalBlock implements Overrid
     private static void register(String path, SpotLightBlock block) {
         Identifier id = Identifier.fromNamespaceAndPath(RtxRemixCommonMod.MOD_ID, path);
         Registry.register(BuiltInRegistries.BLOCK, id, block);
-        BlockItem item = Registry.register(BuiltInRegistries.ITEM, id, new BlockItem(block, new Item.Properties()));
-        ItemGroupEvents.modifyEntriesEvent(FUNCTIONAL_BLOCKS).register(entries -> entries.accept(item));
+        BlockItem item = Registry.register(
+                BuiltInRegistries.ITEM,
+                id,
+                new BlockItem(
+                        block,
+                        new Item.Properties()
+                                .setId(ResourceKey.create(Registries.ITEM, id))
+                                .useBlockDescriptionPrefix()));
+        // Vanilla's Items does this for its own block items; without it Block.asItem() is air.
+        item.registerBlocks(Item.BY_BLOCK, item);
+        CreativeModeTabEvents.modifyOutputEvent(CreativeModeTabs.FUNCTIONAL_BLOCKS)
+                .register(output -> output.accept(item));
     }
 
     @Override

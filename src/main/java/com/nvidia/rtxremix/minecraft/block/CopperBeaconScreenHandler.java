@@ -5,7 +5,7 @@
 package com.nvidia.rtxremix.minecraft.block;
 
 import com.nvidia.rtxremix.minecraft.RtxRemixCommonMod;
-import net.fabricmc.fabric.api.screenhandler.v1.ExtendedScreenHandlerType;
+import net.fabricmc.fabric.api.menu.v1.ExtendedMenuType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -30,7 +30,7 @@ public final class CopperBeaconScreenHandler extends AbstractContainerMenu {
     public static final int PLAYER_INVENTORY_Y = 153;
 
     public static final MenuType<CopperBeaconScreenHandler> TYPE =
-            new ExtendedScreenHandlerType<>(
+            new ExtendedMenuType<>(
                     CopperBeaconScreenHandler::new,
                     CopperBeaconScreenData.PACKET_CODEC);
 

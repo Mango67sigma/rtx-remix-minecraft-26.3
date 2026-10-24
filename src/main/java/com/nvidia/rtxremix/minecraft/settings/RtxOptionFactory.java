@@ -66,7 +66,8 @@ final class RtxOptionFactory {
                                 new OptionInstance.IntRange(
                                         sliderMin, sliderMax, true).xmap(
                                                 value -> intValueFromSlider(s, value),
-                                                value -> sliderValueFromInt(s, value)),
+                                                value -> sliderValueFromInt(s, value),
+                                                false),
                                 s.applySliderValueImmediately());
                 return new OptionInstance<>(
                         setting.labelKey(),
@@ -130,6 +131,16 @@ final class RtxOptionFactory {
             @Override
             public T fromSliderValue(double sliderProgress) {
                 return callbacks.fromSliderValue(sliderProgress);
+            }
+
+            @Override
+            public Optional<T> next(T current) {
+                return callbacks.next(current);
+            }
+
+            @Override
+            public Optional<T> previous(T current) {
+                return callbacks.previous(current);
             }
 
             @Override

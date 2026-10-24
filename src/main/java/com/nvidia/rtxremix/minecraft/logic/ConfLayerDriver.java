@@ -295,8 +295,8 @@ public final class ConfLayerDriver {
     }
 
     /**
-     * Every vanilla biome name, reflected from BiomeKeys' public static
-     * RegistryKey constants and sorted for deterministic filename validation.
+     * Every vanilla biome name, reflected from Biomes' public static
+     * ResourceKey constants and sorted for deterministic filename validation.
      */
     static List<String> vanillaBiomeNames() {
         List<String> names = new ArrayList<>();
@@ -305,9 +305,9 @@ public final class ConfLayerDriver {
                 continue;
             }
             try {
-                names.add(((ResourceKey<?>) field.get(null)).location().getPath());
+                names.add(((ResourceKey<?>) field.get(null)).identifier().getPath());
             } catch (IllegalAccessException e) {
-                throw new AssertionError("BiomeKeys public field not readable: " + field.getName(), e);
+                throw new AssertionError("Biomes public field not readable: " + field.getName(), e);
             }
         }
         names.sort(String::compareTo);
@@ -723,7 +723,7 @@ public final class ConfLayerDriver {
         // Time layers follow the shared Overworld clock only; other dimensions
         // contribute no time-of-day strength.
         TimeLayerStrengths time = Level.OVERWORLD.equals(world.dimension())
-                ? timeLayerStrengths(world.getDayTime())
+                ? timeLayerStrengths(world.getOverworldClockTime())
                 : TimeLayerStrengths.ZERO;
         setTarget(LogicChannels.TIME_DAWN, time.dawn());
         setTarget(LogicChannels.TIME_DAY, time.day());
@@ -735,8 +735,8 @@ public final class ConfLayerDriver {
         // target its authored layer when one was discovered. An unconfigured
         // or modded biome targets every discovered biome layer back to 0.
         String biomeLayerName = world.getBiome(BlockPos.containing(cameraPos)).unwrapKey()
-                .filter(key -> "minecraft".equals(key.location().getNamespace()))
-                .map(key -> LogicChannels.BIOME_PREFIX + key.location().getPath())
+                .filter(key -> "minecraft".equals(key.identifier().getNamespace()))
+                .map(key -> LogicChannels.BIOME_PREFIX + key.identifier().getPath())
                 .orElse(null);
         for (LayerState layer : biomeLayers) {
             layer.target = layer.spec.name().equals(biomeLayerName) ? 1.0f : 0.0f;

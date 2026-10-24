@@ -6,9 +6,10 @@ package com.nvidia.rtxremix.minecraft.block;
 
 import com.nvidia.rtxremix.minecraft.RtxRemixCommonMod;
 import com.nvidia.rtxremix.minecraft.light.BeaconBeam;
-import net.fabricmc.fabric.api.screenhandler.v1.ExtendedScreenHandlerFactory;
+import net.fabricmc.fabric.api.menu.v1.ExtendedMenuProvider;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.nbt.CompoundTag;
@@ -21,12 +22,15 @@ import net.minecraft.world.Container;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.DyeItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.Set;
@@ -34,7 +38,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /** Persistent optics, dye inventory, and articulated motion for one Copper Beacon. */
 public final class CopperBeaconBlockEntity extends BlockEntity
-        implements Container, ExtendedScreenHandlerFactory<CopperBeaconScreenData> {
+        implements Container, ExtendedMenuProvider<CopperBeaconScreenData> {
 
     private static final Set<CopperBeaconBlockEntity> LOADED =
             ConcurrentHashMap.newKeySet();
@@ -59,8 +63,8 @@ public final class CopperBeaconBlockEntity extends BlockEntity
     private static final String DYE_KEY = "dye";
 
     public static final BlockEntityType<CopperBeaconBlockEntity> TYPE =
-            BlockEntityType.Builder.of(
-                    CopperBeaconBlockEntity::new, CopperBeaconBlock.INSTANCE).build();
+            new BlockEntityType<>(
+                    CopperBeaconBlockEntity::new, Set.of(CopperBeaconBlock.INSTANCE));
 
     private float intensityMultiplier = DEFAULT_INTENSITY_MULTIPLIER;
     private float coneAngle = DEFAULT_CONE_ANGLE;
@@ -207,9 +211,9 @@ public final class CopperBeaconBlockEntity extends BlockEntity
     }
 
     public int getLensTint() {
-        return dye.getItem() instanceof DyeItem dyeItem
-                ? CopperBeaconState.applySaturation(
-                        dyeItem.getDyeColor().getTextureDiffuseColor(), saturation)
+        DyeColor color = dye.getItem() instanceof DyeItem ? dye.get(DataComponents.DYE) : null;
+        return color != null
+                ? CopperBeaconState.applySaturation(color.getTextureDiffuseColor(), saturation)
                 : 0xFFFFFFFF;
     }
 
@@ -394,73 +398,57 @@ public final class CopperBeaconBlockEntity extends BlockEntity
     }
 
     @Override
-    protected void saveAdditional(CompoundTag nbt, HolderLookup.Provider registryLookup) {
-        super.saveAdditional(nbt, registryLookup);
-        nbt.putFloat(INTENSITY_KEY, intensityMultiplier);
-        nbt.putFloat(CONE_ANGLE_KEY, coneAngle);
-        nbt.putFloat(SATURATION_KEY, saturation);
-        nbt.putBoolean(REDSTONE_CONTROLLED_KEY, redstoneControlled);
-        nbt.putLong(FROZEN_TICK_KEY, frozenTick);
-        CompoundTag yawNbt = new CompoundTag();
-        yaw.writeNbt(yawNbt);
-        nbt.put(YAW_KEY, yawNbt);
-        CompoundTag pitchNbt = new CompoundTag();
-        pitch.writeNbt(pitchNbt);
-        nbt.put(PITCH_KEY, pitchNbt);
+    protected void saveAdditional(ValueOutput output) {
+        super.saveAdditional(output);
+        output.putFloat(INTENSITY_KEY, intensityMultiplier);
+        output.putFloat(CONE_ANGLE_KEY, coneAngle);
+        output.putFloat(SATURATION_KEY, saturation);
+        output.putBoolean(REDSTONE_CONTROLLED_KEY, redstoneControlled);
+        output.putLong(FROZEN_TICK_KEY, frozenTick);
+        yaw.write(output.child(YAW_KEY));
+        pitch.write(output.child(PITCH_KEY));
         if (!dye.isEmpty()) {
-            nbt.put(DYE_KEY, dye.save(registryLookup));
+            output.store(DYE_KEY, ItemStack.CODEC, dye);
         }
     }
 
     @Override
-    protected void loadAdditional(CompoundTag nbt, HolderLookup.Provider registryLookup) {
-        super.loadAdditional(nbt, registryLookup);
+    protected void loadAdditional(ValueInput input) {
+        super.loadAdditional(input);
         intensityMultiplier = finiteClamped(
-                nbt.contains(INTENSITY_KEY)
-                        ? nbt.getFloat(INTENSITY_KEY)
-                        : DEFAULT_INTENSITY_MULTIPLIER,
+                input.getFloatOr(INTENSITY_KEY, DEFAULT_INTENSITY_MULTIPLIER),
                 MIN_INTENSITY_MULTIPLIER,
                 MAX_INTENSITY_MULTIPLIER,
                 DEFAULT_INTENSITY_MULTIPLIER);
         coneAngle = finiteClamped(
-                nbt.contains(CONE_ANGLE_KEY) ? nbt.getFloat(CONE_ANGLE_KEY) : DEFAULT_CONE_ANGLE,
+                input.getFloatOr(CONE_ANGLE_KEY, DEFAULT_CONE_ANGLE),
                 MIN_CONE_ANGLE,
                 MAX_CONE_ANGLE,
                 DEFAULT_CONE_ANGLE);
         saturation = finiteClamped(
-                nbt.contains(SATURATION_KEY) ? nbt.getFloat(SATURATION_KEY) : DEFAULT_SATURATION,
+                input.getFloatOr(SATURATION_KEY, DEFAULT_SATURATION),
                 MIN_SATURATION,
                 MAX_SATURATION,
                 DEFAULT_SATURATION);
-        redstoneControlled = nbt.getBoolean(REDSTONE_CONTROLLED_KEY);
-        frozenTick = nbt.getLong(FROZEN_TICK_KEY);
-        if (nbt.contains(YAW_KEY)) {
-            yaw = CopperBeaconAxisState.readNbt(nbt.getCompound(YAW_KEY));
-        } else {
-            CopperBeaconState.Angles angles = CopperBeaconState.readAngles(nbt);
-            yaw = new CopperBeaconAxisState(
-                    angles.azimuth(), CopperBeaconAnimationMode.STATIC, 0.0f,
-                    CopperBeaconAxisState.DEFAULT_MINIMUM_OFFSET,
-                    CopperBeaconAxisState.DEFAULT_MAXIMUM_OFFSET,
-                    CopperBeaconAxisState.DEFAULT_CYCLE_SECONDS,
-                    CopperBeaconAxisState.DEFAULT_PATROL_SECONDS,
-                    0L);
-        }
-        if (nbt.contains(PITCH_KEY)) {
-            pitch = CopperBeaconAxisState.readNbt(nbt.getCompound(PITCH_KEY));
-        } else {
-            CopperBeaconState.Angles angles = CopperBeaconState.readAngles(nbt);
-            pitch = new CopperBeaconAxisState(
-                    angles.zenith(), CopperBeaconAnimationMode.STATIC, 0.0f,
-                    CopperBeaconAxisState.DEFAULT_MINIMUM_OFFSET,
-                    CopperBeaconAxisState.DEFAULT_MAXIMUM_OFFSET,
-                    CopperBeaconAxisState.DEFAULT_CYCLE_SECONDS,
-                    CopperBeaconAxisState.DEFAULT_PATROL_SECONDS,
-                    0L);
-        }
-        dye = nbt.get(DYE_KEY) != null
-                ? ItemStack.parse(registryLookup, nbt.getCompound(DYE_KEY)).orElse(ItemStack.EMPTY)
-                : ItemStack.EMPTY;
+        redstoneControlled = input.getBooleanOr(REDSTONE_CONTROLLED_KEY, false);
+        frozenTick = input.getLongOr(FROZEN_TICK_KEY, 0L);
+        yaw = input.child(YAW_KEY)
+                .map(CopperBeaconAxisState::read)
+                .orElseGet(() -> legacyAxis(CopperBeaconState.readAngles(input).azimuth()));
+        pitch = input.child(PITCH_KEY)
+                .map(CopperBeaconAxisState::read)
+                .orElseGet(() -> legacyAxis(CopperBeaconState.readAngles(input).zenith()));
+        dye = input.read(DYE_KEY, ItemStack.CODEC).orElse(ItemStack.EMPTY);
+    }
+
+    private static CopperBeaconAxisState legacyAxis(float position) {
+        return new CopperBeaconAxisState(
+                position, CopperBeaconAnimationMode.STATIC, 0.0f,
+                CopperBeaconAxisState.DEFAULT_MINIMUM_OFFSET,
+                CopperBeaconAxisState.DEFAULT_MAXIMUM_OFFSET,
+                CopperBeaconAxisState.DEFAULT_CYCLE_SECONDS,
+                CopperBeaconAxisState.DEFAULT_PATROL_SECONDS,
+                0L);
     }
 
     @Override

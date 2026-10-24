@@ -4,16 +4,26 @@
  */
 package com.nvidia.rtxremix.minecraft.logic;
 
-import net.minecraft.core.HolderLookup;
+import com.mojang.serialization.Codec;
+import net.minecraft.SharedConstants;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.IntTag;
 import net.minecraft.nbt.ListTag;
-import net.minecraft.nbt.Tag;
+import net.minecraft.nbt.NumericTag;
+import net.minecraft.nbt.StringTag;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.datafix.DataFixTypes;
 import net.minecraft.world.level.saveddata.SavedData;
+import net.minecraft.world.level.saveddata.SavedDataType;
+import net.minecraft.world.level.storage.LevelResource;
+import net.minecraft.world.level.storage.SavedDataStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -27,13 +37,16 @@ import java.util.Objects;
  * integrated single-player server. The renderer consumes a copied projection
  * in {@link ZoneRegistry}; it never reads this server-thread state directly.
  *
- * <p>The state is attached to the overworld's persistent-state manager so all
- * definitions live in one {@code data/rtx_remix_zones.dat} file, and a zone is
- * global to the save rather than scoped to a dimension.</p>
+ * <p>The state is attached to the server's own saved-data storage so all
+ * definitions live in one {@code data/rtx-remix-renderer/zones.dat} file, and a
+ * zone is global to the save rather than scoped to a dimension. Worlds written
+ * by earlier versions kept the same compound in {@code data/rtx_remix_zones.dat};
+ * the first lookup that finds no state at the current location imports that
+ * file and leaves it untouched.</p>
  */
 public final class ZonePersistentState extends SavedData {
     private static final Logger LOGGER = LoggerFactory.getLogger(ZonePersistentState.class);
-    private static final String DATA_ID = "rtx_remix_zones";
+    private static final String LEGACY_FILE = "rtx_remix_zones.dat";
     private static final int SCHEMA_VERSION = 1;
 
     private static final String VERSION_KEY = "version";
@@ -44,10 +57,18 @@ public final class ZonePersistentState extends SavedData {
     private static final String SPHERE_SHAPE = "sphere";
     private static final String BOX_SHAPE = "box";
 
-    private static final SavedData.Factory<ZonePersistentState> TYPE =
-            new SavedData.Factory<>(ZonePersistentState::new,
-                    ZonePersistentState::fromNbt,
-                    DataFixTypes.SAVED_DATA_COMMAND_STORAGE);
+    /**
+     * The compound stored under {@code data} keeps the layout earlier versions wrote:
+     * {@code {version, zones: [{name, channel, shape, ...}]}}.
+     */
+    private static final Codec<ZonePersistentState> CODEC =
+            CompoundTag.CODEC.xmap(ZonePersistentState::fromNbt, ZonePersistentState::toNbt);
+
+    static final SavedDataType<ZonePersistentState> TYPE = new SavedDataType<>(
+            Identifier.fromNamespaceAndPath("rtx-remix-renderer", "zones"),
+            ZonePersistentState::new,
+            CODEC,
+            DataFixTypes.SAVED_DATA_COMMAND_STORAGE);
 
     private final Map<String, ZoneDefinition> zonesByName = new HashMap<>();
     private final boolean writable;
@@ -70,13 +91,14 @@ public final class ZonePersistentState extends SavedData {
      * object it does not need.</p>
      */
     public static ZonePersistentState getOrCreate(MinecraftServer server) {
-        return server.overworld().getDataStorage().computeIfAbsent(TYPE, DATA_ID);
+        ZonePersistentState existing = loadExisting(server);
+        return existing != null ? existing : server.getDataStorage().computeIfAbsent(TYPE);
     }
 
     /**
      * The saved state for this world, or null when the world has none.
      *
-     * <p>{@code rtx_remix_zones.dat} is optional: a map can define its zones
+     * <p>{@code zones.dat} is optional: a map can define its zones
      * entirely with command blocks, which are stored as blocks in the region
      * files and never touch this state. Reading through the nullable lookup
      * keeps that structural rather than incidental. Minecraft would not write
@@ -85,7 +107,43 @@ public final class ZonePersistentState extends SavedData {
      * depends on that behavior staying as it is.</p>
      */
     public static ZonePersistentState getIfPresent(MinecraftServer server) {
-        return server.overworld().getDataStorage().get(TYPE, DATA_ID);
+        return loadExisting(server);
+    }
+
+    private static ZonePersistentState loadExisting(MinecraftServer server) {
+        SavedDataStorage storage = server.getDataStorage();
+        ZonePersistentState current = storage.get(TYPE);
+        if (current != null) {
+            return current;
+        }
+        ZonePersistentState legacy =
+                readLegacy(storage, server.getWorldPath(LevelResource.DATA).resolve(LEGACY_FILE));
+        if (legacy != null) {
+            // set() marks the imported state dirty, so the next save writes it to the new location.
+            storage.set(TYPE, legacy);
+        }
+        return legacy;
+    }
+
+    /**
+     * Reads the pre-26.3 save file, or null when there is none or it cannot be used. A file
+     * with an unsupported schema is not imported: saving it would replace a newer layout.
+     */
+    private static ZonePersistentState readLegacy(SavedDataStorage storage, Path file) {
+        if (!Files.isRegularFile(file)) {
+            return null;
+        }
+        try {
+            CompoundTag root = storage.readTagFromDisk(
+                    file,
+                    TYPE.dataFixType(),
+                    SharedConstants.getCurrentVersion().dataVersion().version());
+            ZonePersistentState state = fromNbt(root.getCompoundOrEmpty("data"));
+            return state.writable ? state : null;
+        } catch (IOException | RuntimeException e) {
+            LOGGER.warn("Ignoring unreadable legacy RTX Remix zone file {}", file, e);
+            return null;
+        }
     }
 
     /** Immutable, name-sorted copy safe to publish to the client/render registry. */
@@ -118,8 +176,8 @@ public final class ZonePersistentState extends SavedData {
         return true;
     }
 
-    @Override
-    public CompoundTag save(CompoundTag nbt, HolderLookup.Provider registries) {
+    CompoundTag toNbt() {
+        CompoundTag nbt = new CompoundTag();
         nbt.putInt(VERSION_KEY, SCHEMA_VERSION);
         ListTag zones = new ListTag();
         for (ZoneDefinition zone : snapshot()) {
@@ -129,26 +187,26 @@ public final class ZonePersistentState extends SavedData {
         return nbt;
     }
 
-    static ZonePersistentState fromNbt(CompoundTag nbt, HolderLookup.Provider registries) {
-        if (!nbt.contains(VERSION_KEY, Tag.TAG_INT)) {
+    static ZonePersistentState fromNbt(CompoundTag nbt) {
+        if (!(nbt.get(VERSION_KEY) instanceof IntTag)) {
             LOGGER.warn("Ignoring RTX Remix zone state without a schema version");
             return new ZonePersistentState(false);
         }
-        int version = nbt.getInt(VERSION_KEY);
+        int version = nbt.getIntOr(VERSION_KEY, 0);
         if (version != SCHEMA_VERSION) {
             LOGGER.warn("Ignoring RTX Remix zone state schema version {} (expected {})",
                     version, SCHEMA_VERSION);
             return new ZonePersistentState(false);
         }
         ZonePersistentState state = new ZonePersistentState();
-        if (!nbt.contains(ZONES_KEY, Tag.TAG_LIST)) {
+        if (!(nbt.get(ZONES_KEY) instanceof ListTag zones)) {
             return state;
         }
 
-        ListTag zones = nbt.getList(ZONES_KEY, Tag.TAG_COMPOUND);
         for (int i = 0; i < zones.size(); i++) {
             try {
-                ZoneDefinition zone = readZone(zones.getCompound(i));
+                ZoneDefinition zone = readZone(zones.getCompound(i).orElseThrow(
+                        () -> new IllegalArgumentException("entry is not a compound")));
                 ZoneDefinition previous = state.zonesByName.put(zone.name(), zone);
                 if (previous != null) {
                     LOGGER.warn("Duplicate saved RTX Remix zone '{}'; using the last definition", zone.name());
@@ -215,16 +273,16 @@ public final class ZonePersistentState extends SavedData {
     }
 
     private static String requireString(CompoundTag nbt, String key) {
-        if (!nbt.contains(key, Tag.TAG_STRING)) {
+        if (!(nbt.get(key) instanceof StringTag string)) {
             throw new IllegalArgumentException("missing string '" + key + "'");
         }
-        return nbt.getString(key);
+        return string.value();
     }
 
     private static double requireDouble(CompoundTag nbt, String key) {
-        if (!nbt.contains(key, Tag.TAG_ANY_NUMERIC)) {
+        if (!(nbt.get(key) instanceof NumericTag number)) {
             throw new IllegalArgumentException("missing number '" + key + "'");
         }
-        return nbt.getDouble(key);
+        return number.doubleValue();
     }
 }

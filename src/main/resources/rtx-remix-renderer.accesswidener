@@ -15,8 +15,8 @@ accessWidener v2 official
 
 # ===== section: content =====
 
-# Deferred application for sliders that rebuild expensive resources
-accessible class net/minecraft/client/OptionInstance$SliderableValueSet
+# No directives needed: OptionInstance$SliderableValueSet (used by RtxOptionFactory for deferred
+# slider application) is a public nested type in 26.3.
 
 # ===== section: entities =====
 
