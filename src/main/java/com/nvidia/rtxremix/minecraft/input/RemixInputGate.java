@@ -4,7 +4,7 @@
  */
 package com.nvidia.rtxremix.minecraft.input;
 
-import org.lwjgl.glfw.GLFW;
+import com.mojang.blaze3d.platform.InputConstants;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -18,7 +18,12 @@ import java.util.function.ToIntBiFunction;
  * mod opens and closes menus by writing it, and the menus' own controls and the runtime's hotkey
  * change it too, so {@link #followVisibility} reads it once per frame and opens or closes capture
  * with whatever is shown. Closing releases capture immediately; a key that remains physically held
- * may resume through vanilla's GLFW polling.
+ * may resume through vanilla's SDL keyboard-state polling ({@code KeyMapping.setAll} on cursor grab).
+ *
+ * <p>Key codes are Minecraft 26.3's SDL vocabulary: {@code key} is an SDL scancode
+ * ({@code KeyEvent.key()}, {@link InputConstants#KEY_X} is {@code SDL_SCANCODE_X}, the physical key
+ * in the US-layout X position), and {@code action} is {@link InputConstants#PRESS},
+ * {@link InputConstants#REPEAT} or {@link InputConstants#RELEASE} (1, -1, 0).
  *
  * <p>Remix resolves a written option a frame or more later, so after its own write the gate
  * ignores reads until one agrees with it. A stale read would otherwise undo the open or close the
@@ -81,10 +86,18 @@ public final class RemixInputGate {
      */
     private final byte[] resolvedVisibility = new byte[RESOLVED_HIDDEN_MENU.length];
 
-    /** Decides whether Minecraft may handle a key event. */
+    /**
+     * Decides whether Minecraft may handle a key event.
+     *
+     * @param key         the SDL scancode, {@code KeyEvent.key()}
+     * @param action      {@link InputConstants#PRESS}, {@link InputConstants#REPEAT} or
+     *                    {@link InputConstants#RELEASE}
+     * @param altDown     whether either Alt key is held
+     * @param controlDown whether either Control key is held, which AltGr also reports on Windows
+     */
     public KeyDecision onKey(int key, int action, boolean altDown, boolean controlDown) {
-        boolean altX = action == GLFW.GLFW_PRESS
-                && key == GLFW.GLFW_KEY_X
+        boolean altX = action == InputConstants.PRESS
+                && key == InputConstants.KEY_X
                 && altDown
                 && !controlDown;
         if (captureSessionOpen) {
