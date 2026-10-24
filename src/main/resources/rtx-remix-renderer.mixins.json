@@ -69,6 +69,7 @@
         "RebuildTaskMixin",
         "RenderableChunksMixin",
         "RenderedChunkMixin",
+        "RotatingSectionStorageAccessor",
         "SectionBuilderMixin",
         "SpriteAtlasAccessor",
         "SpriteAtlasTextureMixin",

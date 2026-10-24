@@ -33,6 +33,11 @@ import net.minecraft.client.renderer.SectionOcclusionGraph.Node;
  *
  * <p>Single writer at a time, as vanilla's set: the visibility thread fills it, then the
  * render thread owns it after publication.
+ *
+ * <p>Minecraft 26.3 no longer keeps a reached-section set: since 1.21.2 the graph inserts
+ * reached sections into an {@code Octree} ({@code GraphStorage.sectionTree}). This class is kept
+ * for Milestone B, which decides whether the octree is pooled the same way; nothing installs
+ * it today. Membership now compares section nodes, the 26.3 identity of a slot's section.
  */
 public final class ReachedChunkSet extends LinkedHashSet<Node> {
     private Node[] order;
@@ -65,7 +70,7 @@ public final class ReachedChunkSet extends LinkedHashSet<Node> {
         if (index < 0 || index >= stamp.length) {
             throw new IllegalArgumentException("Section index " + index + " outside storage of " + stamp.length);
         }
-        long origin = info.section.getOrigin().asLong();
+        long origin = info.section.getSectionNode();
         if (stamp[index] == walk && originAtIndex[index] == origin) {
             return false;
         }
@@ -85,7 +90,7 @@ public final class ReachedChunkSet extends LinkedHashSet<Node> {
         }
         int index = info.section.index;
         return index >= 0 && index < stamp.length && stamp[index] == walk
-                && originAtIndex[index] == info.section.getOrigin().asLong();
+                && originAtIndex[index] == info.section.getSectionNode();
     }
 
     @Override

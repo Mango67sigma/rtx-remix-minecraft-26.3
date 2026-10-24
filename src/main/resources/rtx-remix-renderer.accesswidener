@@ -43,19 +43,19 @@ accessible field net/minecraft/client/renderer/texture/SpriteContents$FrameInfo 
 
 # ===== section: visibility =====
 
-# Allocation-free port of vanilla's chunk visibility walk (ChunkRenderingDataPreparerMixin)
+# Allocation-free port of vanilla's section visibility walk, SectionOcclusionGraph.runUpdates
+# (ChunkRenderingDataPreparerMixin). In the 26.3 jar GraphStorage and SectionToNodeMap are
+# package-private and Node's constructor, mask helpers and mask fields are private; Node.step
+# and hasSourceDirection(I) are already public, and ViewArea.getRenderSectionAt is public.
 accessible class net/minecraft/client/renderer/SectionOcclusionGraph$SectionToNodeMap
 accessible class net/minecraft/client/renderer/SectionOcclusionGraph$GraphStorage
 accessible method net/minecraft/client/renderer/SectionOcclusionGraph$Node <init> (Lnet/minecraft/client/renderer/chunk/SectionRenderDispatcher$RenderSection;Lnet/minecraft/core/Direction;I)V
 accessible method net/minecraft/client/renderer/SectionOcclusionGraph$Node setDirections (BLnet/minecraft/core/Direction;)V
 accessible method net/minecraft/client/renderer/SectionOcclusionGraph$Node hasDirection (Lnet/minecraft/core/Direction;)Z
 accessible method net/minecraft/client/renderer/SectionOcclusionGraph$Node addSourceDirection (Lnet/minecraft/core/Direction;)V
-accessible method net/minecraft/client/renderer/SectionOcclusionGraph$Node hasSourceDirection (I)Z
 accessible method net/minecraft/client/renderer/SectionOcclusionGraph$Node hasSourceDirections ()Z
 accessible field net/minecraft/client/renderer/SectionOcclusionGraph$Node section Lnet/minecraft/client/renderer/chunk/SectionRenderDispatcher$RenderSection;
 accessible field net/minecraft/client/renderer/SectionOcclusionGraph$Node directions B
-accessible field net/minecraft/client/renderer/SectionOcclusionGraph$Node step I
-accessible method net/minecraft/client/renderer/ViewArea getRenderSectionAt (Lnet/minecraft/core/BlockPos;)Lnet/minecraft/client/renderer/chunk/SectionRenderDispatcher$RenderSection;
 
 # Visibility walk buffers reused across walks (RenderableChunksMixin, ChunkInfoPool)
 accessible method net/minecraft/client/renderer/SectionOcclusionGraph$SectionToNodeMap <init> (I)V

@@ -26,6 +26,11 @@ import net.minecraft.world.phys.AABB;
  * {@link #tryRetire}, which fails while a use is in progress, and the reader retires a
  * superseded index itself when its use ends. Whichever side wins the compare-and-set owns the
  * culler, so no build can clear arrays a query is still walking.
+ *
+ * <p>Minecraft 26.3: not installed. Since 1.21.2 vanilla keeps the reached sections in an
+ * {@code Octree} and {@code SectionOcclusionGraph.addSectionsInFrustum} culls whole octants
+ * against the frustum itself, so the flat per-section loop this index replaced no longer
+ * exists. Kept compiling, with its tests, for Milestone B to measure against the octree.
  */
 public final class BuiltChunkFrustumIndex {
     private static final int FRESH = 0;

@@ -12,16 +12,17 @@ import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.core.Direction;
 
 /**
- * One {@code ChunkInfo} per section slot, reused from walk to walk instead of allocated per
- * reached section. The {@code BuiltChunk} at a slot is stable for the life of the storage, so
- * an info can keep it and only its per-walk state is reset: the direction mask, the culling
- * state and the propagation level, exactly what vanilla's constructor sets.
+ * One graph {@code Node} per section slot, reused from walk to walk instead of allocated per
+ * reached section. The {@code RenderSection} at a slot is stable for the life of the storage,
+ * so a node can keep it and only its per-walk state is reset: the source-direction mask, the
+ * direction mask and the step, exactly what vanilla's constructor sets.
  *
  * <p>Each visibility state owns one pool, and the two states that can be alive at once
- * (published and being walked) own different pools, so a walk never rewrites an info the
- * render thread is reading. A slot reached twice in one walk, which happens when its section
- * is re-originned mid-walk and so becomes a new element of the reached set, gets a fresh
- * info the second time, as vanilla would.
+ * (published and being walked) own different pools, so a walk never rewrites a node the
+ * render thread is reading. Minecraft 26.3's graph maps at most one node to a slot per state,
+ * so a slot is claimed at most once per walk; a second claim would get a fresh node, as
+ * vanilla would. Nodes are compared by identity only (the queue and the slot-indexed map), so
+ * reuse cannot change the walk's output.
  */
 public final class ChunkInfoPool {
     private final Node[] infos;
