@@ -325,7 +325,57 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("onboardAccessibility:false", options)
             self.assertIn("tutorialStep:none", options)
             self.assertIn("skipMultiplayerWarning:true", options)
-            self.assertIn("hideBundleTutorial:true", options)
+
+    def test_write_options_leaves_out_the_options_26_3_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
+            runner.write_options({"render": {}})
+
+            options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
+            # hideBundleTutorial is gone from Options, and graphicsPreset replaced graphicsMode.
+            self.assertIsNone(options_value(options, "hideBundleTutorial"))
+            self.assertIsNone(options_value(options, "graphicsMode"))
+            self.assertEqual(options_value(options, "graphicsPreset"), '"fancy"')
+
+    def test_write_options_stamps_a_new_file_with_the_games_data_version(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
+            runner.write_options({"render": {}})
+
+            options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
+            # world_version in 26.3's version.json, which the game stamps into the options.txt it saves.
+            self.assertEqual(options.splitlines()[0], "version:5023")
+            self.assertEqual(runner.OPTIONS_DATA_VERSION, 5023)
+
+    def test_write_options_restamps_an_existing_file_older_than_the_games_data_version(self):
+        # 3955 is 1.21.1's. A file with no stamp reads as version 0, and an unreadable one is no better.
+        for first_line in ("version:3955", "", "version:soon"):
+            with self.subTest(first_line=first_line), tempfile.TemporaryDirectory() as tmp:
+                options_path = Path(tmp) / "options.txt"
+                options_path.write_text(
+                    "\n".join(filter(None, [first_line, "graphicsMode:2", "key_key.jump:key.keyboard.space"])) + "\n",
+                    encoding="utf-8",
+                )
+                with patch.object(runner.util, "RUN_DIR", Path(tmp)):
+                    runner.write_options({"render": {}})
+
+                options = options_path.read_text(encoding="utf-8")
+                self.assertEqual(options.splitlines()[0], "version:5023")
+                self.assertEqual(options.count("\nversion:") + options.startswith("version:"), 1)
+                # The data fixers would have overwritten the preset of a file this old, so it is written beside the
+                # stamp. Lines the harness does not own stay.
+                self.assertEqual(options_value(options, "graphicsPreset"), '"fancy"')
+                self.assertEqual(options_value(options, "key_key.jump"), "key.keyboard.space")
+
+    def test_write_options_leaves_a_data_version_the_game_wrote_alone(self):
+        for version in ("5023", "5100"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                options_path = Path(tmp) / "options.txt"
+                options_path.write_text(f'version:{version}\ngraphicsPreset:"custom"\n', encoding="utf-8")
+                with patch.object(runner.util, "RUN_DIR", Path(tmp)):
+                    runner.write_options({"render": {}})
+
+                options = options_path.read_text(encoding="utf-8")
+                self.assertEqual(options.splitlines()[0], f"version:{version}")
+                self.assertEqual(options_value(options, "graphicsPreset"), '"fancy"')
 
     def test_write_options_converts_fov_degrees_to_minecraft_option_value(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
@@ -348,12 +398,20 @@ class RunnerTests(unittest.TestCase):
             runner.write_options({"render": {"overrideWidth": 1920, "overrideHeight": 1080}}, pin_display=True)
 
             options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
-            self.assertEqual(options_value(options, "fullscreenResolution"), "1920x1080@60:24")
+            # What 26.3's VideoMode.write produces: a JSON object, where 1.21.1 wrote 1920x1080@60:24.
+            self.assertEqual(
+                options_value(options, "fullscreenResolution"),
+                '{"width":1920,"height":1080,"red_bits":8,"green_bits":8,"blue_bits":8,"refresh_rate":60.0}',
+            )
 
     def test_write_options_clears_a_stale_pinned_fullscreen_resolution(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
             options_path = Path(tmp) / "options.txt"
-            options_path.write_text("fullscreenResolution:2560x1440@144:24\n", encoding="utf-8")
+            options_path.write_text(
+                'fullscreenResolution:{"width":2560,"height":1440,"red_bits":8,"green_bits":8,"blue_bits":8,'
+                '"refresh_rate":144.0}\n',
+                encoding="utf-8",
+            )
 
             # The window size is set, so an empty value can only come from an
             # unpinned display; pinning would rewrite it to 1920x1080.

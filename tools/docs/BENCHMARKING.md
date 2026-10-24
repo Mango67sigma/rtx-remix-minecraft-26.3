@@ -392,8 +392,21 @@ benchmark requirements. Inspect the effective plan with `run --dry-run`.
 |---|---|---|
 | `renderDistance` | `<gameDir>/options.txt` | 32 |
 | `simulationDistance` | `<gameDir>/options.txt` | 12 |
-| `graphicsMode` | `<gameDir>/options.txt` | 1 (Fancy) |
+| `graphicsMode` | `<gameDir>/options.txt`, as `graphicsPreset` | 1 (Fancy) |
 | `modSettings` | `<gameDir>/config/rtxremix.json` | `dist.light` 0, `dist.entity` 0, `light.reach` 192 |
+
+`graphicsMode` keeps the numbers of the option Minecraft 1.21.1 had: 0 is Fast, 1
+is Fancy, 2 is Fabulous. Minecraft 26.3 replaced that option with `graphicsPreset`,
+so the runner writes the preset's name (`"fast"`, `"fancy"`, `"fabulous"`; those
+names are accepted in the config too, and any other value fails the run). The game
+applies a preset's other options only when the preset is chosen in Video Settings,
+never when it reads `options.txt`, so the runner also writes the four options the
+game's own data fixer derives from an old `graphicsMode`: `cutoutLeaves`,
+`weatherRadius`, `vignette`, and `improvedTransparency`. The file's `version`
+line holds the game's DataVersion, 5023 for 26.3. An existing file with no such
+line or an older one is restamped, because the game's data fixers would
+otherwise set its `graphicsPreset` back to `custom`; every other line of it
+stays.
 
 `modSettings` maps mod setting ids to values. They are merged into the settings
 file: the ids it names win and every other entry the file holds is kept. A file
@@ -458,7 +471,9 @@ not make different architectures or hosts directly comparable.
 
 A benchmark pins the fullscreen mode to the configured window dimensions.
 `runner.fullscreen_resolution_option_value` currently formats a 1920x1080
-request as `1920x1080@60:24` (refresh rate and bit depth follow the `@`).
+request as the JSON object Minecraft 26.3 reads and writes for the key,
+`{"width":1920,"height":1080,"red_bits":8,"green_bits":8,"blue_bits":8,"refresh_rate":60.0}`
+(1.21.1 wrote `1920x1080@60:24`, which 26.3 does not read).
 A play launch leaves the key empty, the **Current** video-settings entry,
 so fullscreen follows the attached display.
 

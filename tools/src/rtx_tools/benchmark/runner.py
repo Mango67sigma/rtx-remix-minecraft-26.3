@@ -65,6 +65,22 @@ RTX_SETTINGS_VERSION = 2
 # Not a mod setting: older harness versions pinned the preset under this id, and
 # the mod warns about an unknown id on every load until something removes it.
 STALE_RTX_PRESET_SETTING_ID = "preset"
+# Minecraft stamps options.txt with its DataVersion (world_version in the client jar's version.json, 5023 for 26.3) and
+# runs its data fixers over a file stamped older. The fixers behind 26.3's graphics options rewrite what write_options
+# pins: from a file older than 4651 they set graphicsPreset to "custom" and derive the options below from graphicsMode.
+OPTIONS_DATA_VERSION = 5023
+# render.graphicsMode keeps the numbers of the graphicsMode option Minecraft 1.21.1 had. 26.3 replaced that option with
+# the graphicsPreset enum, written as a JSON string, so the number picks the preset.
+GRAPHICS_PRESETS = {0: "fast", 1: "fancy", 2: "fabulous"}
+# The game applies a preset's other options only when the preset is chosen in Video Settings, not when it reads
+# options.txt, so the preset name alone would change a label and nothing else. These are the options graphicsMode used
+# to carry, with the values the game's own data fixer gives them when it converts an options.txt from 1.21.1
+# (OptionsGraphicsModeSplitFix).
+GRAPHICS_PRESET_OPTIONS = {
+    "fast": {"cutoutLeaves": "false", "weatherRadius": "5", "vignette": "false", "improvedTransparency": "false"},
+    "fancy": {"cutoutLeaves": "true", "weatherRadius": "10", "vignette": "true", "improvedTransparency": "false"},
+    "fabulous": {"cutoutLeaves": "true", "weatherRadius": "10", "vignette": "true", "improvedTransparency": "true"},
+}
 WORLD_CONFIG_FILE = "config.json"
 LEGACY_WORLD_OPTIONS_FILE = "world-options.json"
 WORLD_CONFIG_IGNORED_KEYS = {"world", "defaultWorld"}
@@ -2517,25 +2533,52 @@ def fullscreen_resolution_option_value(width: int, height: int, *, pin_display: 
     """The options.txt value for fullscreenResolution.
 
     Unpinned writes an empty value, which Minecraft reads as the "Current"
-    entry in the video settings: VideoMode.fromString fails to parse it and
-    Monitor.findClosestVideoMode falls through to the monitor's own mode. A
-    play launch wants that, so going fullscreen follows whichever display the
+    entry in the video settings: VideoMode.read fails to parse it, so no
+    fullscreen mode is preferred and the monitor's own mode is used. A play
+    launch wants that, so going fullscreen follows whichever display the
     player is actually on.
 
     Pinned mirrors the windowed size, fixing the display mode so two machines
-    measure the same framebuffer. The suffix is refreshRate:bitDepth, so this
-    pins 60 Hz as well."""
+    measure the same framebuffer. 26.3 reads the mode as a JSON object
+    (VideoMode.CODEC) rather than the 1920x1080@60:24 text of 1.21.1, and this
+    pins 8 bits per channel and 60 Hz as well."""
     if not pin_display:
         return ""
     if not (width and height):
         raise RuntimeError(
             "cannot pin the display without a window to match: set render.overrideWidth and render.overrideHeight"
         )
-    return f"{width}x{height}@60:24"
+    mode = {"width": width, "height": height, "red_bits": 8, "green_bits": 8, "blue_bits": 8, "refresh_rate": 60.0}
+    return json.dumps(mode, separators=(",", ":"))
+
+
+def graphics_preset(value: object) -> str:
+    """The graphics preset of Minecraft 26.3 that render.graphicsMode names: 0, 1 or 2, also as text, or the
+    preset's own name (fast, fancy, fabulous).
+
+    A value that names none fails the run: a typo must not quietly measure another preset."""
+    name = str(value).strip().lower()
+    if name.isdecimal() and int(name) in GRAPHICS_PRESETS:
+        return GRAPHICS_PRESETS[int(name)]
+    if name in GRAPHICS_PRESET_OPTIONS:
+        return name
+    raise RuntimeError(f"invalid render.graphicsMode {value!r}: use 0 (fast), 1 (fancy) or 2 (fabulous)")
+
+
+def options_version_is_current(line: str) -> bool:
+    """Whether an options.txt version line stamps a DataVersion that the game's data fixers leave alone, which is the
+    game's own or a newer one."""
+    try:
+        return int(line.partition(":")[2]) >= OPTIONS_DATA_VERSION
+    except ValueError:
+        return False
 
 
 def write_options(config: dict, *, resource_pack_files: list[str] | None = None, pin_display: bool = False) -> None:
     """Write options.txt in the game directory (util.RUN_DIR) from `config`.
+
+    An existing file keeps every other line, but is stamped with the game's DataVersion when it has none or an older
+    one (OPTIONS_DATA_VERSION), because the game's data fixers would otherwise rewrite the graphics options pinned here.
 
     `pin_display` belongs to the measurement session rather than to config,
     because both paths load the same merged config: benchmark/config.json is
@@ -2549,11 +2592,13 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
     # The mod's built-in baseline rides in Fabric's pack, below every file/ pack.
     # Fabric appends its pack above user packs if options.txt omits it.
     resource_pack_options = ["vanilla", "fabric", *(f"file/{file_name}" for file_name in resource_pack_files)]
+    preset = graphics_preset(render.get("graphicsMode", 1))
     values = {
         "enableVsync": "true" if render.get("vsync") else "false",
         "fullscreen": "true" if render.get("fullscreen") else "false",
         "fov": minecraft_fov_option_value(render.get("fov", 70)),
-        "graphicsMode": str(render.get("graphicsMode", 1)),
+        "graphicsPreset": json.dumps(preset),
+        **GRAPHICS_PRESET_OPTIONS[preset],
         "maxFps": str(render.get("maxFps", 260)),
         "renderDistance": str(render.get("renderDistance", 32)),
         "simulationDistance": str(render.get("simulationDistance", 12)),
@@ -2562,7 +2607,6 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         "onboardAccessibility": "false",
         "tutorialStep": "none",
         "skipMultiplayerWarning": "true",
-        "hideBundleTutorial": "true",
         "overrideWidth": str(override_width),
         "overrideHeight": str(override_height),
         "fullscreenResolution": fullscreen_resolution,
@@ -2574,11 +2618,16 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         out = []
         for line in lines:
             key = line.split(":", 1)[0] if ":" in line else ""
-            if key in values:
+            if key == "version":
+                out.append(line if options_version_is_current(line) else f"version:{OPTIONS_DATA_VERSION}")
+                seen.add(key)
+            elif key in values:
                 out.append(f"{key}:{values[key]}")
                 seen.add(key)
             else:
                 out.append(line)
+        if "version" not in seen:
+            out.insert(0, f"version:{OPTIONS_DATA_VERSION}")
         for key, value in values.items():
             if key not in seen:
                 out.append(f"{key}:{value}")
@@ -2586,7 +2635,7 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         return
 
     defaults = {
-        "version": "3955",
+        "version": str(OPTIONS_DATA_VERSION),
         "ao": "true",
         "biomeBlendRadius": "2",
         "prioritizeChunkUpdates": "1",

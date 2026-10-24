@@ -11,6 +11,18 @@ also part of every mod file name.
 
 ## Unreleased
 
+### Changed
+
+- The mod targets Minecraft Java Edition 26.3 in place of 1.21.1: Java 25,
+  Fabric Loader 0.20.1, Fabric API 0.165.0+26.3, and Mojang's official names
+  for Minecraft's code.
+- The installer moves a Prism instance an earlier release made to Minecraft
+  26.3, Fabric Loader 0.20.1, and Java 25. On Windows ARM64 it downloads
+  Microsoft Build of OpenJDK 25, because Eclipse Temurin publishes no build of
+  Java 25 for it.
+- The developer tools write `options.txt` the way 26.3 reads it, so
+  `render.graphicsMode` still picks the graphics preset.
+
 ## 0.1.0 - 2026-10-23
 
 The first public release, a beta.

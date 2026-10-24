@@ -52,6 +52,37 @@ alone. In an existing `options.txt`, only `resourcePacks` changes: vanilla,
 Fabric, then user packs in their existing order, without the retired baseline
 entry. They do not create a missing options file.
 
+## Moving An Earlier Release's Install To The Pinned Game
+
+A Prism instance an earlier release made names its own Minecraft and Fabric
+Loader versions and Java version, and Install, Upgrade, and Repair move them to
+the pinned ones along with the mod JAR and Fabric API. In `mmc-pack.json` they
+rewrite the Minecraft and Fabric Loader components when their versions differ,
+drop the version and requirements Prism cached for the old ones, and keep every
+other component, apart from the ones Prism added itself as dependencies of the
+old Minecraft: Intermediary Mappings and LWJGL. Prism adds those again at the
+versions the new Minecraft calls for the next time it loads the instance, and
+would refuse an instance whose Intermediary Mappings require the old Minecraft.
+The previous file is kept as `mmc-pack.json.bak`.
+`JavaVersion` in `instance.cfg` follows the Java the pinned Minecraft needs.
+The installer prints each change, and an instance that already matches is not
+written to. A `mmc-pack.json` that cannot be read is left alone with a
+warning. Fabric API of another version is removed from the instance's `mods`
+folder once the pinned one is in place.
+
+On ARM64, a Java pin on the instance has to be a native ARM64 Java of the
+pinned major. One that is not, such as the Java 21 JDK the first release
+pinned, is replaced by the managed JDK, or cleared when the installer found a
+suitable Java on the PATH and installed no managed one, so that Prism chooses
+its own.
+
+The Microsoft launcher keeps the earlier release's profile and gets a profile
+for the pinned Minecraft version beside it. Both carry the display name
+`NVIDIA RTX Remix for Minecraft`, so tell them apart by version in the
+launcher's profile editor. A profile for the pinned Minecraft version that
+launches another Fabric Loader build is pointed at the pinned one, by running
+the Fabric installer again.
+
 ## JVM Arguments And Prism Memory
 
 Prism refuses to launch an instance whose JVM arguments hold a heap size such
@@ -185,9 +216,13 @@ one to run. Which it uses depends on the architecture and the launcher.
   newer runs the Fabric installer, so no architecture match is required. The
   game itself then runs on the launcher's own Java.
 - **ARM64.** `java` on the PATH only when it is version 25 and natively ARM64,
-  then the managed JDK under the same test, then a downloaded Adoptium Temurin
-  25 for ARM64. Mojang publishes no ARM64 Windows Java, and an emulated x64
-  Java breaks the native bridge, so the managed install is normally used. A new
+  then the managed JDK under the same test, then a downloaded Microsoft Build
+  of OpenJDK 25 for ARM64. Eclipse Temurin publishes no Windows ARM64 build of
+  Java 25, so the Adoptium download is not used here. Mojang publishes no ARM64
+  Windows Java, and an emulated x64 Java breaks the native bridge, so the
+  managed install is normally used. Its SHA-256 is the checksum file Microsoft
+  publishes beside the archive, which the installer reads before it downloads
+  the archive; when that file cannot be fetched, an unattended run stops. A
   Prism instance on ARM64 is pinned to that JDK so Prism cannot substitute an
   x64 one.
 

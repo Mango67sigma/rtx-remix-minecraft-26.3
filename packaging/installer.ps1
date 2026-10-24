@@ -141,8 +141,8 @@ $script:PRISM_INSTANCE_LEGACY_NAMES = @(
 $script:PRISM_PORTABLE_DIR   = Join-Path $env:LOCALAPPDATA 'RtxRemixMinecraft\PrismLauncher'
 # The Java major the pinned Minecraft version runs on: the only entry in
 # compatibleJavaMajors of https://meta.prismlauncher.org/v1/net.minecraft/26.3.json.
-# The managed JDK folder, its Adoptium download and version checks, and a new
-# Prism instance's JavaVersion all follow it.
+# The managed JDK folder, its download and version checks, and a new Prism
+# instance's JavaVersion all follow it.
 $script:GAME_JAVA_MAJOR      = 25
 $script:MANAGED_JDK_DIR      = Join-Path $env:LOCALAPPDATA "RtxRemixMinecraft\jdk-$($script:GAME_JAVA_MAJOR)"
 $script:FABRIC_API_VERSION   = '0.165.0+26.3'
@@ -217,7 +217,8 @@ $script:PRISM_KNOWN_HASHES = @{
 # Pinned SHA-256 hashes for artifacts whose publishers' checksum sidecars
 # we don't want to rely on as the sole integrity signal. Left empty by
 # default; the installer falls back to the publisher's sibling checksum
-# (Maven .sha256, GitHub release asset digest, Adoptium asset metadata)
+# (Maven .sha256, GitHub release asset digest, Adoptium asset metadata,
+# Microsoft's JDK .sha256sum.txt)
 # and fails closed if that too is unavailable in -Unattended mode.
 #
 # To populate: compute against a fresh download with
@@ -670,6 +671,24 @@ function Get-JavaMajor {
     return 0
 }
 
+function Get-JavaHomeMajor {
+    <#
+      The major version of the Java installation that holds $JavaExe, its
+      java.exe or javaw.exe in bin\. It comes from the release file at the
+      installation's root, so nothing runs: a Java that a Prism instance pins
+      can be stale or broken. An installation without a release file is asked
+      through the java.exe beside $JavaExe (Get-JavaMajor). 0 when neither says.
+    #>
+    param([string]$JavaExe)
+    $bin = Split-Path -Parent $JavaExe
+    $release = Join-Path (Split-Path -Parent $bin) 'release'
+    if (Test-Path -LiteralPath $release) {
+        $text = [System.IO.File]::ReadAllText($release)
+        if ($text -match '(?m)^JAVA_VERSION="(\d+)') { return [int]$Matches[1] }
+    }
+    return Get-JavaMajor (Join-Path $bin 'java.exe')
+}
+
 function Test-JavaArchMatchesHost {
     param([string]$JavaExe)
     $machine = Get-PeMachine -Path $JavaExe
@@ -677,9 +696,9 @@ function Test-JavaArchMatchesHost {
 }
 
 function Resolve-GameJavaForArm {
-    # ARM64: need the game's Java (GAME_JAVA_MAJOR) AND native ARM64. Force
-    # managed Adoptium aarch64 because Mojang publishes no ARM64 Windows JRE
-    # and x64 Java under WoA emulation breaks JNI.
+    # ARM64: need the game's Java (GAME_JAVA_MAJOR) AND native ARM64. Fall
+    # back to the managed Microsoft Build of OpenJDK because Mojang publishes
+    # no ARM64 Windows JRE and x64 Java under WoA emulation breaks JNI.
     $onPath = Get-Command java -ErrorAction SilentlyContinue
     if ($onPath -and (Get-JavaMajor $onPath.Source) -eq $script:GAME_JAVA_MAJOR -and (Test-JavaArchMatchesHost $onPath.Source)) {
         Write-Info "Java $($script:GAME_JAVA_MAJOR) (ARM64 native) found on PATH: $($onPath.Source)"
@@ -729,30 +748,68 @@ function Resolve-JavaForFabricInstaller {
     return (Join-Path $script:MANAGED_JDK_DIR 'bin\java.exe')
 }
 
-function Install-ManagedJdk {
-    # Adoptium v3 binary endpoint redirects; we pre-fetch the assets list
-    # to get the SHA-256 for supply-chain verification. The JDK is the game's
-    # Java major (GAME_JAVA_MAJOR), the one MANAGED_JDK_DIR is named for.
+function Get-ManagedJdkSource {
+    <#
+      Where the managed JDK comes from on this host. The JDK is the game's Java
+      major (GAME_JAVA_MAJOR), the one MANAGED_JDK_DIR is named for.
+        x64     Eclipse Temurin through the Adoptium v3 API. The binary endpoint
+                redirects, so the asset list (AssetUrl) is fetched first for the
+                SHA-256 it holds for the zip.
+        aarch64 Microsoft Build of OpenJDK, because Adoptium publishes no
+                Windows ARM64 JDK of this major: its asset list for
+                architecture=aarch64 is empty. aka.ms/download-jdk redirects to
+                the current release, and that zip's SHA-256 is the sidecar at
+                the same address plus .sha256sum.txt (ChecksumUrl).
+      Name is what the log and the uninstall menu call it, and Slug names the
+      download's temp files.
+    #>
     $javaMajor = $script:GAME_JAVA_MAJOR
-    $jdkArch   = if (Test-HostIsArm64) { 'aarch64' } else { 'x64' }
-    $assetUrl  = "https://api.adoptium.net/v3/assets/latest/$javaMajor/hotspot?architecture=$jdkArch&image_type=jdk&os=windows&vendor=eclipse"
-    $binaryUrl = "https://api.adoptium.net/v3/binary/latest/$javaMajor/ga/windows/$jdkArch/jdk/hotspot/normal/eclipse"
-    $zip       = New-SessionTempPath "adoptium-jdk-$javaMajor.zip"
-    $staging   = New-SessionTempPath "adoptium-jdk-$javaMajor-extract"
+    if (Test-HostIsArm64) {
+        $binaryUrl = "https://aka.ms/download-jdk/microsoft-jdk-$javaMajor-windows-aarch64.zip"
+        return [pscustomobject]@{
+            Name        = 'Microsoft Build of OpenJDK'
+            Slug        = 'microsoft'
+            Arch        = 'aarch64'
+            BinaryUrl   = $binaryUrl
+            ChecksumUrl = "$binaryUrl.sha256sum.txt"
+            AssetUrl    = $null
+        }
+    }
+    return [pscustomobject]@{
+        Name        = 'Adoptium Temurin JDK'
+        Slug        = 'adoptium'
+        Arch        = 'x64'
+        BinaryUrl   = "https://api.adoptium.net/v3/binary/latest/$javaMajor/ga/windows/x64/jdk/hotspot/normal/eclipse"
+        ChecksumUrl = $null
+        AssetUrl    = "https://api.adoptium.net/v3/assets/latest/$javaMajor/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse"
+    }
+}
+
+function Install-ManagedJdk {
+    # The JDK is the game's Java major (GAME_JAVA_MAJOR), the one MANAGED_JDK_DIR
+    # is named for. Get-ManagedJdkSource says which vendor supplies it on this
+    # host and where its zip and checksum are.
+    $javaMajor = $script:GAME_JAVA_MAJOR
+    $source    = Get-ManagedJdkSource
+    $jdkArch   = $source.Arch
+    $zip       = New-SessionTempPath "$($source.Slug)-jdk-$javaMajor.zip"
+    $staging   = New-SessionTempPath "$($source.Slug)-jdk-$javaMajor-extract"
 
     Write-Warn "Java $javaMajor not found on this system."
-    Write-Info "Auto-installing Adoptium Temurin JDK $javaMajor ($jdkArch, ~200 MB) to $($script:MANAGED_JDK_DIR)"
+    Write-Info "Auto-installing $($source.Name) $javaMajor ($jdkArch, ~200 MB) to $($script:MANAGED_JDK_DIR)"
     Write-Info 'No admin rights needed; this is a user-level install only used by the installer and the mod launcher.'
 
     # Adoptium's asset metadata endpoint gives us a pinned SHA-256 tied to
     # the specific binary URL (rather than a checksum sidecar the attacker
     # could disagree with). If the metadata fetch fails we defer to
-    # Invoke-VerifiedDownload's fail-closed policy.
+    # Invoke-VerifiedDownload's fail-closed policy. Only the x64 source has an
+    # asset URL: Microsoft's checksum is the sidecar beside its zip, which
+    # Invoke-VerifiedDownload fetches itself.
     $expectedSha = $null
-    if (-not $script:SkipHashCheck) {
+    if ($source.AssetUrl -and -not $script:SkipHashCheck) {
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $assets = Invoke-RestMethod -Uri $assetUrl -UseBasicParsing -Headers @{ 'User-Agent' = 'RtxRemixMinecraft-Installer' } -ErrorAction Stop
+            $assets = Invoke-RestMethod -Uri $source.AssetUrl -UseBasicParsing -Headers @{ 'User-Agent' = 'RtxRemixMinecraft-Installer' } -ErrorAction Stop
             $pkg = $assets | ForEach-Object { $_.binary } | Where-Object { $_.image_type -eq 'jdk' -and $_.os -eq 'windows' -and $_.architecture -eq $jdkArch } | Select-Object -First 1
             if ($pkg -and $pkg.package.checksum) {
                 # Defense in depth: confirm the returned checksum is in fact a
@@ -772,10 +829,11 @@ function Install-ManagedJdk {
         }
     }
 
-    # When $expectedSha is null and the metadata fetch failed, give
-    # Invoke-VerifiedDownload nothing to verify against; it will throw
-    # in unattended mode, prompt in interactive.
-    Invoke-VerifiedDownload -Url $binaryUrl -Destination $zip -ExpectedSha256 $expectedSha
+    # With neither a metadata hash nor a sidecar, Invoke-VerifiedDownload has
+    # nothing to verify against; it throws in unattended mode, prompts in
+    # interactive. With a sidecar it reads the hash before it downloads the
+    # zip, and in unattended mode throws when the sidecar cannot be read.
+    Invoke-VerifiedDownload -Url $source.BinaryUrl -Destination $zip -ExpectedSha256 $expectedSha -ChecksumUrl $source.ChecksumUrl
 
     Write-Info 'Extracting...'
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
@@ -1644,20 +1702,11 @@ function Disable-PrismUpdateCheck {
     }
 }
 
-function Initialize-PrismInstance {
+function Write-PrismPack {
+    # mmc-pack.json for a new instance: Minecraft and Fabric Loader at the
+    # pinned versions. Prism adds the components these require (Intermediary
+    # Mappings, LWJGL) when it first loads the instance.
     param([string]$InstanceDir)
-    $cfg = Join-Path $InstanceDir 'instance.cfg'
-    if (Test-Path -LiteralPath $cfg) {
-        Write-Info "Reusing existing Prism instance: $($script:PRISM_INSTANCE_NAME)"
-        return
-    }
-    Write-Info "Creating Prism instance: $($script:PRISM_INSTANCE_NAME)"
-    New-Item -ItemType Directory -Path (Join-Path $InstanceDir '.minecraft') -Force | Out-Null
-    @(
-        'InstanceType=OneSix'
-        "name=$($script:PRISM_INSTANCE_NAME)"
-        "JavaVersion=$($script:GAME_JAVA_MAJOR)"
-    ) -join "`r`n" | Out-File -LiteralPath $cfg -Encoding ascii -NoNewline
     $pack = @{
         components = @(
             @{ cachedName = 'Minecraft';     important = $true; uid = 'net.minecraft';              version = $script:MC_VERSION }
@@ -1668,36 +1717,173 @@ function Initialize-PrismInstance {
     ($pack | ConvertTo-Json -Depth 8) | Out-File -LiteralPath (Join-Path $InstanceDir 'mmc-pack.json') -Encoding ascii
 }
 
+function Sync-PrismInstanceVersions {
+    <#
+      Bring a Prism instance that an earlier installer created to the pinned
+      game. Install and Upgrade replace the mod JAR and Fabric API in it, but
+      nothing else moves its components or its Java version, so an instance
+      from the Minecraft 1.21.1 installer would keep 1.21.1 and its Fabric
+      Loader under the new mod. This rewrites the Minecraft and Fabric Loader
+      component versions in mmc-pack.json when they differ from MC_VERSION and
+      FABRIC_LOADER_VER, and JavaVersion in instance.cfg when its major
+      differs from GAME_JAVA_MAJOR, and logs each change. Every other
+      component and setting stays as it is. A rewritten component drops the
+      cached version and requirements Prism saved for its old version. An
+      instance that already matches is not written to; a changed mmc-pack.json
+      is kept as mmc-pack.json.bak.
+
+      The exception is the components Prism added itself as dependencies of
+      the old Minecraft and marks volatile (Intermediary Mappings, LWJGL).
+      When Minecraft's version changes they go too, because Prism adds them
+      again at the version the new Minecraft calls for, as for a new instance,
+      and it will not do that for the ones left behind: Intermediary Mappings
+      of the old version require that Minecraft, which Prism reports as
+      "Instance has conflicting dependencies", and an old LWJGL stays at a
+      version the new Minecraft does not ask for.
+    #>
+    param([string]$InstanceDir)
+    $packPath = Join-Path $InstanceDir 'mmc-pack.json'
+    if (-not (Test-Path -LiteralPath $packPath)) {
+        Write-Info "Prism instance has no mmc-pack.json; writing one for Minecraft $($script:MC_VERSION) and Fabric Loader $($script:FABRIC_LOADER_VER)."
+        Write-PrismPack -InstanceDir $InstanceDir
+    } else {
+        $pack = $null
+        try {
+            # Prism writes BOM-less UTF-8, which Windows PowerShell would
+            # otherwise decode in the ANSI code page.
+            $pack = [System.IO.File]::ReadAllText($packPath, [System.Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            Write-Warn "Could not parse mmc-pack.json ($($_.Exception.Message)); leaving the instance's Minecraft and Fabric Loader versions as they are."
+        }
+        if ($pack) {
+            $pins = @{
+                'net.minecraft'              = [pscustomobject]@{ Name = 'Minecraft';     Version = $script:MC_VERSION }
+                'net.fabricmc.fabric-loader' = [pscustomobject]@{ Name = 'Fabric Loader'; Version = $script:FABRIC_LOADER_VER }
+            }
+            $changed = $false
+            $minecraftChanged = $false
+            foreach ($component in @($pack.components)) {
+                if (-not $component -or -not $component.PSObject.Properties['uid']) { continue }
+                $pin = $pins[[string]$component.uid]
+                if (-not $pin -or $component.version -eq $pin.Version) { continue }
+                Write-Info "Updated the Prism instance's $($pin.Name) from $($component.version) to $($pin.Version)."
+                $component | Add-Member -NotePropertyName version -NotePropertyValue $pin.Version -Force
+                foreach ($stale in 'cachedVersion', 'cachedRequires', 'cachedConflicts') {
+                    [void]$component.PSObject.Properties.Remove($stale)
+                }
+                if ([string]$component.uid -eq 'net.minecraft') { $minecraftChanged = $true }
+                $changed = $true
+            }
+            if ($minecraftChanged) {
+                $kept = [System.Collections.Generic.List[object]]::new()
+                foreach ($component in @($pack.components)) {
+                    if ($component -and $component.dependencyOnly -eq $true -and $component.cachedVolatile -eq $true) {
+                        $name = if ($component.cachedName) { $component.cachedName } else { $component.uid }
+                        Write-Info "Removed the Prism instance's $name $($component.version); Prism adds it again for Minecraft $($script:MC_VERSION)."
+                    } else {
+                        $kept.Add($component)
+                    }
+                }
+                $pack.components = $kept.ToArray()
+            }
+            if ($changed) {
+                Write-FileAtomic -Path $packPath -Content (ConvertTo-Json -InputObject $pack -Depth 16) -Backup
+            }
+        }
+    }
+
+    # Prism saves the full version it detects, such as 25.0.4.1, where this
+    # installer writes the major alone, so only the major says whether it is
+    # the game's.
+    $cfg = Join-Path $InstanceDir 'instance.cfg'
+    $javaVersion = Get-PrismCfgValue -Text (Read-PrismCfg -Cfg $cfg) -Key 'JavaVersion'
+    if (-not ($javaVersion -match '^"?(\d+)' -and [int]$Matches[1] -eq $script:GAME_JAVA_MAJOR)) {
+        Set-PrismCfgValues -Cfg $cfg -Values ([ordered]@{ JavaVersion = "$($script:GAME_JAVA_MAJOR)" })
+        if ($javaVersion) {
+            Write-Info "Updated the Prism instance's JavaVersion from $javaVersion to $($script:GAME_JAVA_MAJOR)."
+        } else {
+            Write-Info "Set the Prism instance's JavaVersion to $($script:GAME_JAVA_MAJOR)."
+        }
+    }
+}
+
+function Initialize-PrismInstance {
+    param([string]$InstanceDir)
+    $cfg = Join-Path $InstanceDir 'instance.cfg'
+    if (Test-Path -LiteralPath $cfg) {
+        Write-Info "Reusing existing Prism instance: $($script:PRISM_INSTANCE_NAME)"
+        Sync-PrismInstanceVersions -InstanceDir $InstanceDir
+        return
+    }
+    Write-Info "Creating Prism instance: $($script:PRISM_INSTANCE_NAME)"
+    New-Item -ItemType Directory -Path (Join-Path $InstanceDir '.minecraft') -Force | Out-Null
+    @(
+        'InstanceType=OneSix'
+        "name=$($script:PRISM_INSTANCE_NAME)"
+        "JavaVersion=$($script:GAME_JAVA_MAJOR)"
+    ) -join "`r`n" | Out-File -LiteralPath $cfg -Encoding ascii -NoNewline
+    Write-PrismPack -InstanceDir $InstanceDir
+}
+
+function Get-PrismJavaPinProblem {
+    # Why the Java that a Prism instance pins cannot run the game on this
+    # ARM64 host, or $null when it can: it has to be a native ARM64 binary
+    # (Get-PeMachine == 0xAA64) of the game's Java major (GAME_JAVA_MAJOR).
+    param([string]$JavaPath)
+    # Resolve forward-slash paths that Prism writes back to native form.
+    $resolved = $JavaPath -replace '/', '\'
+    if (-not (Test-Path -LiteralPath $resolved)) {
+        return "Existing Prism JavaPath '$JavaPath' does not exist on disk."
+    }
+    $machine = Get-PeMachine -Path $resolved
+    if ($machine -ne 0xAA64) {
+        return "Existing Prism JavaPath points at a non-ARM64 JVM (PE Machine 0x$($machine.ToString('X4'))); WoA can't run our JNI bridge under x64 emulation."
+    }
+    $major = Get-JavaHomeMajor -JavaExe $resolved
+    if ($major -ne $script:GAME_JAVA_MAJOR) {
+        $which = if ($major -gt 0) { "Java $major" } else { 'a Java whose version could not be read' }
+        return "Existing Prism JavaPath points at $which, but Minecraft $($script:MC_VERSION) needs Java $($script:GAME_JAVA_MAJOR)."
+    }
+    return $null
+}
+
 function Set-PrismJavaPin {
     # ARM64 only. Short-circuit on existing OverrideJavaLocation=true ONLY
-    # if the pinned JavaPath is already an ARM64 binary (Get-PeMachine ==
-    # 0xAA64). A pre-existing x64 pin is broken-by-definition on WoA: our
-    # JNI bridge (remixbridge.dll) fails to load under x64-on-ARM emulation,
-    # so clobber it rather than silently preserve a broken config.
+    # if the pinned JavaPath is already a native ARM64 binary of the game's
+    # Java major (Get-PrismJavaPinProblem). A pre-existing x64 pin is
+    # broken-by-definition on WoA: our JNI bridge (remixbridge.dll) fails to
+    # load under x64-on-ARM emulation. A pin of another major is what an
+    # earlier installer left when the game ran on an older Java, such as the
+    # jdk-21 pin of the Minecraft 1.21.1 installer, and Prism will not run
+    # the game on it. Clobber either rather than silently preserve a broken
+    # config.
     param([string]$InstanceCfg)
     if (-not (Test-HostIsArm64)) { return }
     if (-not (Test-Path -LiteralPath $InstanceCfg)) { return }
     $javaw = Join-Path $script:MANAGED_JDK_DIR 'bin\javaw.exe'
-    if (-not (Test-Path -LiteralPath $javaw)) { return }
+    $haveManaged = Test-Path -LiteralPath $javaw
 
     $text = Read-PrismCfg -Cfg $InstanceCfg
     $overrideEnabled = (Get-PrismCfgValue -Text $text -Key 'OverrideJavaLocation') -eq 'true'
     $pinnedJava = Get-PrismCfgValue -Text $text -Key 'JavaPath'
 
     if ($overrideEnabled -and $pinnedJava) {
-        # Resolve forward-slash paths that Prism writes back to native form.
-        $resolved = $pinnedJava -replace '/', '\'
-        if (Test-Path -LiteralPath $resolved) {
-            $machine = Get-PeMachine -Path $resolved
-            if ($machine -eq 0xAA64) {
-                Write-Info 'Prism instance already pins an ARM64 Java path, leaving untouched.'
-                return
-            }
-            Write-Warn "Existing Prism JavaPath points at a non-ARM64 JVM (PE Machine 0x$($machine.ToString('X4'))); WoA can't run our JNI bridge under x64 emulation. Replacing pin with the managed ARM64 JDK."
-        } else {
-            Write-Warn "Existing Prism JavaPath '$pinnedJava' does not exist on disk. Replacing pin with the managed ARM64 JDK."
+        $problem = Get-PrismJavaPinProblem -JavaPath $pinnedJava
+        if (-not $problem) {
+            Write-Info "Prism instance already pins a native ARM64 Java $($script:GAME_JAVA_MAJOR), leaving untouched."
+            return
         }
+        if (-not $haveManaged) {
+            # The installer found a suitable Java on PATH and installed no
+            # managed one, so there is nothing to pin instead. Prism would
+            # launch with the broken pin: unpin, so that it chooses its own.
+            Write-Warn "$problem There is no managed JDK to pin instead, so the pin is cleared and Prism chooses its own Java."
+            Set-PrismCfgValues -Cfg $InstanceCfg -Values ([ordered]@{ OverrideJavaLocation = 'false' })
+            return
+        }
+        Write-Warn "$problem Replacing pin with the managed ARM64 JDK."
     }
+    if (-not $haveManaged) { return }
 
     Set-PrismCfgValues -Cfg $InstanceCfg -Values ([ordered]@{
         OverrideJavaLocation = 'true'
@@ -2275,21 +2461,49 @@ function Test-MsFabricProfileRegistered {
     return [bool]$json.profiles.PSObject.Properties[$key]
 }
 
+function Get-MsFabricProfileVersionId {
+    # The version id (lastVersionId) that the launcher profile registered under
+    # FABRIC_PROFILE_KEY launches, or $null when launcher_profiles.json has no
+    # such profile or it names none. The key names the Minecraft version only,
+    # so a profile that an install of another Fabric Loader build left shares
+    # it, and launches that build.
+    $lp = Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'
+    if (-not (Test-Path -LiteralPath $lp)) { return $null }
+    try {
+        # The launcher writes BOM-less UTF-8, which Windows PowerShell would
+        # otherwise decode in the ANSI code page.
+        $json = [System.IO.File]::ReadAllText($lp, [System.Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
+    } catch { return $null }
+    if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles) { return $null }
+    $entry = $json.profiles.PSObject.Properties[$script:FABRIC_PROFILE_KEY]
+    if (-not $entry -or -not $entry.Value.PSObject.Properties['lastVersionId']) { return $null }
+    return [string]$entry.Value.lastVersionId
+}
+
 function Initialize-MicrosoftLauncher {
     param([string]$JavaExe, [switch]$Unattended)
     if (-not (Test-Path -LiteralPath (Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'))) {
         throw 'Microsoft Minecraft launcher not detected. Install it first from https://www.minecraft.net/en-us/download'
     }
-    # Both conditions are required. Users who delete a Fabric profile entry in
-    # the launcher UI leave the versions/ dir behind; if we only checked that,
-    # we'd short-circuit and the launcher UI would have no entry to select.
+    # Both conditions are required: the versions/ dir, and a profile entry that
+    # launches it. Users who delete a Fabric profile entry in the launcher UI
+    # leave the versions/ dir behind; if we only checked that, we'd
+    # short-circuit and the launcher UI would have no entry to select. And the
+    # profile key names only the Minecraft version, so an entry can exist yet
+    # launch another Fabric Loader build than the pinned one (the version id,
+    # FABRIC_VERSION_ID), which would run the mod on that loader.
     $versionDir   = Join-Path $env:APPDATA ".minecraft\versions\$($script:FABRIC_VERSION_ID)"
     $hasVersion   = Test-Path -LiteralPath $versionDir
     $hasProfile   = Test-MsFabricProfileRegistered
-    if ($hasVersion -and $hasProfile) {
+    $profileLaunches = if ($hasProfile) { Get-MsFabricProfileVersionId } else { $null }
+    $profileIsPinned = $hasProfile -and $profileLaunches -eq $script:FABRIC_VERSION_ID
+    if ($hasVersion -and $profileIsPinned) {
         Write-Info "Reusing existing Fabric $($script:FABRIC_LOADER_VER) for MC $($script:MC_VERSION)"
     } else {
-        if ($hasVersion -and -not $hasProfile) {
+        if ($hasProfile -and -not $profileIsPinned) {
+            $launches = if ($profileLaunches) { $profileLaunches } else { 'no version' }
+            Write-Info "Launcher profile '$($script:FABRIC_PROFILE_KEY)' launches $launches, not $($script:FABRIC_VERSION_ID); re-running the Fabric installer to point it at the pinned loader."
+        } elseif ($hasVersion -and -not $hasProfile) {
             Write-Info "Fabric $($script:FABRIC_LOADER_VER) version dir exists but no launcher profile entry; re-running installer to re-register it."
         } else {
             Write-Info 'Downloading Fabric installer...'
@@ -2308,6 +2522,13 @@ function Initialize-MicrosoftLauncher {
         if ($LASTEXITCODE -ne 0) {
             $fabricOut | ForEach-Object { Write-Warn "$_" }
             throw 'Fabric installer execution failed (non-zero exit).'
+        }
+        # It sets the profile's version id every time it runs, so this is a
+        # guard against it having written somewhere else: a profile that
+        # still launches another build runs the mod on that loader.
+        $launches = Get-MsFabricProfileVersionId
+        if ($launches -and $launches -ne $script:FABRIC_VERSION_ID) {
+            Write-Warn "The Fabric installer finished, but launcher profile '$($script:FABRIC_PROFILE_KEY)' still launches $launches. Choose $($script:FABRIC_VERSION_ID) as its version in the launcher's profile editor."
         }
     }
     Set-MsLauncherProfileName
@@ -3002,7 +3223,7 @@ function Invoke-Uninstall {
             [pscustomobject]@{ Label = 'Leave everything else alone'; Hint = 'just removed mod files'; Value = 'none' }
         )
         if ($hasManagedJdk) {
-            $jdkHint = "Adoptium JDK $($script:GAME_JAVA_MAJOR) at $($script:MANAGED_JDK_DIR)"
+            $jdkHint = "$((Get-ManagedJdkSource).Name) $($script:GAME_JAVA_MAJOR) at $($script:MANAGED_JDK_DIR)"
             if (Test-HostIsArm64) {
                 # On ARM64 this JDK IS what Prism uses to launch (we pinned it).
                 # Removing it without replacing with another ARM64 JDK will make
@@ -3233,9 +3454,9 @@ Not included (intentionally):
 Notes:
 - The export includes the current remix-sdk/ and its version marker. A different
   mod version will refresh the bundled payload on the next launch.
-- On ARM64 Windows (WoA), install our managed Adoptium JDK via install.bat
-  before first launch. Mojang does not publish an ARM64 Windows JRE, so
-  Prism's Java Wizard cannot help there.
+- On ARM64 Windows (WoA), install our managed Microsoft Build of OpenJDK via
+  install.bat before first launch. Mojang does not publish an ARM64 Windows
+  JRE, so Prism's Java Wizard cannot help there.
 "@
     [System.IO.File]::WriteAllText(
         (Join-Path $stage 'README.txt'),

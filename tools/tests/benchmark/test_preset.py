@@ -69,14 +69,41 @@ class WriteOptionsTests(unittest.TestCase):
 
         self.assertEqual("16", options["renderDistance"])
         self.assertEqual("10", options["simulationDistance"])
-        self.assertEqual("2", options["graphicsMode"])
+        self.assertEqual('"fabulous"', options["graphicsPreset"])
 
     def test_unset_world_keys_default_to_the_ultra_world(self):
         options = self.written_options({})
 
         self.assertEqual("32", options["renderDistance"])
         self.assertEqual("12", options["simulationDistance"])
-        self.assertEqual("1", options["graphicsMode"])
+        self.assertEqual('"fancy"', options["graphicsPreset"])
+
+    def test_graphics_mode_keeps_its_numbers_and_picks_the_26_3_preset(self):
+        for mode, preset in ((0, "fast"), (1, "fancy"), (2, "fabulous"), ("2", "fabulous"), (" Fast ", "fast")):
+            with self.subTest(mode=mode):
+                options = self.written_options({"graphicsMode": mode})
+
+                self.assertEqual(f'"{preset}"', options["graphicsPreset"])
+                self.assertNotIn("graphicsMode", options)
+
+    def test_graphics_mode_also_writes_the_options_the_game_does_not_apply_for_a_preset(self):
+        # Minecraft sets a preset's other options only when it is chosen in Video Settings. These are the values its
+        # data fixer gives the options that 1.21.1's graphicsMode carried: 0 fast, 1 fancy, 2 fabulous.
+        expected = {
+            0: {"cutoutLeaves": "false", "weatherRadius": "5", "vignette": "false", "improvedTransparency": "false"},
+            1: {"cutoutLeaves": "true", "weatherRadius": "10", "vignette": "true", "improvedTransparency": "false"},
+            2: {"cutoutLeaves": "true", "weatherRadius": "10", "vignette": "true", "improvedTransparency": "true"},
+        }
+        for mode, values in expected.items():
+            with self.subTest(mode=mode):
+                options = self.written_options({"graphicsMode": mode})
+
+                self.assertEqual(values, {key: options[key] for key in values})
+
+    def test_a_graphics_mode_that_names_no_preset_fails_the_run(self):
+        for mode in (3, -1, 1.5, True, "ultra", ""):
+            with self.subTest(mode=mode), self.assertRaisesRegex(RuntimeError, "render.graphicsMode"):
+                self.written_options({"graphicsMode": mode})
 
     def test_shipped_config_keeps_shared_scene_defaults(self):
         render = runner.load_config()["render"]

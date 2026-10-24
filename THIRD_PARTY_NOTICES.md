@@ -144,9 +144,14 @@ their own licenses; it does not redistribute them.
   player's own installation
 - Fabric Loader and Fabric API (FabricMC), Apache License, Version 2.0;
   downloaded by the installer from FabricMC's Maven repository
-- Java 25 runtime: Eclipse Temurin (Eclipse Adoptium), GPL-2.0 with the
-  Classpath Exception; downloaded by the installer when no suitable JDK is
-  present
+- Java 25 runtime on Windows x64: Eclipse Temurin (Eclipse Adoptium),
+  GPL-2.0 with the Classpath Exception; downloaded by the installer when no
+  suitable JDK is present
+- Java 25 runtime on Windows ARM64: Microsoft Build of OpenJDK (Microsoft),
+  GPL-2.0 with the Classpath Exception; downloaded by the installer when no
+  suitable JDK is present, and checked against the SHA-256 Microsoft
+  publishes beside it. Eclipse Temurin publishes no Windows ARM64 build of
+  Java 25
 - Prism Launcher, GPL-3.0; downloaded by the installer from the project's
   GitHub releases when the player chooses Prism
 

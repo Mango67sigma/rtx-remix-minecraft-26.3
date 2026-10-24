@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
 import re
 import unittest
+import zipfile
 from pathlib import Path
 
-from rtx_tools.benchmark import util
+from rtx_tools import prism
+from rtx_tools.benchmark import runner, util
 
 REPO_ROOT = util.PROJECT_DIR
 
@@ -34,7 +37,57 @@ def powershell_literal(path: Path, variable: str) -> str:
     return match.group(1)
 
 
+def minecraft_client_jar() -> Path | None:
+    """The client jar that Loom caches for the Minecraft version build.gradle pins, or None before a Gradle build has
+    fetched it."""
+    gradle_home = os.environ.get("GRADLE_USER_HOME")
+    home = Path(gradle_home) if gradle_home else Path.home() / ".gradle"
+    jar = (
+        home / "caches" / "fabric-loom" / gradle_dependency_version("com.mojang", "minecraft") / "minecraft-client.jar"
+    )
+    return jar if jar.is_file() else None
+
+
+def java_major_in(path: Path, pattern: str) -> int:
+    """The one Java major that `pattern`, which captures it, finds in the file at `path`."""
+    found = {int(major) for major in re.findall(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)}
+    if len(found) != 1:
+        raise AssertionError(f"{path} should name one Java major through {pattern!r}, but names {sorted(found)}")
+    return found.pop()
+
+
+def java_majors() -> dict[str, int]:
+    """The Java major of every place that fixes one: the installer, the developer tools, the Gradle toolchain and
+    compiler release, the mod's metadata, the CI runner's JDK, and the mixin compatibility level."""
+    gradle = REPO_ROOT / "build.gradle"
+    resources = REPO_ROOT / "src" / "main" / "resources"
+    fabric_java = json.loads((resources / "fabric.mod.json").read_text(encoding="utf-8"))["depends"]["java"]
+    metadata_major = re.fullmatch(r">=(\d+)", fabric_java)
+    if metadata_major is None:
+        raise AssertionError(f"fabric.mod.json depends.java is {fabric_java!r}, not '>=<major>'")
+    return {
+        "installer.ps1 GAME_JAVA_MAJOR": java_major_in(
+            REPO_ROOT / "packaging" / "installer.ps1", r"^\$script:GAME_JAVA_MAJOR\s*=\s*(\d+)\s*$"
+        ),
+        "prism.py GAME_JAVA_MAJOR": prism.GAME_JAVA_MAJOR,
+        "build.gradle JavaLanguageVersion": java_major_in(gradle, r"JavaLanguageVersion\.of\((\d+)\)"),
+        "build.gradle options.release": java_major_in(gradle, r"options\.release\s*=\s*(\d+)"),
+        "fabric.mod.json depends.java": int(metadata_major.group(1)),
+        "build.yml java-version": java_major_in(
+            REPO_ROOT / ".github" / "workflows" / "build.yml", r'^\s*java-version:\s*"?(\d+)"?\s*$'
+        ),
+        "mixins.json compatibilityLevel": java_major_in(
+            resources / "rtx-remix-renderer.mixins.json", r'"compatibilityLevel":\s*"JAVA_(\d+)"'
+        ),
+    }
+
+
 class VersionConsistencyTests(unittest.TestCase):
+    def test_java_major_is_the_same_wherever_one_is_fixed(self):
+        majors = java_majors()
+
+        self.assertEqual(1, len(set(majors.values())), f"these disagree on the Java major: {majors}")
+
     def test_packaging_version_defaults_match_gradle(self):
         expected = gradle_mod_version()
         self.assertEqual(
@@ -63,6 +116,15 @@ class VersionConsistencyTests(unittest.TestCase):
             with self.subTest(path=path):
                 for component, variable in variables.items():
                     self.assertEqual(expected[component], powershell_literal(path, variable))
+
+    def test_options_data_version_is_the_one_of_the_pinned_game(self):
+        jar = minecraft_client_jar()
+        if jar is None:
+            self.skipTest("Loom has not cached the pinned Minecraft client jar on this machine")
+        with zipfile.ZipFile(jar) as archive:
+            world_version = json.loads(archive.read("version.json"))["world_version"]
+
+        self.assertEqual(world_version, runner.OPTIONS_DATA_VERSION)
 
     def test_runtime_code_does_not_hardcode_mod_version(self):
         benchmark_controller = (

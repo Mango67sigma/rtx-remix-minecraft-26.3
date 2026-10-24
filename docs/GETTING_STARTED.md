@@ -8,11 +8,13 @@ How to build and run the mod from source. If you only want to play, read
 - **Windows 10 or 11**, on x64 or ARM64. The JNI bridge is compiled with MSVC,
   so there is no Linux or macOS build.
 - **Java 25**, a JDK matching your machine's architecture. Eclipse Adoptium is
-  a good choice. Set `JAVA_HOME` to that JDK: the native build reads it to find
-  `jni.h`. Prism runs Minecraft 26.3 only on Java 25, not a newer version,
-  so the developer tools launch the game on `JAVA_HOME` when it is a JDK 25
-  and otherwise look for one in Gradle's toolchains and in the Eclipse
-  Adoptium, Microsoft, and Java folders under Program Files.
+  a good choice on x64. On ARM64, where Adoptium publishes no Windows build of
+  Java 25, use Microsoft Build of OpenJDK. Set `JAVA_HOME` to that JDK: the
+  native build reads it to find `jni.h`. Prism runs Minecraft 26.3 only on
+  Java 25, not a newer version, so the developer tools launch the game on
+  `JAVA_HOME` when it is a JDK 25 and otherwise look for one in Gradle's
+  toolchains and in the Eclipse Adoptium, Microsoft, and Java folders under
+  Program Files.
 - **Visual Studio 2022 Build Tools** with the Desktop development with C++
   workload (MSVC v143). Cross-building the ARM64 bridge additionally needs the
   toolset pinned in `rtxremix-java/native/build_native.bat` (currently 14.44).
