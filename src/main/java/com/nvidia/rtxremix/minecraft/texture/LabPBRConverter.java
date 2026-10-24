@@ -10,7 +10,7 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Map;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.packs.resources.Resource;
 import net.minecraft.server.packs.resources.ResourceManager;
 
@@ -494,19 +494,19 @@ public final class LabPBRConverter {
      * Snapshot of available LabPBR variant resources.
      *
      * <p>Missing {@code _n}/{@code _s} textures are the common case. Querying
-     * {@link ResourceManager#getResource(ResourceLocation)} for every possible
+     * {@link ResourceManager#getResource(Identifier)} for every possible
      * variant can make each resource pack throw and catch a miss internally,
      * which shows up as a large startup exception burst in JFR. Bulk atlas
      * builders should scan once and load from this map instead.
      */
     public static final class VariantCache {
-        private final Map<ResourceLocation, Resource> resources;
+        private final Map<Identifier, Resource> resources;
 
-        private VariantCache(Map<ResourceLocation, Resource> resources) {
+        private VariantCache(Map<Identifier, Resource> resources) {
             this.resources = resources;
         }
 
-        public NativeImage loadVariant(ResourceLocation spriteId, String suffix) {
+        public NativeImage loadVariant(Identifier spriteId, String suffix) {
             return loadResource(resources.get(variantId(spriteId, suffix)));
         }
 
@@ -519,7 +519,7 @@ public final class LabPBRConverter {
         return new VariantCache(rm.listResources("textures", LabPBRConverter::isVariantResource));
     }
 
-    private static boolean isVariantResource(ResourceLocation id) {
+    private static boolean isVariantResource(Identifier id) {
         String path = id.getPath();
         return path.endsWith("_n.png") || path.endsWith("_s.png") || path.endsWith("_sss.png");
     }
@@ -533,8 +533,8 @@ public final class LabPBRConverter {
         }
     }
 
-    private static ResourceLocation variantId(ResourceLocation spriteId, String suffix) {
-        return ResourceLocation.fromNamespaceAndPath(spriteId.getNamespace(), "textures/" + spriteId.getPath() + suffix + ".png");
+    private static Identifier variantId(Identifier spriteId, String suffix) {
+        return Identifier.fromNamespaceAndPath(spriteId.getNamespace(), "textures/" + spriteId.getPath() + suffix + ".png");
     }
 
     /**

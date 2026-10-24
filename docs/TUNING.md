@@ -237,7 +237,7 @@ instance gets Prism's global maximum, by default 4096 MiB on a machine with
 Path tracing does not remove Minecraft's allocation rate, it adds a render
 thread that must not be paused.
 
-These are the Minecraft 1.21.1 launcher defaults for supported Windows
+These were the Minecraft launcher's 1.21.1 defaults for supported Windows
 arches: a 2 GB heap with G1GC. Measured on N1X, they showed none of the large
 frame-time spikes seen with generational ZGC. Reducing allocation volume stays
 necessary regardless of collector, since concurrent collector work competes with

@@ -69,7 +69,7 @@ import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.BlockDestructionProgress;
 import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.entity.Entity;
@@ -158,7 +158,7 @@ public abstract class WorldRendererMixin
     private int rtxremix$blockEntityChunkBufferUsed;
     private final BuiltChunkArrayIterator rtxremix$blockEntityChunkIterator = new BuiltChunkArrayIterator();
     private RemixWeatherRenderer rtxremix$weatherRenderer;
-    private ResourceLocation rtxremix$weatherTexture;
+    private Identifier rtxremix$weatherTexture;
     private float[] rtxremix$starVertices = new float[0];
 
     @Override
@@ -564,11 +564,11 @@ public abstract class WorldRendererMixin
             method = "renderSnowAndRain",
             at = @At(
                     value = "INVOKE",
-                    target = "Lcom/mojang/blaze3d/systems/RenderSystem;setShaderTexture(ILnet/minecraft/resources/ResourceLocation;)V"
+                    target = "Lcom/mojang/blaze3d/systems/RenderSystem;setShaderTexture(ILnet/minecraft/resources/Identifier;)V"
             ))
     private void rtxremix$captureWeatherTexture(
             int textureUnit,
-            ResourceLocation texture,
+            Identifier texture,
             Operation<Void> original) {
         if (rtxremix$weatherRenderer != null && textureUnit == 0) {
             rtxremix$weatherTexture = texture;

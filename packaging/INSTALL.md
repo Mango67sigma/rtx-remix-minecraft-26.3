@@ -1,13 +1,13 @@
 # RTX Remix for Minecraft
 
-This archive installs a Fabric mod that renders Minecraft Java Edition 1.21.1
+This archive installs a Fabric mod that renders Minecraft Java Edition 26.3
 through NVIDIA RTX Remix. It sets up a launcher, Java,
 Fabric, the mod, and the RTX Remix runtime for you.
 
 ## What You Need
 
 - Windows 10 or 11, x64 or ARM64.
-- Minecraft Java Edition 1.21.1, on a Microsoft account that owns the game.
+- Minecraft Java Edition 26.3, on a Microsoft account that owns the game.
 - A GeForce RTX 30-series or newer GPU with NVIDIA driver 616.92 or newer.
 - About 5 GB of free disk space while installing; about 3 GB stays in use.
 - An internet connection while the installer runs.
@@ -52,7 +52,7 @@ one showcase world, built for this project by BlockWorks
 looks and runs best. It ships with known issues, tracked at
 <https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/issues>, and there are
 bugs yet to be found. It has had limited testing alongside other
-mods, it targets Minecraft 1.21.1 only, and blocks, mobs, dimensions, and
+mods, it targets Minecraft 26.3 only, and blocks, mobs, dimensions, and
 situations the showcase never reaches have had less care. When something
 breaks, report it (see below); that is how it gets fixed.
 
@@ -228,7 +228,7 @@ if you are wiping it anyway.
 | Windows SmartScreen warns about the Prism Launcher download | Prism Launcher is open-source and is not signed by Microsoft. Choose More info, then Run anyway. You can also install it yourself from <https://prismlauncher.org>, start it once, then re-run `install.bat`, which detects it |
 | The Prism download fails | Check the firewall and retry. The installer asks GitHub for the newest Prism release, and a shared network address can hit GitHub's anonymous rate limit. If GitHub reports a rate limit, wait before retrying |
 | `Download failed after 3 attempts from` followed by an Adoptium URL and the error details | The Adoptium API at `api.adoptium.net` has to be reachable. Check the firewall and re-run |
-| `Failed to extract JDK 21 archive:` followed by the error details | Check free disk space and the permissions on your temporary folder, then re-run the installer to download and extract a fresh archive |
+| `Failed to extract JDK 25 archive:` followed by the error details | Check free disk space and the permissions on your temporary folder, then re-run the installer to download and extract a fresh archive |
 | The Fabric API download fails | `maven.fabricmc.net` has to be reachable. Check the firewall and re-run |
 | The installer refuses to choose a launcher | Both Prism and the Microsoft launcher are installed and the run was headless. Pass `-Launcher Prism` or `-Launcher Microsoft` |
 

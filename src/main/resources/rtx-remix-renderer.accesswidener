@@ -1,13 +1,23 @@
-accessWidener v2 named
+accessWidener v2 official
 
 # SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Milestone A port rule: this file is split into sections, one per subsystem owner
+# (see the partition in the port notes). Edit only the section you own. Directives
+# whose targets no longer exist in 26.3 must be replaced or removed by their owner.
+
+# ===== section: core-frame =====
+
 # Camera access
 accessible method net/minecraft/client/renderer/GameRenderer getFov (Lnet/minecraft/client/Camera;FZ)D
 
+# ===== section: content =====
+
 # Deferred application for sliders that rebuild expensive resources
 accessible class net/minecraft/client/OptionInstance$SliderableValueSet
+
+# ===== section: entities =====
 
 # ModelPart inner classes for cuboid-level skinning
 accessible class net/minecraft/client/model/geom/ModelPart$Polygon
@@ -41,6 +51,8 @@ accessible field net/minecraft/client/renderer/RenderStateShard RENDERTYPE_TEXT_
 accessible field net/minecraft/client/renderer/RenderType$CompositeState depthTestState Lnet/minecraft/client/renderer/RenderStateShard$DepthTestStateShard;
 accessible field net/minecraft/client/renderer/RenderStateShard NO_DEPTH_TEST Lnet/minecraft/client/renderer/RenderStateShard$DepthTestStateShard;
 
+# ===== section: textures =====
+
 # SpriteContents animation data for flipbook texture extraction
 accessible class net/minecraft/client/renderer/texture/SpriteContents$AnimatedTexture
 accessible class net/minecraft/client/renderer/texture/SpriteContents$FrameInfo
@@ -48,6 +60,8 @@ accessible field net/minecraft/client/renderer/texture/SpriteContents animatedTe
 accessible field net/minecraft/client/renderer/texture/SpriteContents$AnimatedTexture frames Ljava/util/List;
 accessible field net/minecraft/client/renderer/texture/SpriteContents$FrameInfo index I
 accessible field net/minecraft/client/renderer/texture/SpriteContents$FrameInfo time I
+
+# ===== section: visibility =====
 
 # Allocation-free port of vanilla's chunk visibility walk (ChunkRenderingDataPreparerMixin)
 accessible class net/minecraft/client/renderer/SectionOcclusionGraph$SectionToNodeMap
@@ -69,6 +83,8 @@ accessible field net/minecraft/client/renderer/SectionOcclusionGraph$SectionToNo
 accessible field net/minecraft/client/renderer/SectionOcclusionGraph$Node sourceDirections B
 mutable field net/minecraft/client/renderer/SectionOcclusionGraph$Node step I
 
+# ===== section: terrain-state =====
+
 # Integrated-server light snapshot published as an overlay view (LightStorageMixin)
 accessible field net/minecraft/world/level/lighting/DataLayerStorageMap map Lit/unimi/dsi/fastutil/longs/Long2ObjectOpenHashMap;
 accessible field net/minecraft/world/level/lighting/SkyLightSectionStorage$SkyDataLayerStorageMap topSections Lit/unimi/dsi/fastutil/longs/Long2IntOpenHashMap;
@@ -79,6 +95,8 @@ accessible class net/minecraft/world/level/lighting/BlockLightSectionStorage$Blo
 accessible class net/minecraft/server/level/ServerChunkCache$ChunkAndHolder
 accessible method net/minecraft/server/level/ServerChunkCache$ChunkAndHolder <init> (Lnet/minecraft/world/level/chunk/LevelChunk;Lnet/minecraft/server/level/ChunkHolder;)V
 accessible field net/minecraft/server/level/ServerChunkCache$ChunkAndHolder chunk Lnet/minecraft/world/level/chunk/LevelChunk;
+
+# ===== section: terrain-capture =====
 
 # Render-region snapshot storage recycling (RenderedChunkMixin, PalettedContainerDataMixin)
 accessible class net/minecraft/client/renderer/chunk/RenderChunk

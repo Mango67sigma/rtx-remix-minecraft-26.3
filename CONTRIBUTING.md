@@ -217,22 +217,18 @@ real render-thread saving.
 
 ### Reading Vanilla Bytecode
 
-The Mojang-named merged JAR Loom already caches is enough for `javap`;
-generating all decompiled sources is not necessary. `build.gradle` selects
-`loom.officialMojangMappings()`, whose cache directory under
-`.gradle/loom-cache/minecraftMaven/` is named
-`<minecraft-version>-loom.mappings.<version>.layered+hash.<n>-v2`. Old
-mappings, including the Yarn ones the mod used before its migration to Mojang
-names, remain in the cache after a mappings change. The sibling
-`~/.gradle/caches/fabric-loom/<minecraft-version>/minecraft-merged.jar` is the
-obfuscated merge, not the Mojang-named one.
+Minecraft 26.1 and later ship unobfuscated, so the names in the game's own
+jar are the names the mod targets: no mappings, no refmap. The merged jar Loom
+caches is enough for `javap`; `gradlew genSources` additionally writes a
+decompiled sources jar next to the processed jar under
+`.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-merged-<hash>/26.3/`.
+Earlier versions and the Yarn- or Mojang-mapped jars of the 1.21.1 era remain
+in the cache after a version bump; check the version in the path.
 
-For the currently pinned mapping, a Git Bash example is:
+A Git Bash example:
 
 ```bash
-merged=.gradle/loom-cache/minecraftMaven/net/minecraft
-jar=$(ls "$merged"/minecraft-merged-*/1.21.1-loom.mappings.*/minecraft-merged-*.jar | head -1)
-javap -p -c -classpath "$jar" com.mojang.blaze3d.vertex.VertexConsumer
+javap -p -c -classpath ~/.gradle/caches/fabric-loom/26.3/minecraft-merged.jar com.mojang.blaze3d.vertex.VertexConsumer
 ```
 
 If you need to search all callers of a descriptor, extract the whole JAR into
@@ -245,7 +241,7 @@ the extraction afterwards. Do not leave thousands of class files in the tree.
 
 `Mixing X from ... into net.minecraft...` in `run/logs/debug.log` proves
 registration, not an applied injection or an executed target. The check reads
-Loom's Mojang-named development client, which `runClient`, Fabric's standard
+Loom's development client, which `runClient`, Fabric's standard
 Gradle task, starts from `run/`. Temporarily add `-Dmixin.debug.export=true` to
 the client `vmArgs` in `build.gradle`, launch `runClient`, and disassemble the
 transformed class under
@@ -257,9 +253,8 @@ An `@Inject` merges a `handler$<id>$rtx-remix-renderer$<handler name>` method
 and a call at the intended offset: `invokespecial` for a private instance
 handler, `invokestatic` for a static one. If the call is present but does not
 fire, investigate vanilla's frustum, dimension, cloud-mode and weather gates.
-Exports and the classes loaded from `build/classes/` use Mojang names. The
-remapped JAR in `build/libs/` instead embeds intermediary `method_NNNNN` names
-in injection annotations. Remove the diagnostic flag and export afterwards.
+Exports, the classes loaded from `build/classes/`, and the JAR in
+`build/libs/` all use the game's own names; nothing is remapped. Remove the diagnostic flag and export afterwards.
 
 ## Tests
 
@@ -280,7 +275,7 @@ position, are the most useful thing you can attach.
 
 For wrapper changes, the same root Gradle workflow compiles the shim with its
 mod callers and builds the bridge into `build/native/{win64|arm64}/`.
-Visual Studio C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 21 are
+Visual Studio C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 25 are
 required. Gradle fetches the pinned runtime automatically when it is missing.
 Use `.\tools\rtx.bat sdk local --path <runtime dir> --arch win64` for a local build,
 as described in [Getting Started](docs/GETTING_STARTED.md#get-a-runtime).
@@ -373,7 +368,7 @@ runners. [`check`](.github/workflows/check.yml) installs uv and runs
 `tools\rtx.bat check --tests`: Ruff formatting and lint, ty, the Python tests,
 and the public-boundary gate. On a pull request it also scans the commit
 messages from the base SHA to the head SHA.
-[`build`](.github/workflows/build.yml) installs JDK 21 and runs
+[`build`](.github/workflows/build.yml) installs JDK 25 and runs
 `gradlew.bat build test`. Both use read-only repository permissions and no
 secrets, including for fork pull requests. The build fetches the pinned
 runtime from public Packman, so it needs no credentials; never add private

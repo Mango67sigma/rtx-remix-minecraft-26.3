@@ -144,7 +144,7 @@ their own licenses; it does not redistribute them.
   player's own installation
 - Fabric Loader and Fabric API (FabricMC), Apache License, Version 2.0;
   downloaded by the installer from FabricMC's Maven repository
-- Java 21 runtime: Eclipse Temurin (Eclipse Adoptium), GPL-2.0 with the
+- Java 25 runtime: Eclipse Temurin (Eclipse Adoptium), GPL-2.0 with the
   Classpath Exception; downloaded by the installer when no suitable JDK is
   present
 - Prism Launcher, GPL-3.0; downloaded by the installer from the project's

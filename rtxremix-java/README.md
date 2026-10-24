@@ -35,7 +35,7 @@ The repository's root Gradle project compiles these Java sources directly with
 the mod and builds `remixbridge.dll`. There is no separate wrapper Java build
 or example launcher. The mod is a consumer of the shim, not a dependency of it.
 
-Building requires Windows, a 64-bit JDK 21 with `JAVA_HOME` set to it, and
+Building requires Windows, a 64-bit JDK 25 with `JAVA_HOME` set to it, and
 Visual Studio C++ tools. Running also requires a supported NVIDIA RTX GPU and
 a runtime matching the copied C API header. The root paths are:
 

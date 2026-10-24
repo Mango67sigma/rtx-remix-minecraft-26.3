@@ -14,7 +14,9 @@ from pathlib import Path
 from ._diag_win32 import ProcessInfo, Win32, WindowInfo
 from .benchmark import util
 
-_GAME_TITLE = re.compile(r"^Minecraft\*? 1\.")
+# The window title is "Minecraft", a "*" when modded, a space, then the version name (26.3, for example). A version
+# name starts with a digit, so the launcher's "Minecraft Launcher" window does not match.
+_GAME_TITLE = re.compile(r"^Minecraft\*? \d")
 # A full dump holds all of the game's memory, which includes the session token of the account it plays as.
 DUMP_PRIVACY_NOTE = (
     "  native.dmp holds the game's memory, including your signed-in Minecraft session: do not share it publicly."
