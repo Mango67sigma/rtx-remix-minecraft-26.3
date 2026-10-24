@@ -12,8 +12,8 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
 /**
- * Vanilla's {@code calculateColor} averages the biome colour over the blend radius and
- * allocates a {@code BlockPos.Mutable} to walk it. It runs once per block position per colour
+ * Vanilla's {@code calculateBlockTint} averages the biome colour over the blend radius and
+ * allocates a {@code BlockPos.MutableBlockPos} to walk it. It runs once per block position per colour
  * type on every section build, on the shared workers, so the position is kept per thread
  * instead. It never escapes the method: the colour resolver receives its coordinates as ints.
  */

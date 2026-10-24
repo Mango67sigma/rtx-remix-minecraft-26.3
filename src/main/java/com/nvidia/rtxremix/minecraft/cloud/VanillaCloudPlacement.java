@@ -13,8 +13,25 @@ final class VanillaCloudPlacement {
     static final double VIEW_DISTANCE = CloudPlacement.VIEW_DISTANCE;
     static final double DRIFT_PER_TICK = 0.03;
     static final double Z_PHASE = 0.33;
+    /**
+     * Ticks the drift takes to cross {@link #WORLD_PERIOD}: vanilla's 400 ticks per 12-block
+     * cell ({@code CloudRenderer.TICKS_PER_CELL}) times the 256 cells of the period.
+     */
+    static final long DRIFT_PERIOD_TICKS = 256L * 400L;
 
     private VanillaCloudPlacement() {
+    }
+
+    /**
+     * Returns the drift clock vanilla 26.3's {@code CloudRenderer.prepare} derives from the
+     * synchronized game time: {@code gameTime % (textureWidth * 400) + partialTicks}. 1.21.1
+     * drove the drift from {@code LevelRenderer.ticks}, a client-local counter, so two clients
+     * disagreed about where the clouds were; 26.3 moved vanilla to game time and the mod follows.
+     * Wrapping at the period keeps the value small enough for float-precise placement, and since
+     * the drift crosses exactly one {@link #WORLD_PERIOD} per wrap, the wrap is seamless.
+     */
+    static double driftTicks(long gameTime, float partialTicks) {
+        return Math.floorMod(gameTime, DRIFT_PERIOD_TICKS) + (double) partialTicks;
     }
 
     /**

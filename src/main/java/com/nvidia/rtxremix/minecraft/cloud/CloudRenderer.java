@@ -34,7 +34,11 @@ import net.minecraft.client.CloudStatus;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.resources.Identifier;
+import net.minecraft.util.ARGB;
+import net.minecraft.world.attribute.EnvironmentAttributeProbe;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Vector4fc;
 
 /**
  * Renders either deterministic Perlin-Worley clouds or the voxelized vanilla
@@ -56,8 +60,6 @@ public final class CloudRenderer {
     private static final double CURVATURE_RADIUS = 8000.0;
     private static final float DEFAULT_VANILLA_EDGE_SMOOTHNESS = 1.5f;
     private static final float VANILLA_BASE_THICKNESS = 4.0f;
-    /** Vanilla's small offset above the nominal cloud height, which avoids z-fighting with block tops. */
-    private static final float VANILLA_LAYER_LIFT = 0.33f;
     private static final float DEFAULT_CLOUD_SIZE = 1.0f;
     private static final float DEFAULT_CLOUDS_HEIGHT = 0.0f;
     private static final int INSTANCE_CATEGORIES = InstanceCategoryBit.IGNORE_BAKED_LIGHTING;
@@ -126,24 +128,33 @@ public final class CloudRenderer {
         }
 
         Minecraft client = Minecraft.getInstance();
-        float cloudHeight = world.effects().getCloudHeight();
-        if (client.options.getCloudsType() == CloudStatus.OFF
-                || Float.isNaN(cloudHeight)) {
+        // 26.3 has no DimensionSpecialEffects: vanilla reads the cloud colour and height from
+        // environment attributes through the camera's probe (LevelExtractor), and a dimension
+        // without clouds is one whose CLOUD_COLOR is fully transparent, where 1.21.1 answered a
+        // NaN cloud height. CLOUD_HEIGHT already carries the 0.33 lift above block tops that
+        // 1.21.1 added to the dimension's 192 (the overworld answers 192.33), and vanilla puts
+        // the cloud bottom there exactly, so no lift is added here.
+        EnvironmentAttributeProbe attributes = client.gameRenderer.mainCamera().attributeProbe();
+        Vector4fc vanillaCloudColor = attributes.getValue(EnvironmentAttributes.CLOUD_COLOR, tickDelta);
+        if (client.options.getCloudStatus() == CloudStatus.OFF
+                || ARGB.alpha(ARGB.colorFromVector4f(vanillaCloudColor)) <= 0) {
             releaseResources();
             return;
         }
+        float cloudHeight = attributes.getValue(EnvironmentAttributes.CLOUD_HEIGHT, tickDelta);
         if (!shouldSuppressVanillaClouds()) {
             return;
         }
-        updateCloudColor(world.getCloudColor(tickDelta));
+        updateCloudColor(vanillaCloudColor);
 
         if (!proceduralClouds) {
             completedPaletteMeshes.clear();
             clouds.clear();
             visibleKeys.clear();
-            int cloudTicks =
-                    ((WorldRendererCloudAccess) client.levelRenderer).rtxremix$getCloudTicks();
-            drawVanillaClouds(cameraPos, cloudHeight, cloudTicks + (double) tickDelta);
+            drawVanillaClouds(
+                    cameraPos,
+                    cloudHeight,
+                    VanillaCloudPlacement.driftTicks(world.getGameTime(), tickDelta));
             return;
         }
 
@@ -391,7 +402,7 @@ public final class CloudRenderer {
                 for (int y = 0; y < vanillaTextureHeight; y++) {
                     for (int x = 0; x < vanillaTextureWidth; x++) {
                         vanillaOccupancy[y * vanillaTextureWidth + x] =
-                                ((image.getPixelRGBA(x, y) >>> 24) & 0xff) >= 128;
+                                ((image.getPixel(x, y) >>> 24) & 0xff) >= 128;
                     }
                 }
             }
@@ -515,8 +526,8 @@ public final class CloudRenderer {
         materialColor = cloudColor;
     }
 
-    private void updateCloudColor(Vec3 color) {
-        int packedColor = packCloudColor(color.x, color.y, color.z);
+    private void updateCloudColor(Vector4fc color) {
+        int packedColor = packCloudColor(color.x(), color.y(), color.z());
         cloudColor = packedColor;
         if (material == null || material.isDeleted() || materialColor == packedColor) {
             return;
@@ -602,7 +613,7 @@ public final class CloudRenderer {
                     matrix[4] = 0.0f;
                     matrix[5] = 1.0f;
                     matrix[6] = 0.0f;
-                    matrix[7] = cloudHeight + cloudsHeight + VANILLA_LAYER_LIFT;
+                    matrix[7] = cloudHeight + cloudsHeight;
                     matrix[8] = 0.0f;
                     matrix[9] = 0.0f;
                     matrix[10] = 1.0f;
@@ -661,7 +672,6 @@ public final class CloudRenderer {
                 - Math.sqrt(CURVATURE_RADIUS * CURVATURE_RADIUS - clampedDistanceSquared);
         float worldY = cloudHeight
                 + cloudsHeight
-                + VANILLA_LAYER_LIFT
                 + placement.altitudeOffset()
                 - (float) curvatureDrop;
         float scale = placement.scale() * cloudSize;

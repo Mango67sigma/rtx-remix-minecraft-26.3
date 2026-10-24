@@ -34,6 +34,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * which is what the first version of this mixin did (0.67 GB of Integer over a benchmark
  * run). Each cache is one volatile reference to an immutable holder, so a worker that sees
  * the holder sees a colour and the generation it belongs to together.
+ *
+ * <p>26.3 rewrote {@code getGrassColor} to test the override with {@code isPresent()}, so the
+ * grass path no longer allocates a method reference; caching it still skips the override
+ * lookup and the colormap read. {@code getFoliageColor} keeps the {@code orElseGet} form.
+ * 26.3's new {@code getDryFoliageColor} has the same shape and is not cached here.
  */
 @Mixin(Biome.class)
 public abstract class BiomeMixin {
@@ -55,7 +60,7 @@ public abstract class BiomeMixin {
 
     @Inject(method = "getGrassColor", at = @At("RETURN"))
     private void rtxremix$rememberGrassColor(double x, double z, CallbackInfoReturnable<Integer> cir) {
-        if (specialEffects.getGrassColorModifier() == BiomeSpecialEffects.GrassColorModifier.NONE) {
+        if (specialEffects.grassColorModifier() == BiomeSpecialEffects.GrassColorModifier.NONE) {
             rtxremix$grass = new BiomeColorGeneration.Cached(BiomeColorGeneration.current(), cir.getReturnValue());
         }
     }

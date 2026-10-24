@@ -90,6 +90,34 @@ class VanillaCloudPlacementTest {
                 1.0e-9);
     }
 
+    @Test
+    void driftClockFollowsVanillaGameTimeWrapAndIsSeamless() {
+        assertEquals(256L * 400L, VanillaCloudPlacement.DRIFT_PERIOD_TICKS);
+        assertEquals(
+                VanillaCloudPlacement.WORLD_PERIOD,
+                VanillaCloudPlacement.DRIFT_PERIOD_TICKS * VanillaCloudPlacement.DRIFT_PER_TICK,
+                1.0e-6);
+        assertEquals(10.25, VanillaCloudPlacement.driftTicks(10L, 0.25f), 1.0e-9);
+        assertEquals(
+                10.25,
+                VanillaCloudPlacement.driftTicks(
+                        3L * VanillaCloudPlacement.DRIFT_PERIOD_TICKS + 10L, 0.25f),
+                1.0e-9);
+
+        long beforeWrap = VanillaCloudPlacement.DRIFT_PERIOD_TICKS - 1L;
+        List<VanillaCloudPlacement.Placement> before = placements(
+                0.0, 0.0, VanillaCloudPlacement.driftTicks(beforeWrap, 1.0f));
+        List<VanillaCloudPlacement.Placement> after = placements(
+                0.0, 0.0, VanillaCloudPlacement.driftTicks(beforeWrap + 1L, 0.0f));
+        VanillaCloudPlacement.Placement origin = before.stream()
+                .filter(placement -> placement.textureX() == 0 && placement.textureZ() == 0)
+                .findFirst()
+                .orElseThrow();
+        assertTrue(after.stream().anyMatch(placement -> placement.textureKey() == origin.textureKey()
+                && Math.abs(placement.x() - origin.x()) < 1.0e-6
+                && Math.abs(placement.z() - origin.z()) < 1.0e-9));
+    }
+
     private static List<VanillaCloudPlacement.Placement> placements(
             double cameraX, double cameraZ, double worldTime) {
         return placements(cameraX, cameraZ, worldTime, TEXTURE_SIZE, TEXTURE_SIZE);
