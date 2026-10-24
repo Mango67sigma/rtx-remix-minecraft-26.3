@@ -84,7 +84,7 @@ class CopperBeaconBlockEntityRendererTest {
                     continue;
                 }
                 matrices.pushPose();
-                matrices.mulPose(
+                matrices.rotate(
                         CopperBeaconBlockEntityRenderer.mountingRotation(mount, forward));
                 for (float yaw : angles) {
                     for (float pitch : angles) {

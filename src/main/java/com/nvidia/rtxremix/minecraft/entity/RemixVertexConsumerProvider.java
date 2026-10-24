@@ -7,34 +7,33 @@ package com.nvidia.rtxremix.minecraft.entity;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.resources.Identifier;
 
 /**
- * The {@link MultiBufferSource} every Remix capture pass renders into.
+ * The per-layer consumer pool every Remix capture pass renders into.
  *
- * <p>Stands in for the vanilla {@code VertexConsumerProvider.Immediate} while an
- * entity, the first-person model or a block entity is rendered for Remix. For each
- * {@link RenderType} requested via {@link #getBuffer(RenderType)}, it returns a
- * part-recording {@link RemixCapturingConsumer} that records vertices alongside the
- * layer's texture {@link Identifier}.
+ * <p>Vanilla no longer hands renderers a {@code MultiBufferSource}: a renderer submits
+ * its models, items and text to a {@code SubmitNodeCollector}, and the feature
+ * renderers write vertices later, grouped by {@link RenderType}. The capture runs
+ * those writes at once instead, through {@link RemixSubmitNodeCollector}, which asks
+ * this provider for the consumer of each {@link RenderType} it is handed via
+ * {@link #getBuffer(RenderType)}: a part-recording {@link RemixCapturingConsumer} that
+ * records vertices alongside the layer's texture {@link Identifier}.
  *
  * <h3>Usage per capture</h3>
  * <ol>
  *   <li>Call {@link #beginEntity()} before rendering</li>
- *   <li>Pass this provider to the vanilla renderer</li>
+ *   <li>Render through a {@link RemixSubmitNodeCollector} over this provider</li>
  *   <li>Call {@link #endEntity()} after rendering; it returns all captured layers</li>
  * </ol>
  */
-public class RemixVertexConsumerProvider implements MultiBufferSource {
+public class RemixVertexConsumerProvider {
 
     /**
-     * Consumers created during the current entity's render, keyed by RenderLayer, in
+     * Consumers created during the current entity's render, keyed by RenderType, in
      * request order. Multiple layers per entity are common (body + eyes + glint) but the
      * count is small, so parallel arrays with a linear scan replace a map: a map entry per
      * layer per entity was a steady allocation on the render thread.
@@ -88,11 +87,14 @@ public class RemixVertexConsumerProvider implements MultiBufferSource {
         return resultBuffer;
     }
 
-    // ---- VertexConsumerProvider ----
+    // ---- Consumer lookup ----
 
-    @Override
+    /**
+     * The consumer that captures {@code layer}, or a sink that drops everything for a
+     * layer Remix cannot draw. Repeated requests for one layer within an entity share a
+     * consumer (left arm and right arm, for instance).
+     */
     public VertexConsumer getBuffer(RenderType layer) {
-        // Reuse consumer for same layer within one entity (e.g. left arm + right arm)
         for (int i = 0; i < activeCount; i++) {
             if (activeLayers[i].equals(layer)) {
                 return activeConsumers[i];
@@ -105,7 +107,7 @@ public class RemixVertexConsumerProvider implements MultiBufferSource {
             textureId = texOpt.get();
         } else if (RenderLayerUtils.isCapturableUntexturedLayer(layer)) {
             // Shaded entirely by vertex colour, so it needs an identity to hang a
-            // material on but no texture of its own. In 1.21.1 the lead is the only
+            // material on but no texture of its own. In 26.3 the lead is the only
             // layer that reaches this.
             textureId = RenderLayerUtils.UNTEXTURED_LAYER_ID;
         } else {
@@ -138,7 +140,7 @@ public class RemixVertexConsumerProvider implements MultiBufferSource {
     // ---- Result container ----
 
     /**
-     * Captured vertex data for a single RenderLayer within an entity render: a view of the
+     * Captured vertex data for a single RenderType within an entity render: a view of the
      * consumer that captured it, holding its flat arrays directly (no copy). One instance
      * lives with each pooled consumer and is re-pointed per entity, so a frame of entity
      * capture allocates no layer objects. Valid until the provider's next
@@ -174,9 +176,12 @@ public class RemixVertexConsumerProvider implements MultiBufferSource {
         static final NoOpVertexConsumer INSTANCE = new NoOpVertexConsumer();
         @Override public VertexConsumer addVertex(float x, float y, float z) { return this; }
         @Override public VertexConsumer setColor(int r, int g, int b, int a) { return this; }
+        @Override public VertexConsumer setColor(int color) { return this; }
         @Override public VertexConsumer setUv(float u, float v) { return this; }
         @Override public VertexConsumer setUv1(int u, int v) { return this; }
         @Override public VertexConsumer setUv2(int u, int v) { return this; }
+        @Override public VertexConsumer setUv3(float u, float v) { return this; }
         @Override public VertexConsumer setNormal(float x, float y, float z) { return this; }
+        @Override public VertexConsumer setLineWidth(float width) { return this; }
     }
 }

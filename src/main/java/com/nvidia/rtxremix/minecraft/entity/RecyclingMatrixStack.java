@@ -5,74 +5,42 @@
 package com.nvidia.rtxremix.minecraft.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.nvidia.rtxremix.minecraft.mixin.MatrixStackAccessor;
-import com.nvidia.rtxremix.minecraft.mixin.MatrixStackEntryAccessor;
 import org.joml.Quaternionf;
-
-import java.util.ArrayDeque;
-import java.util.Deque;
 
 /**
  * Matrix stack dedicated to Remix entity capture.
  *
- * <p>Vanilla allocates an entry, a position matrix, and a normal matrix for
- * every {@link #pushPose()}. Entity models repeat that traversal every frame, so
- * popped entries are retained here and copied back into service on the next
- * push. The pool belongs to this stack and therefore never changes vanilla
- * rendering outside the capture pass.
+ * <p>Vanilla's {@link PoseStack} keeps its popped entries since 26.x and copies the
+ * parent back into them on the next push, so a model traversal no longer allocates
+ * an entry per push and this stack no longer pools them itself. What it still owns
+ * is the per-part rotation: {@code ModelPart.translateAndRotate} builds a fresh
+ * quaternion for every rotated part, and {@code ModelPartMixin} routes a part
+ * rendered on this stack through {@link #applyModelPartTransform} instead, which
+ * reuses one. The stack also knows how to return to its identity root after a
+ * capture, whether the renderer returned normally or threw.
  */
 public final class RecyclingMatrixStack extends PoseStack {
 
-    private final Deque<Pose> recycledEntries = new ArrayDeque<>();
     private final Quaternionf modelPartRotation = new Quaternionf();
-
-    @Override
-    public void pushPose() {
-        Deque<Pose> stack = stack();
-        Pose previous = stack.getLast();
-        Pose next = recycledEntries.pollLast();
-        if (next == null) {
-            super.pushPose();
-            return;
-        }
-
-        next.pose().set(previous.pose());
-        next.normal().set(previous.normal());
-        boolean canSkipNormalization = ((MatrixStackEntryAccessor) (Object) previous)
-                .rtxremix$getCanSkipNormalization();
-        ((MatrixStackEntryAccessor) (Object) next)
-                .rtxremix$setCanSkipNormalization(canSkipNormalization);
-        stack.addLast(next);
-    }
-
-    @Override
-    public void popPose() {
-        recycledEntries.addLast(stack().removeLast());
-    }
 
     /** Restores the identity root after a normal render or renderer exception. */
     void reset() {
-        Deque<Pose> stack = stack();
-        while (stack.size() > 1) {
-            recycledEntries.addLast(stack.removeLast());
+        while (!isEmpty()) {
+            popPose();
         }
         setIdentity();
     }
 
-    /** Applies vanilla's {@code ModelPart.rotate} transform without allocating a quaternion. */
+    /** Applies vanilla's {@code ModelPart.translateAndRotate} transform without allocating a quaternion. */
     public void applyModelPartTransform(float pivotX, float pivotY, float pivotZ,
                                         float pitch, float yaw, float roll,
                                         float xScale, float yScale, float zScale) {
         translate(pivotX / 16.0F, pivotY / 16.0F, pivotZ / 16.0F);
         if (pitch != 0.0F || yaw != 0.0F || roll != 0.0F) {
-            mulPose(modelPartRotation.rotationZYX(roll, yaw, pitch));
+            rotate(modelPartRotation.rotationZYX(roll, yaw, pitch));
         }
         if (xScale != 1.0F || yScale != 1.0F || zScale != 1.0F) {
             scale(xScale, yScale, zScale);
         }
-    }
-
-    private Deque<Pose> stack() {
-        return ((MatrixStackAccessor) (Object) this).rtxremix$getStack();
     }
 }

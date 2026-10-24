@@ -20,37 +20,16 @@ accessible class net/minecraft/client/OptionInstance$SliderableValueSet
 
 # ===== section: entities =====
 
-# ModelPart inner classes for cuboid-level skinning
+# ModelPart inner records for cuboid-level capture. Fabric's transitive widener opens
+# them too; these keep the capture independent of it.
 accessible class net/minecraft/client/model/geom/ModelPart$Polygon
 accessible class net/minecraft/client/model/geom/ModelPart$Vertex
-accessible field net/minecraft/client/model/geom/ModelPart$Cube polygons [Lnet/minecraft/client/model/geom/ModelPart$Polygon;
-accessible field net/minecraft/client/model/geom/ModelPart$Polygon vertices [Lnet/minecraft/client/model/geom/ModelPart$Vertex;
-accessible field net/minecraft/client/model/geom/ModelPart$Polygon normal Lorg/joml/Vector3f;
-accessible field net/minecraft/client/model/geom/ModelPart$Vertex pos Lorg/joml/Vector3f;
-accessible field net/minecraft/client/model/geom/ModelPart$Vertex u F
-accessible field net/minecraft/client/model/geom/ModelPart$Vertex v F
 
-# SpriteTexturedVertexConsumer unwrap, so sprite-wrapped cuboids reach the capture as cuboids
-accessible field net/minecraft/client/renderer/SpriteCoordinateExpander delegate Lcom/mojang/blaze3d/vertex/VertexConsumer;
-accessible field net/minecraft/client/renderer/SpriteCoordinateExpander sprite Lnet/minecraft/client/renderer/texture/TextureAtlasSprite;
-
-# RenderLayer texture extraction (for entity material identity)
-accessible method net/minecraft/client/renderer/RenderType$CompositeRenderType state ()Lnet/minecraft/client/renderer/RenderType$CompositeState;
-accessible field net/minecraft/client/renderer/RenderType$CompositeState textureState Lnet/minecraft/client/renderer/RenderStateShard$EmptyTextureStateShard;
-accessible field net/minecraft/client/renderer/RenderType$CompositeState shaderState Lnet/minecraft/client/renderer/RenderStateShard$ShaderStateShard;
-accessible field net/minecraft/client/renderer/RenderType$CompositeState transparencyState Lnet/minecraft/client/renderer/RenderStateShard$TransparencyStateShard;
-accessible method net/minecraft/client/renderer/RenderStateShard$TextureStateShard cutoutTexture ()Ljava/util/Optional;
-accessible field net/minecraft/client/renderer/RenderStateShard ADDITIVE_TRANSPARENCY Lnet/minecraft/client/renderer/RenderStateShard$TransparencyStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard TRANSLUCENT_TRANSPARENCY Lnet/minecraft/client/renderer/RenderStateShard$TransparencyStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard CRUMBLING_TRANSPARENCY Lnet/minecraft/client/renderer/RenderStateShard$TransparencyStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard RENDERTYPE_BEACON_BEAM_SHADER Lnet/minecraft/client/renderer/RenderStateShard$ShaderStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard RENDERTYPE_ENTITY_SOLID_SHADER Lnet/minecraft/client/renderer/RenderStateShard$ShaderStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard RENDERTYPE_ENTITY_TRANSLUCENT_EMISSIVE_SHADER Lnet/minecraft/client/renderer/RenderStateShard$ShaderStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard RENDERTYPE_EYES_SHADER Lnet/minecraft/client/renderer/RenderStateShard$ShaderStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard RENDERTYPE_TEXT_SHADER Lnet/minecraft/client/renderer/RenderStateShard$ShaderStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard RENDERTYPE_TEXT_INTENSITY_SHADER Lnet/minecraft/client/renderer/RenderStateShard$ShaderStateShard;
-accessible field net/minecraft/client/renderer/RenderType$CompositeState depthTestState Lnet/minecraft/client/renderer/RenderStateShard$DepthTestStateShard;
-accessible field net/minecraft/client/renderer/RenderStateShard NO_DEPTH_TEST Lnet/minecraft/client/renderer/RenderStateShard$DepthTestStateShard;
+# RenderSetup texture extraction (for entity material identity): the setup behind a
+# RenderType and the sampler-name to texture map it binds.
+accessible field net/minecraft/client/renderer/rendertype/RenderType state Lnet/minecraft/client/renderer/rendertype/RenderSetup;
+accessible field net/minecraft/client/renderer/rendertype/RenderSetup textures Ljava/util/Map;
+accessible class net/minecraft/client/renderer/rendertype/RenderSetup$TextureBinding
 
 # ===== section: textures =====
 

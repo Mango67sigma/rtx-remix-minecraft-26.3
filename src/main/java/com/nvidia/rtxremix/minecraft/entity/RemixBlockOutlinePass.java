@@ -15,11 +15,13 @@ import com.nvidia.rtxremix.minecraft.asset.RemixMaterialStore;
 import com.nvidia.rtxremix.minecraft.asset.RemixMesh;
 import com.nvidia.rtxremix.minecraft.asset.RemixMeshStore;
 import com.nvidia.rtxremix.minecraft.asset.RemixMeshSurface;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.state.level.BlockOutlineRenderState;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.client.renderer.state.level.LevelRenderState;
 import net.minecraft.core.BlockPos;
-import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,8 +34,16 @@ import java.util.List;
  * voxel-shape edge becomes a thin camera-facing ribbon. Its dynamic mesh is
  * recreated for each captured outline because the Remix scene API exposes
  * immutable mesh geometry. The instance is submitted only in frames where
- * Fabric reports a block outline. {@link InstanceCategoryBit#WORLD_UI} applies
+ * vanilla submits a block outline. {@link InstanceCategoryBit#WORLD_UI} applies
  * Remix's world-UI material treatment while preserving scene depth testing.
+ *
+ * <p>The outline is read from the {@link LevelRenderState} vanilla extracted for
+ * the frame, at the point {@code LevelRenderer.submitBlockOutline} submits it:
+ * {@code LevelRendererBlockOutlineMixin} calls {@link #captureActive} there and
+ * {@link #beginActiveFrame} at the start of every feature submit, so a frame in
+ * which vanilla submits no outline carries none over. The live pass registers
+ * itself as the active one on construction, the way the entity submitter does, so
+ * the mixin needs no path through the renderer that owns it.
  */
 public final class RemixBlockOutlinePass implements AutoCloseable {
     // Matches Minecraft's VIEW_OFFSET_Z_LAYERING transform. Pulling the
@@ -52,6 +62,8 @@ public final class RemixBlockOutlinePass implements AutoCloseable {
     private static final int DOUBLE_SIDED = 1;
     private static final long NO_INSTANCE_EXTENSION = 0L;
 
+    private static RemixBlockOutlinePass active;
+
     private final RemixAPI api;
     private final Transform instanceTransform = new Transform();
 
@@ -61,45 +73,58 @@ public final class RemixBlockOutlinePass implements AutoCloseable {
 
     public RemixBlockOutlinePass(RemixAPI api) {
         this.api = api;
+        active = this;
+    }
+
+    /** Clears the live pass's capture at the start of a vanilla feature submit; see {@link #beginFrame}. */
+    public static void beginActiveFrame() {
+        RemixBlockOutlinePass pass = active;
+        if (pass != null) {
+            pass.beginFrame();
+        }
+    }
+
+    /** Captures the frame's outline into the live pass, if one exists; see {@link #captureBlockOutline}. */
+    public static void captureActive(LevelRenderState levelRenderState) {
+        RemixBlockOutlinePass pass = active;
+        if (pass != null) {
+            pass.captureBlockOutline(levelRenderState);
+        }
     }
 
     /**
-     * Starts a new vanilla world-render frame. The mesh remains allocated, but
-     * the captured outline does not carry over if Fabric omits the callback.
+     * Starts a new vanilla level-render frame. The mesh remains allocated, but
+     * the captured outline does not carry over if vanilla submits none.
      */
     public void beginFrame() {
         pendingOutline = null;
     }
 
     /**
-     * Captures the targeted block's vanilla outline shape. Shape evaluation
-     * happens during the Fabric callback so modded block shape behavior is
-     * preserved exactly at the point vanilla draws it.
+     * Captures the targeted block's vanilla outline shape from the frame's level
+     * render state. The shape was evaluated by vanilla's extractor with the camera
+     * entity's collision context, so modded block shape behavior is preserved
+     * exactly as vanilla draws it.
      */
-    public void captureBlockOutline(
-            WorldRenderContext context,
-            WorldRenderContext.BlockOutlineContext outline) {
-        ClientLevel world = context.world();
-        BlockPos blockPos = outline.blockPos();
-        if (world == null
-                || outline.blockState().isAir()
-                || !world.getWorldBorder().isWithinBounds(blockPos)) {
+    public void captureBlockOutline(LevelRenderState levelRenderState) {
+        BlockOutlineRenderState outline = levelRenderState.blockOutlineRenderState;
+        ClientLevel world = Minecraft.getInstance().level;
+        if (outline == null || world == null) {
             pendingOutline = null;
             return;
         }
 
-        VoxelShape shape = outline.blockState().getShape(
-                world,
-                blockPos,
-                CollisionContext.of(outline.entity()));
+        VoxelShape shape = outline.shape();
         if (shape.isEmpty()) {
             pendingOutline = null;
             return;
         }
 
-        double cameraX = outline.cameraX();
-        double cameraY = outline.cameraY();
-        double cameraZ = outline.cameraZ();
+        CameraRenderState camera = levelRenderState.cameraRenderState;
+        BlockPos blockPos = outline.pos();
+        double cameraX = camera.pos.x;
+        double cameraY = camera.pos.y;
+        double cameraZ = camera.pos.z;
         double offsetX = blockPos.getX() - cameraX;
         double offsetY = blockPos.getY() - cameraY;
         double offsetZ = blockPos.getZ() - cameraZ;
@@ -126,10 +151,11 @@ public final class RemixBlockOutlinePass implements AutoCloseable {
             return;
         }
 
-        float tickDelta = context.tickCounter().getGameTimeDeltaPartialTick(true);
-        double fovDegrees = context.gameRenderer().getFov(context.camera(), tickDelta, true);
-        fovDegrees = Math.max(MIN_FOV_DEGREES, Math.min(MAX_FOV_DEGREES, fovDegrees));
-        double tanHalfFov = Math.tan(Math.toRadians(fovDegrees) * 0.5);
+        double tanHalfFov = tanHalfFov(camera);
+        if (!(tanHalfFov > 0.0)) {
+            pendingOutline = null;
+            return;
+        }
         double lineWidthPixels = OUTLINE_WIDTH_PIXELS * Math.max(
                 1.0,
                 framebufferWidth / REFERENCE_FRAMEBUFFER_WIDTH_PIXELS);
@@ -143,6 +169,22 @@ public final class RemixBlockOutlinePass implements AutoCloseable {
                 lineWidthPixels,
                 framebufferHeight,
                 edges);
+    }
+
+    /**
+     * The tangent of half the level projection's vertical field of view, the
+     * reciprocal of the projection matrix's {@code m11}, clamped to the field of view
+     * range vanilla allows.
+     */
+    static double tanHalfFov(CameraRenderState camera) {
+        double m11 = camera.projectionMatrix.m11();
+        if (!(m11 > 0.0) || !Double.isFinite(m11)) {
+            return Double.NaN;
+        }
+        double tanHalf = 1.0 / m11;
+        double minTan = Math.tan(Math.toRadians(MIN_FOV_DEGREES) * 0.5);
+        double maxTan = Math.tan(Math.toRadians(MAX_FOV_DEGREES) * 0.5);
+        return Math.max(minTan, Math.min(maxTan, tanHalf));
     }
 
     /**
@@ -361,6 +403,9 @@ public final class RemixBlockOutlinePass implements AutoCloseable {
     @Override
     public void close() {
         clear();
+        if (active == this) {
+            active = null;
+        }
     }
 
     private record BlockOutlineSnapshot(

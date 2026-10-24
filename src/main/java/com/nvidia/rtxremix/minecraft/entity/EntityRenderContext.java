@@ -5,6 +5,7 @@
 package com.nvidia.rtxremix.minecraft.entity;
 
 import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
 import org.joml.Vector3f;
 import org.joml.Vector3fc;
 
@@ -12,25 +13,33 @@ import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.item.ItemStack;
 
 /**
  * Thread-local context tracking whether a Remix capture is open and which rigid
- * pivot (ModelPart/Cuboid) is active.
+ * pivot (ModelPart/Cube) is active.
  *
  * <p>Capture boundaries are opened by {@code EntityRenderDispatcherMixin} around
- * each vanilla entity render, or directly by a Remix capture pass. Boundaries
+ * each vanilla entity submit, or directly by a Remix capture pass. Boundaries
  * nest: only the outermost {@link #begin} starts a fresh capture, and an inner
- * one (an entity rendered from inside another render, such as a spawner's display
- * entity) appends its bones to the enclosing capture, exactly as feature-renderer
+ * one (an entity submitted from inside another submit, such as a spawner's display
+ * entity) appends its bones to the enclosing capture, exactly as render-layer
  * overlays already do. Bone boundaries are detected by
- * {@link RemixCapturingConsumer} when the {@code MatrixStack.Entry} pose changes
+ * {@link RemixCapturingConsumer} when the {@code PoseStack.Pose} changes
  * between vertices.
  *
  * <h3>Rigid pivot tracking</h3>
  * <p>Each time the pose matrix changes during vertex capture, a transform
- * index is assigned via {@link #pushBone(Matrix4f)}. The submitter pairs the
+ * index is assigned via {@link #pushBone(Matrix4fc)}. The submitter pairs the
  * local cuboid/item mesh with that ordinary instance transform; no vertex
  * deformation or Remix skinning is involved.
+ *
+ * <h3>Item tracking</h3>
+ * <p>Vanilla renders an item from an {@code ItemStackRenderState} that no longer
+ * names the stack it came from. {@code ItemModelResolverMixin} records the stack and
+ * its owner on the state as it is built, and {@code ItemStackRenderStateMixin} opens
+ * an item window here for the duration of that state's submit, so the capture can
+ * classify a block item's terrain layer and decide whether a held torch is burning.
  */
 public final class EntityRenderContext {
 
@@ -47,9 +56,13 @@ public final class EntityRenderContext {
 
     /** First-person hand currently being rendered, or null outside that path. */
     private InteractionHand activeHand;
+    /** The stack whose render state is being submitted, or null outside an item submit. */
+    private ItemStack heldItemStack;
     /** Entity whose hand-held item is being rendered, or null outside a held-item render. */
     private LivingEntity heldItemHolder;
     private int blockItemLayer = NO_BLOCK_ITEM;
+    /** Uniform scale of the display transform the item being submitted was posed with. */
+    private float itemDisplayScale = 1.0f;
 
     /** The viewer's eye in the capture's space, valid while {@link #eyeKnown}. */
     private final Vector3f eye = new Vector3f();
@@ -85,10 +98,9 @@ public final class EntityRenderContext {
         }
         this.remixPass = remixPass;
         this.activeHand = null;
-        this.heldItemHolder = null;
-        this.blockItemLayer = NO_BLOCK_ITEM;
         this.eyeKnown = false;
         this.boneCounter = 0;
+        endItem();
         // Bone transforms are not cleared: the pre-allocated Matrix4f objects are
         // reused and boneCounter bounds the valid range [0, boneCounter).
     }
@@ -119,9 +131,8 @@ public final class EntityRenderContext {
     private void closeCapture() {
         this.remixPass = false;
         this.activeHand = null;
-        this.heldItemHolder = null;
-        this.blockItemLayer = NO_BLOCK_ITEM;
         this.eyeKnown = false;
+        endItem();
     }
 
     /** Whether a capture boundary is open at any depth. */
@@ -129,13 +140,50 @@ public final class EntityRenderContext {
         return depth > 0;
     }
 
+    // ---- Item window ----
+
+    /**
+     * Opens the window of one item's submit: the stack behind the render state, the
+     * living entity holding it (null for a dropped item, an item frame or an
+     * item_display, which nothing in {@code HeldLightState} can put out), and the
+     * terrain layer of the block it places. Item submits do not nest, and the hooks
+     * read these inside the submit that set them, so {@link #endItem} is the same as
+     * restoring.
+     */
+    public void beginItem(ItemStack stack, LivingEntity holder, int blockItemLayer) {
+        this.heldItemStack = stack;
+        this.heldItemHolder = holder;
+        this.blockItemLayer = blockItemLayer;
+        this.itemDisplayScale = 1.0f;
+    }
+
+    public void endItem() {
+        this.heldItemStack = null;
+        this.heldItemHolder = null;
+        this.blockItemLayer = NO_BLOCK_ITEM;
+        this.itemDisplayScale = 1.0f;
+    }
+
+    /** The stack whose render state is being submitted, or null outside an item submit. */
+    public ItemStack getHeldItemStack() {
+        return heldItemStack;
+    }
+
+    /**
+     * The entity holding the item being rendered, or null outside a held-item
+     * render, which an item_display posed with a hand transform never enters.
+     */
+    public LivingEntity getHeldItemHolder() {
+        return heldItemHolder;
+    }
+
     /**
      * The terrain layer of the block item currently being rendered, as a
      * {@code BlockTextureManager} layer type, or {@link #NO_BLOCK_ITEM}. Ice and
      * stained glass are {@code L_TRANS}, clear glass {@code L_GLASS}.
      *
-     * <p>Set by {@code ItemRendererMixin} for the duration of one
-     * {@code ItemRenderer.renderItem} call and sampled by
+     * <p>Set by {@code ItemStackRenderStateMixin} for the duration of one
+     * {@code ItemStackRenderState.submit} call and sampled by
      * {@link RemixCapturingConsumer} as each part opens, so the answer travels
      * with the geometry that item produced.
      */
@@ -145,6 +193,19 @@ public final class EntityRenderContext {
 
     public void setBlockItemLayer(int blockItemLayer) {
         this.blockItemLayer = blockItemLayer;
+    }
+
+    /**
+     * The uniform scale of the display transform the item layer being submitted was
+     * posed with, recorded by {@code ItemLayerRenderStateMixin}; 1 outside an item
+     * submit. The held flame divides it back out to stay world-sized.
+     */
+    public float getItemDisplayScale() {
+        return itemDisplayScale;
+    }
+
+    public void setItemDisplayScale(float itemDisplayScale) {
+        this.itemDisplayScale = itemDisplayScale;
     }
 
     /**
@@ -164,17 +225,17 @@ public final class EntityRenderContext {
     // ---- Bone tracking ----
 
     /**
-     * Called at each {@code ModelPart.Cuboid.renderCuboid()} to register a rigid pivot.
+     * Called at each {@code ModelPart.Cube.compile()} to register a rigid pivot.
      *
      * <p>Bones are appended in traversal order. Several rendering passes can run
-     * for one entity (base model plus FeatureRenderer overlays) and each appends
+     * for one entity (base model plus render-layer overlays) and each appends
      * its own bones to the same array, so an index is absolute across the whole
      * capture rather than relative to a layer.
      *
-     * @param pose the 4x4 model-to-world transform at this cuboid
+     * @param pose the 4x4 model-to-world transform at this cuboid; copied
      * @return the bone index assigned to this cuboid
      */
-    public int pushBone(Matrix4f pose) {
+    public int pushBone(Matrix4fc pose) {
         int index = boneCounter++;
         if (index < boneTransforms.size()) {
             boneTransforms.get(index).set(pose);
@@ -205,30 +266,6 @@ public final class EntityRenderContext {
 
     public void clearActiveHand() {
         activeHand = null;
-    }
-
-    /**
-     * Marks {@code holder} as the entity whose hand-held item is being rendered.
-     * Set by {@code HeldItemRendererMixin} for the duration of one held-item
-     * render, so the item renderer's hook can ask whether that holder's torch is
-     * burning; the first-person view model and every entity's hands pass through it.
-     * Held-item renders do not nest, and the hook reads the holder inside the
-     * render that set it, so clearing at its return is the same as restoring.
-     */
-    public void setHeldItemHolder(LivingEntity holder) {
-        heldItemHolder = holder;
-    }
-
-    public void clearHeldItemHolder() {
-        heldItemHolder = null;
-    }
-
-    /**
-     * The entity holding the item being rendered, or null outside a held-item
-     * render, which an item_display posed with a hand transform never enters.
-     */
-    public LivingEntity getHeldItemHolder() {
-        return heldItemHolder;
     }
 
     /** Returns first-person hand ownership for a captured transform, if any. */

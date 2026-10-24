@@ -8,17 +8,16 @@ import com.nvidia.rtxremix.minecraft.light.HeldLightState;
 import com.nvidia.rtxremix.minecraft.particle.ParticleTint;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.particle.SpriteSet;
-import net.minecraft.client.renderer.LightTexture;
-import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
-import net.minecraft.client.resources.model.BakedModel;
 import net.minecraft.core.particles.ParticleType;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.particles.SimpleParticleType;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.util.LightCoordsUtil;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
@@ -35,12 +34,12 @@ import org.joml.Vector3fc;
  * Draws the lit effects of a hand-held item into the Remix capture: its
  * {@link HeldItemFlame} and the {@link HeldItemSmoke} above it.
  *
- * <p>Runs from the item renderer once the item's block-space pose is on the
- * matrix stack, so one hook serves the first-person view model, the local
- * player's hidden shadow model, other players and any mob or armor stand with a
- * torch in hand. The quads go through the same capture provider as the item,
- * on an emissive layer over the particle atlas, and the submitter gives that
- * layer the particle pipeline's own material, so a held flame and a placed
+ * <p>Runs from the capture collector's item submit, once the item's block-space
+ * pose is on the matrix stack, so one hook serves the first-person view model,
+ * the local player's hidden shadow model, other players and any mob or armor
+ * stand with a torch in hand. The quads go through the same capture provider as
+ * the item, on an emissive layer over the particle atlas, and the submitter gives
+ * that layer the particle pipeline's own material, so a held flame and a placed
  * flame are lit by the same numbers.
  *
  * <p>Every capture space is world-aligned, the first-person hand included:
@@ -54,7 +53,7 @@ import org.joml.Vector3fc;
 public final class HeldItemEffectsRenderer {
 
     private static final RenderType EFFECT_LAYER =
-            RenderType.entityTranslucentEmissive(TextureAtlas.LOCATION_PARTICLES);
+            RenderTypes.entityTranslucentEmissive(TextureAtlas.LOCATION_PARTICLES);
     private static final float TICKS_PER_SECOND = 20.0f;
     private static final int OPAQUE = 255;
     private static final int WHITE = 255;
@@ -73,25 +72,26 @@ public final class HeldItemEffectsRenderer {
     private HeldItemEffectsRenderer() {}
 
     /**
-     * Emits the flame and smoke quads for {@code stack} if the Remix capture is
-     * active, {@code mode} is a hand, the item carries a lit element, and that
-     * element is burning in its holder's hand, see {@link HeldLightState}.
+     * Emits the flame and smoke quads for the item whose submit is open in
+     * {@code context} if the Remix capture is active, {@code mode} is a hand, the
+     * item carries a lit element, and that element is burning in its holder's hand,
+     * see {@link HeldLightState}.
      *
-     * @param matrices  the item renderer's stack, with the item's block-space
-     *                  pose on top; left as found
-     * @param model     the item's baked model, whose display transform for
-     *                  {@code mode} is part of that pose
+     * @param context   the capture context, holding the stack behind the render
+     *                  state, its holder and the display scale it was posed with
+     * @param matrices  the item submit's stack, with the item's block-space pose on
+     *                  top; left as found
+     * @param consumers the capture provider the item's own quads went to
      */
-    public static void render(ItemStack stack, ItemDisplayContext mode,
-                              PoseStack matrices, MultiBufferSource consumers,
-                              BakedModel model) {
-        EntityRenderContext context = EntityRenderContext.get();
+    public static void render(EntityRenderContext context, ItemDisplayContext mode,
+                              PoseStack matrices, RemixVertexConsumerProvider consumers) {
         if (!context.isRemixPass() || !HeldItemFlame.isHandMode(mode)) return;
+        ItemStack stack = context.getHeldItemStack();
         SimpleParticleType flameParticle = HeldItemFlame.particleFor(stack);
         if (flameParticle == null) return;
         // Null outside a hand: an item_display posed with a hand transform reaches
-        // this hook with no HeldItemRenderer above it. Nothing in HeldLightState
-        // can put out a prop, so it burns.
+        // this hook with no living holder. Nothing in HeldLightState can put out a
+        // prop, so it burns.
         LivingEntity holder = context.getHeldItemHolder();
         if (holder != null && !HeldLightState.isLit(holder, stack)) return;
 
@@ -101,9 +101,10 @@ public final class HeldItemEffectsRenderer {
         SpriteSet smokeSprites = spriteProvider(client, ParticleTypes.SMOKE);
         if (flameSprites == null || smokeSprites == null) return;
 
-        Quaternionfc facing = client.gameRenderer.getMainCamera().rotation();
+        Quaternionfc facing = client.gameRenderer.mainCamera().rotation();
         Quaternionfc frame = HeldItemFlame.riseFrame(mode, facing);
-        double ticks = client.level.getGameTime() + client.getTimer().getGameTimeDeltaPartialTick(false);
+        double ticks = client.level.getGameTime()
+                + client.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         float phase = mode.ordinal();
         float cameraOffset = HeldItemFlame.cameraOffset(mode);
         // Null when the capture does not know where the eye is; the poses then stay at depth 1.
@@ -113,7 +114,7 @@ public final class HeldItemEffectsRenderer {
         // A hand draws its item scaled down (item/generated: 0.68 in first person,
         // 0.55 in third). The flame and smoke are world-sized, so the poses divide
         // that scale back out.
-        float displayScale = model.getTransforms().getTransform(mode).scale.x;
+        float displayScale = context.getItemDisplayScale();
         VertexConsumer buffer = consumers.getBuffer(EFFECT_LAYER);
 
         matrices.pushPose();
@@ -173,7 +174,7 @@ public final class HeldItemEffectsRenderer {
                 .setColor(grey, grey, grey, alpha)
                 .setUv(u, v)
                 .setOverlay(OverlayTexture.NO_OVERLAY)
-                .setLight(LightTexture.FULL_BRIGHT)
+                .setLight(LightCoordsUtil.FULL_BRIGHT)
                 .setNormal(entry, 0.0f, 0.0f, 1.0f);
     }
 }

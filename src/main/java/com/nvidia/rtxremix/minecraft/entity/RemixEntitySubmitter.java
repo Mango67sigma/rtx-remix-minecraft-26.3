@@ -62,7 +62,8 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.model.geom.ModelPart;
-import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -848,7 +849,7 @@ public class RemixEntitySubmitter {
         RenderLayerUtils.SurfaceMode layerMode = RenderLayerUtils.surfaceMode(renderLayer);
         RenderLayerUtils.SurfaceMode surfaceMode = playerSkinSurfaceMode(layerMode,
                 result.owner() instanceof Player
-                        && renderLayer == RenderType.entityTranslucent(texId));
+                        && renderLayer == RenderTypes.entityTranslucent(texId));
 
         RemixCapturingConsumer consumer = layer.consumer();
         // Guard on parts, not vertices: a cuboid part carries no captured
@@ -2183,7 +2184,7 @@ public class RemixEntitySubmitter {
             try (var image = NativeImage.read(resource.get().open())) {
                 width = image.getWidth();
                 height = image.getHeight();
-                pixels = abgrToRGBA(image, width, height);
+                pixels = argbToRGBA(image, width, height);
             }
         } else {
             // A downloaded skin reaches the cache when its texture uploads. Until then the
@@ -2709,16 +2710,17 @@ public class RemixEntitySubmitter {
         }
     }
 
-    private static byte[] abgrToRGBA(NativeImage image, int w, int h) {
+    /** Unpacks the image's ARGB pixels into the RGBA byte order the Remix upload expects. */
+    private static byte[] argbToRGBA(NativeImage image, int w, int h) {
         byte[] out = new byte[w * h * 4];
         for (int y = 0; y < h; y++)
             for (int x = 0; x < w; x++) {
-                int abgr = image.getPixelRGBA(x, y);
+                int argb = image.getPixel(x, y);
                 int idx = (y * w + x) * 4;
-                out[idx]     = (byte) (abgr & 0xFF);
-                out[idx + 1] = (byte) ((abgr >> 8) & 0xFF);
-                out[idx + 2] = (byte) ((abgr >> 16) & 0xFF);
-                out[idx + 3] = (byte) ((abgr >> 24) & 0xFF);
+                out[idx]     = (byte) ((argb >> 16) & 0xFF);
+                out[idx + 1] = (byte) ((argb >> 8) & 0xFF);
+                out[idx + 2] = (byte) (argb & 0xFF);
+                out[idx + 3] = (byte) ((argb >>> 24) & 0xFF);
             }
         return out;
     }
