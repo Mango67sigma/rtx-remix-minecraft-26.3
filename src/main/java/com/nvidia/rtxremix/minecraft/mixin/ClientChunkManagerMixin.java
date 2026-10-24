@@ -4,7 +4,7 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
-import com.nvidia.rtxremix.minecraft.terrain.WorldRendererTerrainAccess;
+import com.nvidia.rtxremix.minecraft.terrain.SectionLeftRenderSetQueue;
 import com.nvidia.rtxremix.minecraft.terrain.SkippedSectionRebuilds;
 import com.nvidia.rtxremix.minecraft.terrain.LocalChunkBatchPacing;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
@@ -14,16 +14,13 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import java.util.function.Consumer;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.core.SectionPos;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 
 /**
@@ -36,9 +33,10 @@ public abstract class ClientChunkManagerMixin {
      * Drops section rebuilds requested only because the client light engine changed a
      * section's light.
      *
-     * <p>Vanilla re-meshes such a section so its baked lightmap follows. While RTX is enabled
-     * the section builder captures every section for Remix and reports its blocks invisible
-     * to vanilla, so vanilla's section buffers are empty and Remix terrain carries no baked
+     * <p>Vanilla re-meshes such a section so its baked lightmap follows; in 26.3 the request
+     * reaches {@code LevelExtractor.setSectionDirty} from here. While RTX is enabled the
+     * section builder captures every section for Remix and reports its blocks invisible to
+     * vanilla, so vanilla's section buffers are empty and Remix terrain carries no baked
      * light; the rebuild would only recapture identical geometry, publish an identical page,
      * and retire the old one. The gate is the capture gate SectionBuilderMixin latches, not
      * whether Remix is drawing the world: vanilla has no terrain geometry to relight whenever
@@ -47,9 +45,9 @@ public abstract class ClientChunkManagerMixin {
      * section with vanilla light again.
      *
      * <p>While the client light storage publishes its live map ({@link LightStorageMixin})
-     * the notifications never reach this hook: that mixin cancels notifyChanges and counts
-     * the pass's pending notifications itself. This hook covers the kill-switch path and the
-     * passes that publish a real copy.
+     * the notifications never reach this hook: that mixin cancels {@code swapSectionMap} and
+     * counts the pass's pending notifications itself. This hook covers the kill-switch path
+     * and the passes that publish a real copy.
      */
     @Inject(method = "onLightUpdate", at = @At("HEAD"), cancellable = true)
     private void rtxremix$skipLightOnlyRebuild(LightLayer type, SectionPos pos, CallbackInfo ci) {
@@ -60,47 +58,95 @@ public abstract class ClientChunkManagerMixin {
     }
 
     /**
-     * A same-position reload replaces the WorldChunk's contents in place and fires no
-     * CHUNK_UNLOAD, so the neighbour slots whose region snapshot holds the old content must
-     * forget the column before the reload's re-flags arrive, or they would be dropped as
-     * already captured. Slot reuse by another position and unload() are covered by the Fabric
-     * CHUNK_UNLOAD event.
+     * A section that becomes all air is a Remix removal candidate even if vanilla never
+     * compiles it again. Since 26.2 vanilla's occlusion graph leaves sections in the client
+     * cache's empty-section set out of the visible tree, so once the graph is rebuilt such
+     * a section never reaches {@code setSectionMesh} and {@link BuiltChunkMixin} never sees
+     * it go empty. The render thread validates the live section before removing anything.
+     * A block edit reports the change here ({@code LevelChunk.setBlockState}).
      */
-    @Inject(method = "replaceWithPacketData", at = @At("HEAD"))
-    private void rtxremix$invalidateNeighboursOnInPlaceReload(
-            int x,
-            int z,
-            FriendlyByteBuf buf,
-            CompoundTag nbt,
-            Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
-            CallbackInfoReturnable<LevelChunk> cir) {
-        if (!RtxRemixMod.isRtxEnabled()) {
-            return;
-        }
-        ClientChunkCache self = (ClientChunkCache) (Object) this;
-        if (self.getChunk(x, z, ChunkStatus.FULL, false) == null) {
-            return;
-        }
-        if (Minecraft.getInstance().levelRenderer instanceof WorldRendererTerrainAccess access) {
-            access.rtxremix$onNeighbourColumnInvalidated(x, z);
+    @Inject(method = "onSectionEmptinessChanged", at = @At("HEAD"))
+    private void rtxremix$sectionBecameEmpty(int sectionX, int sectionY, int sectionZ, boolean empty, CallbackInfo ci) {
+        if (empty && RtxRemixMod.isRtxEnabled()) {
+            SectionLeftRenderSetQueue.enqueueEmptyCandidate(sectionX, sectionY, sectionZ);
         }
     }
 
-    // loadChunkFromPacket runs only on the render thread, so one field carries the
+    // replaceWithPacketData runs only on the render thread, so these fields carry the
+    // column's section emptiness from the head of an in-place reload to the point where
+    // vanilla refreshes its empty-section set.
+    private static boolean[] rtxremix$sectionWasNonEmpty = new boolean[0];
+    private static boolean rtxremix$inPlaceReload;
+
+    /**
+     * An in-place reload refreshes the empty-section set without reporting each change
+     * through {@code onSectionEmptinessChanged}; remember which sections held blocks.
+     */
+    @Inject(method = "replaceWithPacketData", at = @At("HEAD"))
+    private void rtxremix$recordSectionsBeforeReload(
+            int chunkX,
+            int chunkZ,
+            ClientboundLevelChunkPacketData chunkData,
+            CallbackInfoReturnable<LevelChunk> cir) {
+        rtxremix$inPlaceReload = false;
+        if (!RtxRemixMod.isRtxEnabled()) {
+            return;
+        }
+        LevelChunk existing = ((ClientChunkCache) (Object) this).getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
+        if (existing == null) {
+            return;
+        }
+        LevelChunkSection[] sections = existing.getSections();
+        if (rtxremix$sectionWasNonEmpty.length < sections.length) {
+            rtxremix$sectionWasNonEmpty = new boolean[sections.length];
+        }
+        for (int i = 0; i < sections.length; i++) {
+            rtxremix$sectionWasNonEmpty[i] = !sections[i].hasOnlyAir();
+        }
+        rtxremix$inPlaceReload = true;
+    }
+
+    @Inject(
+            method = "replaceWithPacketData",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/multiplayer/ClientChunkCache$Storage;refreshEmptySections(Lnet/minecraft/world/level/chunk/LevelChunk;)V"))
+    private void rtxremix$sectionsEmptiedByReload(
+            int chunkX,
+            int chunkZ,
+            ClientboundLevelChunkPacketData chunkData,
+            CallbackInfoReturnable<LevelChunk> cir) {
+        if (!rtxremix$inPlaceReload) {
+            return;
+        }
+        rtxremix$inPlaceReload = false;
+        LevelChunk chunk = ((ClientChunkCache) (Object) this).getChunk(chunkX, chunkZ, ChunkStatus.FULL, false);
+        if (chunk == null) {
+            return;
+        }
+        LevelChunkSection[] sections = chunk.getSections();
+        int count = Math.min(sections.length, rtxremix$sectionWasNonEmpty.length);
+        for (int i = 0; i < count; i++) {
+            if (rtxremix$sectionWasNonEmpty[i] && sections[i].hasOnlyAir()) {
+                SectionLeftRenderSetQueue.enqueueEmptyCandidate(chunkX, chunk.getSectionYFromSectionIndex(i), chunkZ);
+            }
+        }
+    }
+
+    // replaceWithPacketData runs only on the render thread, so one field carries the
     // start time from the head to the return of each apply.
     private static long rtxremix$applyStartNanos;
 
     /**
      * Times each chunk apply for {@link LocalChunkBatchPacing}, which sizes the
-     * integrated server's batches from what a chunk costs this thread.
+     * integrated server's batches from what a chunk costs this thread. Vanilla's early
+     * return for a column outside the ring is cheap and sampled like any apply.
      */
     @Inject(method = "replaceWithPacketData", at = @At("HEAD"))
     private void rtxremix$beginApplyTiming(
-            int x,
-            int z,
-            FriendlyByteBuf buf,
-            CompoundTag nbt,
-            Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
+            int chunkX,
+            int chunkZ,
+            ClientboundLevelChunkPacketData chunkData,
             CallbackInfoReturnable<LevelChunk> cir) {
         if (LocalChunkBatchPacing.ENABLED) {
             rtxremix$applyStartNanos = System.nanoTime();
@@ -109,18 +155,16 @@ public abstract class ClientChunkManagerMixin {
 
     @Inject(method = "replaceWithPacketData", at = @At("RETURN"))
     private void rtxremix$endApplyTiming(
-            int x,
-            int z,
-            FriendlyByteBuf buf,
-            CompoundTag nbt,
-            Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer,
+            int chunkX,
+            int chunkZ,
+            ClientboundLevelChunkPacketData chunkData,
             CallbackInfoReturnable<LevelChunk> cir) {
         if (LocalChunkBatchPacing.ENABLED) {
             LocalChunkBatchPacing.recordApplyNanos(System.nanoTime() - rtxremix$applyStartNanos);
         }
     }
 
-    // unload runs only on the render thread, so one pair of fields carries the start
+    // drop runs only on the render thread, so one pair of fields carries the start
     // time and whether the column was held from the head to the return of each unload.
     private static long rtxremix$unloadStartNanos;
     private static boolean rtxremix$unloadIsReal;
@@ -137,7 +181,7 @@ public abstract class ClientChunkManagerMixin {
             return;
         }
         ClientChunkCache self = (ClientChunkCache) (Object) this;
-        rtxremix$unloadIsReal = self.getChunk(pos.x, pos.z, ChunkStatus.FULL, false) != null;
+        rtxremix$unloadIsReal = self.getChunk(pos.x(), pos.z(), ChunkStatus.FULL, false) != null;
         rtxremix$unloadStartNanos = System.nanoTime();
     }
 

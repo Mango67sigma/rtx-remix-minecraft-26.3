@@ -137,10 +137,13 @@ public final class NeighbourReflagFilter {
         return INCOMPLETE_FIRST_BUILDS.getAndSet(0);
     }
 
-    /** One startup log line that makes every run self-describing. */
+    /**
+     * One startup log line that makes every run self-describing. The hooks that apply the
+     * filter are not ported to Minecraft 26.3 yet (see the terrain-state port note), so
+     * every re-flag is vanilla's whatever the property says.
+     */
     public static String effectiveStateLine() {
-        return ENABLED
-                ? "Chunk-load neighbour re-flags: filtered by snapshot mask (" + PROPERTY + "=true)"
-                : "Chunk-load neighbour re-flags: vanilla 3x3x3 (" + PROPERTY + "=false)";
+        return "Chunk-load neighbour re-flags: vanilla; the snapshot-mask filter is not ported to this "
+                + "Minecraft version (" + PROPERTY + "=" + ENABLED + " has no effect)";
     }
 }

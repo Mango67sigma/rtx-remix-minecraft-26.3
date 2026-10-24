@@ -35,14 +35,14 @@ import net.minecraft.world.level.chunk.LevelChunk;
  * nearest-first batches instead of everything pending at once, and its chunk
  * unloads a budgeted few per tick instead of a whole trailing row.
  *
- * <p>Only the local branch of {@code makeBatch} is replaced; remote connections
+ * <p>Only the local branch of {@code collectChunksToSend} is replaced; remote connections
  * keep vanilla's client-driven batch size. The batch is sized by
  * {@link LocalChunkBatchPacing} from the render thread's measured apply cost.
  *
  * <p>Holding a chunk pending for a few ticks is the state vanilla keeps every
- * remote player's chunks in: {@code ServerChunkLoadingManager.isTracked} treats a
+ * remote player's chunks in: {@code ChunkMap.isChunkTracked} treats a
  * chunk still in the sender's next batch as untracked, so block updates for it
- * are not sent to that player ({@code ChunkHolder.flushUpdates} skips them; the
+ * are not sent to that player ({@code ChunkHolder.broadcastChanges} skips them; the
  * payload serialized at send time carries the result) and entity tracking for it
  * begins at the next tracked-status re-evaluation after the send.
  *
@@ -101,7 +101,7 @@ public abstract class ChunkDataSenderMixin {
         int batch = LocalChunkBatchPacing.batchSize(pendingChunks.size());
         List<LevelChunk> selected = LocalChunkBatchPacing.takeNearest(pendingChunks, batch,
                 chunkLoadingManager::getChunkToSend,
-                chunk -> chunk.getPos().toLong(),
+                chunk -> chunk.getPos().pack(),
                 chunk -> playerPos.distanceSquared(chunk.getPos()));
         batchQuota = selected.size() + 1.0f;
         LocalChunkBatchPacing.recordBatch(selected.size(), pendingChunks.size());
@@ -119,7 +119,7 @@ public abstract class ChunkDataSenderMixin {
             rtxremix$unloads.clear();
             return;
         }
-        long key = pos.toLong();
+        long key = pos.pack();
         rtxremix$unloads.dropPending(key, pendingChunks.contains(key) && player.isAlive());
     }
 
@@ -131,20 +131,20 @@ public abstract class ChunkDataSenderMixin {
     @WrapOperation(
             method = "dropChunk",
             at = @At(value = "INVOKE",
-                    target = "Lnet/minecraft/server/network/ServerGamePacketListenerImpl;sendPacket(Lnet/minecraft/network/protocol/Packet;)V"))
+                    target = "Lnet/minecraft/server/network/ServerGamePacketListenerImpl;send(Lnet/minecraft/network/protocol/Packet;)V"))
     private void rtxremix$queueLocalUnload(ServerGamePacketListenerImpl handler, Packet<?> packet, Operation<Void> original,
                                            ServerPlayer player, ChunkPos pos) {
         if (!memoryConnection || !LocalChunkBatchPacing.UNLOAD_ENABLED || !RtxRemixMod.isRtxEnabled()) {
             original.call(handler, packet);
             return;
         }
-        rtxremix$unloads.enqueue(pos.toLong());
+        rtxremix$unloads.enqueue(pos.pack());
     }
 
     // Ungated: the queue may still hold keys from before an RTX toggle.
     @Inject(method = "markChunkPendingToSend", at = @At("HEAD"))
     private void rtxremix$cancelQueuedUnload(LevelChunk chunk, CallbackInfo ci) {
-        rtxremix$unloads.cancelForResend(chunk.getPos().toLong());
+        rtxremix$unloads.cancelForResend(chunk.getPos().pack());
     }
 
     /** Every chunk-data send, paced or vanilla, passes here: the client's copy is current again. */
@@ -154,7 +154,7 @@ public abstract class ChunkDataSenderMixin {
                     target = "Lnet/minecraft/server/network/PlayerChunkSender;sendChunk(Lnet/minecraft/server/network/ServerGamePacketListenerImpl;Lnet/minecraft/server/level/ServerLevel;Lnet/minecraft/world/level/chunk/LevelChunk;)V"))
     private void rtxremix$markSent(ServerGamePacketListenerImpl handler, ServerLevel world, LevelChunk chunk,
                                    Operation<Void> original) {
-        rtxremix$unloads.markSent(chunk.getPos().toLong());
+        rtxremix$unloads.markSent(chunk.getPos().pack());
         original.call(handler, world, chunk);
     }
 
@@ -173,7 +173,7 @@ public abstract class ChunkDataSenderMixin {
             return;
         }
         ServerGamePacketListenerImpl handler = player.connection;
-        LongConsumer send = key -> handler.send(new ClientboundForgetLevelChunkPacket(new ChunkPos(key)));
+        LongConsumer send = key -> handler.send(new ClientboundForgetLevelChunkPacket(ChunkPos.unpack(key)));
         if (!RtxRemixMod.isRtxEnabled()) {
             // Counted so the totals stay right; the terrain counters that read them are
             // off with capture, so the flush shows in the first frame after it returns.
@@ -181,7 +181,7 @@ public abstract class ChunkDataSenderMixin {
             return;
         }
         ChunkPos centre = player.chunkPosition();
-        int ringRadius = LocalChunkBatchPacing.clientRingRadius(player.server.getPlayerList().getViewDistance());
+        int ringRadius = LocalChunkBatchPacing.clientRingRadius(player.level().getServer().getPlayerList().getViewDistance());
         int sent = rtxremix$unloads.drain(
                 LocalChunkBatchPacing.unloadBatchSize(rtxremix$unloads.size()),
                 key -> centre.getChessboardDistance(ChunkPos.getX(key), ChunkPos.getZ(key)) >= ringRadius,

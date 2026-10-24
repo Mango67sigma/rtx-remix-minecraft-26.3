@@ -12,18 +12,16 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 
-import java.util.function.Consumer;
-import net.minecraft.nbt.CompoundTag;
-import net.minecraft.nbt.Tag;
-import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.protocol.game.ClientboundLevelChunkPacketData;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.Heightmap;
 
 /**
  * Seeds the sky-light surface scan of a chunk the client receives from the packet's
- * {@code WORLD_SURFACE} heightmap. {@code loadFromPacket} is the client chunk apply; the
- * server's refresh during chunk generation is untouched.
+ * {@code WORLD_SURFACE} heightmap. {@code replaceWithPacketData} is the client chunk apply:
+ * it reads the sections, installs the packet's heightmaps and only then calls
+ * {@code initializeLightSources}, so the heightmap the seed reads is the one the packet
+ * carried. The server's light-source fill during chunk generation is untouched.
  */
 @Mixin(LevelChunk.class)
 public abstract class WorldChunkMixin {
@@ -34,10 +32,10 @@ public abstract class WorldChunkMixin {
     private void rtxremix$seedSurfaceScan(
             LevelChunk self,
             Operation<Void> original,
-            FriendlyByteBuf buf,
-            CompoundTag nbt,
-            Consumer<ClientboundLevelChunkPacketData.BlockEntityTagOutput> consumer) {
-        boolean worldSurfaceInPacket = nbt.contains(Heightmap.Types.WORLD_SURFACE.getSerializationKey(), Tag.TAG_LONG_ARRAY);
+            int chunkX,
+            int chunkZ,
+            ClientboundLevelChunkPacketData chunkData) {
+        boolean worldSurfaceInPacket = chunkData.getHeightmaps().containsKey(Heightmap.Types.WORLD_SURFACE);
         if (!SkyLightSurfaceScanPolicy.seedFromHeightmap(SkyLightSurfaceScanPolicy.SEED_ALLOWED, worldSurfaceInPacket)) {
             if (SkyLightSurfaceScanPolicy.SEED_ALLOWED) {
                 SkyLightSurfaceScanPolicy.noteMissingHeightmap();

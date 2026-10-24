@@ -71,11 +71,6 @@ accessible field net/minecraft/world/level/lighting/SkyLightSectionStorage$SkyDa
 accessible field net/minecraft/world/level/lighting/SkyLightSectionStorage$SkyDataLayerStorageMap currentLowestY I
 accessible class net/minecraft/world/level/lighting/BlockLightSectionStorage$BlockDataLayerStorageMap
 
-# The integrated server's per-tick chunk list entries, cached per holder (ChunkHolderMixin)
-accessible class net/minecraft/server/level/ServerChunkCache$ChunkAndHolder
-accessible method net/minecraft/server/level/ServerChunkCache$ChunkAndHolder <init> (Lnet/minecraft/world/level/chunk/LevelChunk;Lnet/minecraft/server/level/ChunkHolder;)V
-accessible field net/minecraft/server/level/ServerChunkCache$ChunkAndHolder chunk Lnet/minecraft/world/level/chunk/LevelChunk;
-
 # ===== section: terrain-capture =====
 
 # Render-region snapshot storage recycling (RenderedChunkMixin, PackedIntegerArrayMixin):

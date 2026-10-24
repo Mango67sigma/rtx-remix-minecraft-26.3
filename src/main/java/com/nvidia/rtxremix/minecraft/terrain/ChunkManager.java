@@ -596,8 +596,8 @@ public class ChunkManager {
     }
 
     public void onChunkUnloaded(ChunkPos p) {
-        BlockDataQueue.markChunkUnloaded(p.x, p.z);
-        chunkUnloadEvents.add(packChunkKey(p.x, p.z));
+        BlockDataQueue.markChunkUnloaded(p.x(), p.z());
+        chunkUnloadEvents.add(packChunkKey(p.x(), p.z()));
     }
 
     private static long packChunkKey(int cx, int cz) {
@@ -869,7 +869,12 @@ public class ChunkManager {
         }
 
         LevelChunk wc = currentWorld.getChunkSource().getChunk(cx, cz, false);
-        return wc != null && wc.isSectionEmpty(sy);
+        if (wc == null) {
+            return false;
+        }
+        // ChunkAccess.isSectionEmpty(sectionY) is gone since 1.21.2; this is its body.
+        int index = wc.getSectionIndexFromSectionY(sy);
+        return index >= 0 && index < wc.getSectionsCount() && wc.getSection(index).hasOnlyAir();
     }
 
     private int drainBlockData() {
@@ -1025,8 +1030,9 @@ public class ChunkManager {
      * border-sized burst of them.
      */
     private void cancelLightTasksForColumn(int cx, int cz) {
-        int topSection = currentWorld.getMaxSection();
-        for (int sy = currentWorld.getMinSection(); sy < topSection; sy++) {
+        // getMaxSectionY is inclusive, unlike 1.21.1's exclusive getMaxSection.
+        int topSection = currentWorld.getMaxSectionY();
+        for (int sy = currentWorld.getMinSectionY(); sy <= topSection; sy++) {
             cancelLightTask(new LightSectionKey(cx, sy, cz));
         }
     }
