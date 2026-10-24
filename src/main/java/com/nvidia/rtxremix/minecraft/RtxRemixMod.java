@@ -63,11 +63,11 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
-import net.fabricmc.fabric.api.client.rendering.v1.EntityModelLayerRegistry;
+import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
+import net.fabricmc.fabric.api.client.rendering.v1.ModelLayerRegistry;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.level.AbstractLevelRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.Screens;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
@@ -90,7 +90,8 @@ import net.minecraft.server.packs.PackType;
 import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.storage.LevelResource;
-import org.lwjgl.glfw.GLFW;
+import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -190,6 +191,8 @@ public class RtxRemixMod implements ClientModInitializer {
     private static boolean remixMenuVisibilityReadFailed;
     private KeyMapping toggleHeldLightsKey;
     private KeyMapping toggleRtxKey;
+    /** The Controls-screen category of the mod's key mappings; its label key is {@code key.category.<namespace>.<path>}. */
+    private KeyMapping.Category keyCategory;
     private static final long CAMERA_TIME_STEP_TICKS = 10L;
     private static final long CAMERA_TIME_FAST_STEP_TICKS = 250L;
 
@@ -303,7 +306,7 @@ public class RtxRemixMod implements ClientModInitializer {
     /** Relocks the cursor for gameplay unless a Minecraft screen is current. */
     private static void relockCursorUnlessScreenOpen() {
         Minecraft client = Minecraft.getInstance();
-        if (client.screen == null) {
+        if (client.gui.screen() == null) {
             client.mouseHandler.grabMouse();
         }
     }
@@ -314,9 +317,8 @@ public class RtxRemixMod implements ClientModInitializer {
         }
         Minecraft client = Minecraft.getInstance();
         if (client != null && client.player != null) {
-            client.player.displayClientMessage(
-                    Component.literal("[RTX Remix] Menu unavailable: renderer is not initialized. Run /rtx status."),
-                    false);
+            client.player.sendSystemMessage(
+                    Component.literal("[RTX Remix] Menu unavailable: renderer is not initialized. Run /rtx status."));
         }
         LOGGER.warn("Remix menu request ignored because the renderer is not initialized");
         return false;
@@ -325,16 +327,17 @@ public class RtxRemixMod implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         instance = this;
-        EntityModelLayerRegistry.registerModelLayer(
+        ModelLayerRegistry.registerModelLayer(
                 CopperBeaconBlockEntityRenderer.BODY_MODEL_LAYER,
                 CopperBeaconBlockEntityRenderer::getBodyTexturedModelData);
-        EntityModelLayerRegistry.registerModelLayer(
+        ModelLayerRegistry.registerModelLayer(
                 CopperBeaconBlockEntityRenderer.LENS_MODEL_LAYER,
                 CopperBeaconBlockEntityRenderer::getLensTexturedModelData);
         BlockEntityRenderers.register(
                 CopperBeaconBlockEntity.TYPE, CopperBeaconBlockEntityRenderer::new);
         MenuScreens.register(CopperBeaconScreenHandler.TYPE, CopperBeaconScreen::new);
-        RemixWeatherRenderer.registerShaders();
+        // The weather pipelines compile on demand from the mod's shader resources;
+        // 26.x has no core-shader registration step.
         LOGGER.info("========================================");
         LOGGER.info("RTX Remix Renderer v{} initializing...", getModVersion());
         LOGGER.info("========================================");
@@ -353,26 +356,31 @@ public class RtxRemixMod implements ClientModInitializer {
         // are synced and register in RtxRemixCommonMod instead.
         RapidFoamParticles.register();
 
-        // G is unbound in vanilla 1.21.1 and unclaimed elsewhere in this mod, so
-        // this is a real registered binding rather than a raw GLFW intercept: it
-        // shows up in Options -> Controls and players can rebind it.
-        toggleHeldLightsKey = KeyBindingHelper.registerKeyBinding(
+        // Key mappings carry a registered category since 1.21.9; the label comes
+        // from key.category.<namespace>.<path> in the lang file.
+        keyCategory = KeyMapping.Category.register(
+                Identifier.fromNamespaceAndPath(RtxRemixCommonMod.MOD_ID, "rtxremix"));
+        // G is unbound in vanilla and unclaimed elsewhere in this mod, so this is a
+        // real registered binding rather than a raw key intercept: it shows up in
+        // Options -> Controls and players can rebind it. Keys are InputConstants
+        // values (SDL scancodes) since 26.1.
+        toggleHeldLightsKey = KeyMappingHelper.registerKeyMapping(
             new KeyMapping(
                 "key.rtxremix.toggleHeldLights",
-                InputConstants.Type.KEYSYM,
-                GLFW.GLFW_KEY_G,
-                "category.rtxremix"
+                InputConstants.Type.KEYBOARD,
+                InputConstants.KEY_G,
+                keyCategory
             )
         );
-        // F8 is unbound in vanilla 1.21.1 and sits away from the movement keys: a
-        // toggle that reloads the world renderer should not be a stray press away
-        // while playing. Same registered-binding treatment as the held-lights key.
-        toggleRtxKey = KeyBindingHelper.registerKeyBinding(
+        // F8 is unbound in vanilla and sits away from the movement keys: a toggle
+        // that reloads the world renderer should not be a stray press away while
+        // playing. Same registered-binding treatment as the held-lights key.
+        toggleRtxKey = KeyMappingHelper.registerKeyMapping(
             new KeyMapping(
                 "key.rtxremix.toggleRtx",
-                InputConstants.Type.KEYSYM,
-                GLFW.GLFW_KEY_F8,
-                "category.rtxremix"
+                InputConstants.Type.KEYBOARD,
+                InputConstants.KEY_F8,
+                keyCategory
             )
         );
 
@@ -384,7 +392,7 @@ public class RtxRemixMod implements ClientModInitializer {
                     if (rtxSettings == null) {
                         return;
                     }
-                    List<AbstractWidget> menuButtons = Screens.getButtons(screen);
+                    List<AbstractWidget> menuButtons = Screens.getWidgets(screen);
                     Component settingsButtonText = Component.translatable("rtxremix.settings.button");
                     menuButtons.removeIf(
                             widget -> widget.getMessage().equals(settingsButtonText));
@@ -397,7 +405,7 @@ public class RtxRemixMod implements ClientModInitializer {
                     }
                     Button button = Button.builder(
                                     settingsButtonText,
-                                    b -> client.setScreen(
+                                    b -> client.gui.setScreen(
                                             new RtxSettingsScreen(
                                                     screen, rtxSettings, RtxRemixMod::saveRtxSettings)))
                             .build();
@@ -461,8 +469,8 @@ public class RtxRemixMod implements ClientModInitializer {
                 if ((presses & 1) == 1) {
                     toggleRtx();
                     if (client.player != null) {
-                        client.player.displayClientMessage(
-                                Component.literal("RTX Rendering: " + (rtxEnabled ? "ON" : "OFF")), true);
+                        client.gui.hud.setOverlayMessage(
+                                Component.literal("RTX Rendering: " + (rtxEnabled ? "ON" : "OFF")), false);
                     }
                 }
             }
@@ -542,13 +550,13 @@ public class RtxRemixMod implements ClientModInitializer {
                 renderer.getChunkManager().onChunkUnloaded(pos);
             }
             if (Minecraft.getInstance().levelRenderer instanceof WorldRendererTerrainAccess access) {
-                access.rtxremix$onNeighbourColumnInvalidated(pos.x, pos.z);
+                access.rtxremix$onNeighbourColumnInvalidated(pos.x(), pos.z());
             }
         });
 
         // Zone discovery: server-thread scan of command blocks as chunks load.
         // The event only fires in-process (integrated server = single player).
-        ServerChunkEvents.CHUNK_LOAD.register((world, chunk) -> {
+        ServerChunkEvents.CHUNK_LOAD.register((world, chunk, generated) -> {
             if (renderer != null && Minecraft.getInstance().getSingleplayerServer() == world.getServer()) {
                 MarkerBlockScanner.scanChunk(renderer.getZoneRegistry(), chunk);
             }
@@ -567,59 +575,41 @@ public class RtxRemixMod implements ClientModInitializer {
                     }
                 });
 
-        // Applies pending world and resource changes and preloads the large
-        // block-entity atlases before vanilla's world render, where block entities
-        // are captured in place by BlockEntityRenderDispatcherMixin.
-        WorldRenderEvents.START.register(context -> {
-            if (renderer != null && renderer.isInitialized()) {
-                renderer.beginBlockOutlineFrame();
-            }
-            if (isRendererProfilingActive()) {
-                try (ProfileScope startScope = ProfileScope.begin("WorldRender.START")) {
-                    renderer.beginWorldRenderFrame();
-                }
-                transitionWorldRenderPhase("WorldRender.vanilla.setup");
-            } else {
-                closeWorldRenderPhaseScope();
-            }
-        });
-
-        WorldRenderEvents.AFTER_SETUP.register(context ->
-            transitionWorldRenderPhase("WorldRender.vanilla.terrainOpaque"));
-        WorldRenderEvents.BEFORE_ENTITIES.register(context ->
-            transitionWorldRenderPhase("WorldRender.vanilla.entities"));
-        WorldRenderEvents.AFTER_ENTITIES.register(context ->
-            transitionWorldRenderPhase("WorldRender.vanilla.blockEntities"));
-        WorldRenderEvents.BEFORE_BLOCK_OUTLINE.register((context, hitResult) -> {
+        // The frame's world half begins at LevelExtractor.extract and ends at the
+        // return of LevelRenderer.render (LevelExtractorFrameMixin and
+        // LevelRendererFrameMixin call onLevelExtractionStart, onLevelRenderStart
+        // and onLevelRenderEnd). Fabric's LevelRenderEvents only name the phases
+        // inside the main pass, in the order 26.3 runs them: the submits are
+        // collected before the frame graph executes, then opaque terrain, solid
+        // features, translucent features, translucent terrain, weather and clouds.
+        LevelRenderEvents.COLLECT_SUBMITS.register(context ->
+            transitionWorldRenderPhase("WorldRender.vanilla.submits"));
+        LevelRenderEvents.BEFORE_BLOCK_OUTLINE.register((context, outlineState) -> {
             transitionWorldRenderPhase("WorldRender.vanilla.blockOutline");
-            return true;
-        });
-        WorldRenderEvents.BLOCK_OUTLINE.register((context, outlineContext) -> {
             if (renderer != null
                     && renderer.isInitialized()
                     && isRtxEnabled()) {
-                renderer.captureBlockOutline(context, outlineContext);
+                renderer.captureBlockOutline(context, outlineState);
             }
             return true;
         });
-        WorldRenderEvents.BEFORE_DEBUG_RENDER.register(context ->
+        LevelRenderEvents.BEFORE_GIZMOS.register(context ->
+            transitionWorldRenderPhase("WorldRender.vanilla.gizmos"));
+        LevelRenderEvents.START_MAIN.register(context ->
+            transitionWorldRenderPhase("WorldRender.vanilla.terrainOpaque"));
+        LevelRenderEvents.AFTER_OPAQUE_TERRAIN.register(context ->
+            transitionWorldRenderPhase("WorldRender.vanilla.solidFeatures"));
+        LevelRenderEvents.AFTER_SOLID_FEATURES.register(context ->
+            transitionWorldRenderPhase("WorldRender.vanilla.translucentFeatures"));
+        LevelRenderEvents.AFTER_TRANSLUCENT_FEATURES.register(context ->
             transitionWorldRenderPhase("WorldRender.vanilla.debugAndTranslucent"));
-        WorldRenderEvents.AFTER_TRANSLUCENT.register(context ->
+        LevelRenderEvents.BEFORE_TRANSLUCENT_TERRAIN.register(context ->
+            transitionWorldRenderPhase("WorldRender.vanilla.translucentTerrain"));
+        LevelRenderEvents.AFTER_TRANSLUCENT_TERRAIN.register(context ->
             transitionWorldRenderPhase("WorldRender.vanilla.weatherClouds"));
-        WorldRenderEvents.LAST.register(context -> {
+        LevelRenderEvents.END_MAIN.register(context -> {
             transitionWorldRenderPhase("WorldRender.vanilla.last");
             closeWorldRendererProfilerPhase(context);
-        });
-
-        // WorldRenderer returns to GameRenderer before Minecraft draws the
-        // first-person arms/items. Mark the scene ready here, then submit it
-        // from GameRendererMixin after that model has been captured and before
-        // Minecraft draws its screen overlays.
-        WorldRenderEvents.END.register(context -> {
-            closeWorldRendererProfilerPhase(context);
-            closeWorldRenderPhaseScope();
-            ProfileScope.markWorldRenderEnd();
-            remixFrameReadyToSubmit = renderer != null && renderer.isInitialized();
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -632,6 +622,72 @@ public class RtxRemixMod implements ClientModInitializer {
         });
 
         LOGGER.info("RTX Remix Renderer initialized successfully!");
+    }
+
+    /**
+     * The first world work of a frame: the head of {@code LevelExtractor.extract},
+     * which runs only on frames that will render the level. Applies pending world
+     * and resource changes and preloads the large block-entity atlases before
+     * vanilla extracts anything, where block entities and entities are captured
+     * in place later in the frame. Called by {@code LevelExtractorFrameMixin}.
+     */
+    public static void onLevelExtractionStart() {
+        RtxRemixMod mod = instance;
+        if (mod == null) {
+            return;
+        }
+        if (renderer != null && renderer.isInitialized()) {
+            renderer.beginBlockOutlineFrame();
+        }
+        if (mod.isRendererProfilingActive()) {
+            try (ProfileScope startScope = ProfileScope.begin("WorldRender.START")) {
+                renderer.beginWorldRenderFrame();
+            }
+            mod.transitionWorldRenderPhase("WorldRender.vanilla.extract");
+        } else {
+            mod.closeWorldRenderPhaseScope();
+        }
+    }
+
+    /**
+     * The head of {@code LevelRenderer.render}: opens the entity capture window
+     * for the submits and feature passes that follow and forgets the previous
+     * frame's weather capture. Called by {@code LevelRendererFrameMixin}.
+     */
+    public static void onLevelRenderStart() {
+        RtxRemixMod mod = instance;
+        if (mod == null) {
+            return;
+        }
+        if (renderer != null) {
+            renderer.beginEntityFrame();
+            RemixWeatherRenderer weather = renderer.getWeatherRenderer();
+            if (weather != null) {
+                weather.beginFrame();
+            }
+        }
+        if (mod.isRendererProfilingActive()) {
+            mod.transitionWorldRenderPhase("WorldRender.vanilla.render");
+        } else {
+            mod.closeWorldRenderPhaseScope();
+        }
+    }
+
+    /**
+     * The return of {@code LevelRenderer.render}: vanilla returns to
+     * {@code GameRenderer.renderLevel}, which draws the first-person hands next.
+     * Marks the scene ready here, then submits it from {@code GameRendererMixin}
+     * after that model has been captured and before Minecraft submits its
+     * screen effects. Called by {@code LevelRendererFrameMixin}.
+     */
+    public static void onLevelRenderEnd() {
+        RtxRemixMod mod = instance;
+        if (mod == null) {
+            return;
+        }
+        mod.closeWorldRenderPhaseScope();
+        ProfileScope.markWorldRenderEnd();
+        mod.remixFrameReadyToSubmit = renderer != null && renderer.isInitialized();
     }
 
     /**
@@ -683,14 +739,16 @@ public class RtxRemixMod implements ClientModInitializer {
                 return;
             }
             mod.frameFailureLogged = false;
-            if (remixTexture > 0 && mod.textureOverlay != null && isRtxEnabled()) {
-                mod.textureOverlay.render(remixTexture);
+            GpuTextureView remixColor = renderer.getInteropColorView();
+            if (remixTexture > 0 && remixColor != null && mod.textureOverlay != null && isRtxEnabled()) {
+                // The main render target is the frame's colour and depth; the GL
+                // default framebuffer only receives it in the swapchain blit later.
+                RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
+                mod.textureOverlay.render(remixColor, target);
                 RemixWeatherRenderer weather = renderer.getWeatherRenderer();
                 if (weather != null) {
                     try (ProfileScope weatherScope = ProfileScope.begin("Weather")) {
-                        weather.render(
-                                remixTexture,
-                                renderer.getInteropDepthTexture());
+                        weather.render(remixColor, renderer.getInteropDepthView(), target);
                         weatherScope
                                 .drawCalls(weather.getLastDrawCount())
                                 .vertexCount(weather.getLastQuadCount() * 4);
@@ -725,8 +783,8 @@ public class RtxRemixMod implements ClientModInitializer {
         }
     }
 
-    private static void closeWorldRendererProfilerPhase(WorldRenderContext context) {
-        if (context != null && context.worldRenderer() instanceof WorldRendererProfilingAccess access) {
+    private static void closeWorldRendererProfilerPhase(AbstractLevelRenderContext context) {
+        if (context != null && context.levelRenderer() instanceof WorldRendererProfilingAccess access) {
             access.rtxremix$closeProfilerPhaseForFabricEvent();
         }
     }
@@ -1783,7 +1841,7 @@ public class RtxRemixMod implements ClientModInitializer {
             renderer.getChunkManager().clear();
         }
         LongSet built = builtSections(client);
-        client.levelRenderer.allChanged();
+        client.levelExtractor.allChanged();
         recaptureTerrainForRemix(client, built);
         return true;
     }
@@ -1802,7 +1860,7 @@ public class RtxRemixMod implements ClientModInitializer {
         Minecraft client = Minecraft.getInstance();
         if (client != null && client.levelRenderer != null) {
             LongSet built = builtSections(client);
-            client.levelRenderer.allChanged();
+            client.levelExtractor.allChanged();
             recaptureTerrainForRemix(client, built);
         }
     }
@@ -1822,7 +1880,8 @@ public class RtxRemixMod implements ClientModInitializer {
     private static Object pendingRecaptureWorld;
 
     /**
-     * The sections vanilla has built, taken before a {@code WorldRenderer.reload()}
+     * The sections vanilla has built, taken before a {@code LevelExtractor.allChanged()}
+     * (the 26.x reload, which invalidates the compiled geometry on the next extraction)
      * forgets them, plus whatever the previous recapture queued in this world that may
      * still be building. Vanilla builds a section when its occlusion walk reaches it, so
      * the built set is the frustum-driven subset of the loaded area: the terrain the
@@ -1854,9 +1913,9 @@ public class RtxRemixMod implements ClientModInitializer {
     static void recaptureTerrainForRemix(Minecraft client, LongSet built) {
         if (!isWorldActive() || client.levelRenderer == null) return;
         if (client.getCameraEntity() == null) {
-            // Without a camera entity, WorldRenderer.reload() skips
-            // BuiltChunkStorage.updateCameraPosition, so section origins are
-            // still index-based and queueing would capture nothing useful.
+            // Without a camera entity, the reload never repositions the view area
+            // around the camera, so section origins are still index-based and
+            // queueing would capture nothing useful.
             LOGGER.warn("Skipping Remix terrain recapture: no camera entity (world still loading?)");
             return;
         }
@@ -2250,8 +2309,15 @@ public class RtxRemixMod implements ClientModInitializer {
         return controller != null && controller.shouldHandleRecordingShortcut();
     }
 
+    /**
+     * Handles the recording-time shortcut for one key event.
+     *
+     * @param key    the key's {@code InputConstants} value ({@code KeyEvent.key()})
+     * @param action {@code InputConstants.PRESS}, {@code REPEAT} or {@code RELEASE}
+     * @param mods   the event's modifier bits ({@code KeyEvent.modifiers()})
+     */
     public static boolean handleCameraTimeShortcut(int key, int action, int mods) {
-        if (action != GLFW.GLFW_PRESS && action != GLFW.GLFW_REPEAT) {
+        if (action != InputConstants.PRESS && action != InputConstants.REPEAT) {
             return false;
         }
 
@@ -2288,27 +2354,27 @@ public class RtxRemixMod implements ClientModInitializer {
 
     static int cameraTimeAdjustmentDirection(int key, int mods) {
         return switch (key) {
-            case GLFW.GLFW_KEY_EQUAL -> 1;
-            case GLFW.GLFW_KEY_MINUS -> -1;
+            case InputConstants.KEY_EQUALS -> 1;
+            case InputConstants.KEY_MINUS -> -1;
             default -> 0;
         };
     }
 
     static long cameraTimeAdjustmentStep(int mods) {
-        return (mods & GLFW.GLFW_MOD_CONTROL) != 0
+        return (mods & InputConstants.MOD_CONTROL) != 0
                 ? CAMERA_TIME_FAST_STEP_TICKS
                 : CAMERA_TIME_STEP_TICKS;
     }
 
     private static void sendCameraMessage(Minecraft client, String message) {
         if (client != null && client.player != null) {
-            client.player.displayClientMessage(Component.literal("[Camera] " + message), false);
+            client.player.sendSystemMessage(Component.literal("[Camera] " + message));
         }
     }
 
     private static void sendCameraActionBar(Minecraft client, String message) {
         if (client != null && client.player != null) {
-            client.player.displayClientMessage(Component.literal("[Camera] " + message), true);
+            client.gui.hud.setOverlayMessage(Component.literal("[Camera] " + message), false);
         }
     }
 
@@ -2361,7 +2427,7 @@ public class RtxRemixMod implements ClientModInitializer {
                 LongSet built = enabled
                         ? builtSections(client)
                         : LongSets.emptySet();
-                client.levelRenderer.allChanged();
+                client.levelExtractor.allChanged();
                 if (enabled) {
                     recaptureTerrainForRemix(client, built);
                 }

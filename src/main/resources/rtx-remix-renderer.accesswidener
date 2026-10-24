@@ -9,8 +9,9 @@ accessWidener v2 official
 
 # ===== section: core-frame =====
 
-# Camera access
-accessible method net/minecraft/client/renderer/GameRenderer getFov (Lnet/minecraft/client/Camera;FZ)D
+# No directives. The 1.21.1 GameRenderer.getFov entry is gone: 26.3 exposes the
+# frame's world field of view as Camera.getFov(), and every other frame hook
+# goes through public API or a mixin shadow.
 
 # ===== section: content =====
 

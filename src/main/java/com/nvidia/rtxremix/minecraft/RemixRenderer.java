@@ -46,24 +46,32 @@ import com.nvidia.rtxremix.minecraft.entity.RemixEntityPass;
 import com.nvidia.rtxremix.minecraft.entity.RemixEntitySubmitter;
 import com.nvidia.rtxremix.minecraft.entity.RemixFirstPersonPass;
 import com.nvidia.rtxremix.minecraft.cloud.CloudRenderer;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.renderpearl.api.device.DeviceInfo;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
 import it.unimi.dsi.fastutil.longs.LongSet;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.client.renderer.ItemInHandRenderer;
+import net.minecraft.client.renderer.FirstPersonHandsAndItemsRenderer;
+import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.client.renderer.state.level.BlockOutlineRenderState;
+import net.minecraft.client.renderer.state.level.FirstPersonHandsAndItemsRenderState;
+import net.minecraft.client.renderer.state.level.PlayerRenderState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.material.FogType;
 import net.minecraft.world.phys.Vec3;
-import org.lwjgl.glfw.GLFWNativeWin32;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GLCapabilities;
+import org.lwjgl.sdl.SDLProperties;
+import org.lwjgl.sdl.SDLVideo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -226,15 +234,24 @@ public class RemixRenderer {
         try {
             lastCameraMediumHandle = Long.MIN_VALUE;
 
+            // The GL-to-Vulkan interop needs a GL context and GL textures to import
+            // into, so the renderer only comes up on the OpenGL backend. The check is
+            // first because everything below assumes a current GL context.
+            DeviceInfo deviceInfo = RenderSystem.getDevice().getDeviceInfo();
+            if (!GraphicsBackendPolicy.isOpenGl(deviceInfo.backendName())) {
+                throw new IllegalStateException(GraphicsBackendPolicy.refusalMessage(deviceInfo.backendName()));
+            }
+            LOGGER.info("Graphics backend: {} ({})", deviceInfo.backendName(), deviceInfo.driverInfo());
+
             Minecraft client = Minecraft.getInstance();
-            long glfwHandle = client.getWindow().getWindow();
-            
-            windowHandle = getHwndFromGlfw(glfwHandle);
-            
+            long sdlWindow = client.getWindow().handle();
+
+            windowHandle = getHwndFromSdl(sdlWindow);
+
             if (windowHandle == 0) {
                 throw new RuntimeException("Failed to get native window handle");
             }
-            
+
             LOGGER.info("Got window handle: 0x{}", Long.toHexString(windowHandle));
             
             Path dll = runtimeDll(FabricLoader.getInstance().getGameDir());
@@ -273,15 +290,19 @@ public class RemixRenderer {
             // RTXREMIX_WINDOW_POS="x,y" moves the window before startup() so the
             // swapchain is created on the monitor that will display it (benchmarks
             // use this to target a specific monitor, e.g. a 4K panel at a negative
-            // desktop coordinate). Must run on the render thread, which owns GLFW.
+            // desktop coordinate). Must run on the render thread, which owns the
+            // SDL video subsystem.
             String windowPos = System.getenv("RTXREMIX_WINDOW_POS");
             if (windowPos != null && !windowPos.isBlank()) {
                 String[] parts = windowPos.split(",");
                 try {
                     int x = Integer.parseInt(parts[0].trim());
                     int y = Integer.parseInt(parts[1].trim());
-                    org.lwjgl.glfw.GLFW.glfwSetWindowPos(glfwHandle, x, y);
-                    LOGGER.info("RTXREMIX_WINDOW_POS: moved window to ({}, {})", x, y);
+                    if (SDLVideo.SDL_SetWindowPosition(sdlWindow, x, y)) {
+                        LOGGER.info("RTXREMIX_WINDOW_POS: moved window to ({}, {})", x, y);
+                    } else {
+                        LOGGER.warn("RTXREMIX_WINDOW_POS: the window manager declined ({}, {})", x, y);
+                    }
                 } catch (RuntimeException e) {
                     LOGGER.warn("RTXREMIX_WINDOW_POS: could not apply '{}': {}", windowPos, e.getMessage());
                 }
@@ -496,10 +517,16 @@ public class RemixRenderer {
     }
     
     /**
-     * Gets the Win32 HWND from a GLFW window handle.
+     * Gets the Win32 HWND from an SDL window: Minecraft 26.x creates its window
+     * through SDL, which publishes the native handle as a window property.
      */
-    private long getHwndFromGlfw(long glfwHandle) {
-        return GLFWNativeWin32.glfwGetWin32Window(glfwHandle);
+    private long getHwndFromSdl(long sdlWindow) {
+        int properties = SDLVideo.SDL_GetWindowProperties(sdlWindow);
+        if (properties == 0) {
+            return 0L;
+        }
+        return SDLProperties.SDL_GetPointerProperty(
+                properties, SDLVideo.SDL_PROP_WINDOW_WIN32_HWND_POINTER, 0L);
     }
     
     /**
@@ -558,7 +585,7 @@ public class RemixRenderer {
             Minecraft client = Minecraft.getInstance();
             if (client != null && client.levelRenderer != null) {
                 LongSet built = RtxRemixMod.builtSections(client);
-                client.levelRenderer.allChanged();
+                client.levelExtractor.allChanged();
                 RtxRemixMod.recaptureTerrainForRemix(client, built);
             }
             pendingTerrainRecaptureAfterTextureReload = false;
@@ -784,18 +811,18 @@ public class RemixRenderer {
             }
             submitPendingParticleFrame();
 
-            Camera camera = client.gameRenderer.getMainCamera();
-            float tickDelta = client.getTimer().getGameTimeDeltaPartialTick(true);
+            Camera camera = client.gameRenderer.mainCamera();
+            float tickDelta = client.getDeltaTracker().getGameTimeDeltaPartialTick(true);
             particleFuture = startParticleRenderTask(tickDelta, ProfileScope.currentFrameIndex());
-            
+
             perfTimer.begin(perfCamera);
             try (ProfileScope cameraScope = ProfileScope.begin("Camera")) {
                 updateCamera(camera, tickDelta);
             } finally {
                 perfTimer.end(perfCamera);
             }
-            
-            Vec3 cameraPos = camera.getPosition();
+
+            Vec3 cameraPos = camera.position();
 
             perfTimer.begin(perfLights);
             try (ProfileScope lightsScope = ProfileScope.begin("Lights")) {
@@ -1185,13 +1212,20 @@ public class RemixRenderer {
     }
 
     /**
-     * Updates the Remix camera from Minecraft's camera
+     * Updates the Remix camera from Minecraft's camera.
+     *
+     * <p>Minecraft 26.x keeps its own projection on the {@link Camera} (reverse-Z,
+     * since 26.2); Remix gets a camera built from the position, yaw, pitch and
+     * field of view only, with the mod's own near and far planes, so vanilla's depth
+     * convention never reaches the traced scene. {@code Camera.getFov()} is this
+     * frame's world field of view: {@code GameRenderer.update} computed it before
+     * extraction, and the hand uses the separate {@code hudFov}.
      */
     private void updateCamera(Camera camera, float tickDelta) {
         try {
-            Vec3 pos = camera.getPosition();
-            float pitch = camera.getXRot();
-            float yaw = camera.getYRot();
+            Vec3 pos = camera.position();
+            float pitch = camera.xRot();
+            float yaw = camera.yRot();
     
             float yawRad = (float) Math.toRadians(-yaw);
             float pitchRad = (float) Math.toRadians(pitch);
@@ -1209,7 +1243,7 @@ public class RemixRenderer {
             float upZ = rightX * forwardY - rightY * forwardX;
     
             Minecraft client = Minecraft.getInstance();
-            float worldFov = (float) client.gameRenderer.getFov(camera, tickDelta, true);
+            float worldFov = camera.getFov();
             int width = client.getWindow().getWidth();
             int height = client.getWindow().getHeight();
             float aspect = (float) width / (float) height;
@@ -1217,7 +1251,8 @@ public class RemixRenderer {
                 weatherRenderer.updateCamera(
                         camera,
                         worldFov,
-                        aspect);
+                        width,
+                        height);
             }
     
             CameraInfoParameterizedEXT worldCameraParams = CameraInfoParameterizedEXT.builder()
@@ -1405,6 +1440,16 @@ public class RemixRenderer {
     public int getInteropDepthTexture() {
         return interopGlVk.getDepthTexture();
     }
+
+    /** The composited Remix image as a sampleable view, or null when no image exists this frame. */
+    public GpuTextureView getInteropColorView() {
+        return interopGlVk == null ? null : interopGlVk.getColorView();
+    }
+
+    /** The Remix primary depth as a sampleable view, or null when no image exists this frame. */
+    public GpuTextureView getInteropDepthView() {
+        return interopGlVk == null ? null : interopGlVk.getDepthView();
+    }
     
     /** Runs on the client executor so the clear lands during teardown, before the next world initializes. */
     public void clearWorld() {
@@ -1441,10 +1486,14 @@ public class RemixRenderer {
     /**
      * Captures vanilla's targeted-block outline for Remix submission later in
      * the same frame.
+     *
+     * <p>Called from the {@code LevelRenderEvents.BEFORE_BLOCK_OUTLINE} handler
+     * with the outline render state vanilla extracted for this frame; the
+     * context's {@code levelState()} carries the camera.
      */
     public void captureBlockOutline(
-            WorldRenderContext context,
-            WorldRenderContext.BlockOutlineContext outline) {
+            LevelRenderContext context,
+            BlockOutlineRenderState outline) {
         if (blockOutlinePass != null) {
             blockOutlinePass.captureBlockOutline(context, outline);
         }
@@ -1682,14 +1731,36 @@ public class RemixRenderer {
                 : null;
     }
 
+    /**
+     * Captures the first-person hands and items where vanilla submits them.
+     *
+     * <p>Called from {@code GameRendererMixin}'s wrap of {@code
+     * FirstPersonHandsAndItemsRenderer.submitHandsWithItems}, in place of the
+     * submission that would have gone to vanilla's "Item in hand" render pass, so
+     * Minecraft's own animation and hand selection run while the geometry reaches
+     * the Remix capture. {@code handsState} is the frame's extracted hand state and
+     * {@code submitNodeCollector} the storage vanilla would have submitted into.
+     * The packed light is the camera entity's, as vanilla's 1.21.1 hand draw used.
+     */
     public void captureFirstPersonModel(
-            ItemInHandRenderer heldItemRenderer,
-            float tickDelta,
-            PoseStack matrices,
-            LocalPlayer player,
-            int light) {
-        if (firstPersonPass != null && initialized && RtxRemixMod.isRtxEnabled()) {
-            firstPersonPass.capture(heldItemRenderer, tickDelta, matrices, player, light);
+            FirstPersonHandsAndItemsRenderer handsRenderer,
+            float partialTicks,
+            PoseStack poseStack,
+            SubmitNodeCollector submitNodeCollector,
+            PlayerRenderState playerState,
+            FirstPersonHandsAndItemsRenderState handsState) {
+        if (firstPersonPass == null || !initialized || !RtxRemixMod.isRtxEnabled()) {
+            return;
         }
+        Minecraft client = Minecraft.getInstance();
+        LocalPlayer player = client.player;
+        Entity cameraEntity = client.getCameraEntity();
+        int light = cameraEntity == null
+                ? 0
+                : client.getEntityRenderDispatcher().getPackedLightCoords(cameraEntity, partialTicks);
+        // The pass still takes the 1.21.1 argument list; the hands renderer stands in
+        // for the retired ItemInHandRenderer until the entities port retypes it and
+        // takes the collector and render states this hook now provides.
+        firstPersonPass.capture(handsRenderer, partialTicks, poseStack, player, light);
     }
 }

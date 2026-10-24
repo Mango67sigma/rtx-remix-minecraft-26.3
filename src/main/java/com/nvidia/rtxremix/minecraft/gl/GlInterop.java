@@ -4,6 +4,9 @@
  */
 package com.nvidia.rtxremix.minecraft.gl;
 
+import com.mojang.renderpearl.api.GpuFormat;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
+import com.mojang.renderpearl.backend.opengl.GlStateManager;
 import com.nvidia.rtxremix.InteropInfo;
 import com.nvidia.rtxremix.RemixBridge;
 import com.nvidia.rtxremix.TextureFormat;
@@ -26,6 +29,13 @@ import static org.lwjgl.opengl.GL45.*;
 
 /**
  * Imports Remix color and primary-depth images into OpenGL under one semaphore pair.
+ *
+ * <p>The imports are raw GL ({@code EXT_memory_object}, DSA texture creation), so
+ * the mod's own GL state never goes through Minecraft's state cache. Each imported
+ * image is also exposed as a {@link GpuTextureView} through {@link ExternalGlTexture},
+ * which is how the composite and weather passes sample it through the
+ * {@code RenderPass} API. Textures are deleted through {@code GlStateManager} so
+ * the backend's texture-binding cache cannot keep a dead name.
  */
 public final class GlInterop {
     private static final Logger LOGGER = LoggerFactory.getLogger(GlInterop.class);
@@ -154,6 +164,16 @@ public final class GlInterop {
         return depthImage.texture;
     }
 
+    /** The colour image as a sampleable view, or null while no image is imported. */
+    public GpuTextureView getColorView() {
+        return colorImage.view;
+    }
+
+    /** The primary-depth image as a sampleable view, or null while no image is imported. */
+    public GpuTextureView getDepthView() {
+        return depthImage.view;
+    }
+
     public int getVkDoneSemaphore() {
         return vkDoneSemaphore;
     }
@@ -208,6 +228,15 @@ public final class GlInterop {
     }
 
     /**
+     * The format the wrapper reports for a GL internal format. It only describes the
+     * texture to Minecraft's frontend (sampling does not consult it); the GL storage
+     * keeps its real format, sRGB included.
+     */
+    private static GpuFormat gpuFormat(int glInternalFormat) {
+        return glInternalFormat == GL_R32F ? GpuFormat.R32_FLOAT : GpuFormat.RGBA8_UNORM;
+    }
+
+    /**
      * GL error flags are sticky, so an error left by the rest of the frame would be
      * reported as an interop failure by the next {@link #checkGlError}. Called once at
      * the head of each interop sequence rather than in every method: glGetError is a
@@ -233,6 +262,7 @@ public final class GlInterop {
         private long memoryHandle;
         private int memoryObject;
         private int texture;
+        private GpuTextureView view;
         private int width;
         private int height;
         private int internalFormat;
@@ -291,6 +321,8 @@ public final class GlInterop {
                 glTextureParameteri(texture, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTextureParameteri(texture, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 checkGlError("glTextureStorageMem2DEXT(" + debugName + ")");
+                view = ExternalGlTexture.wrap(
+                        "Remix interop " + debugName, gpuFormat(internalFormat), width, height, texture);
             } catch (RuntimeException exception) {
                 destroy();
                 throw exception;
@@ -322,12 +354,18 @@ public final class GlInterop {
         }
 
         private void destroy() {
+            if (view != null) {
+                ExternalGlTexture.release(view);
+                view = null;
+            }
             if (destinationFbo != 0) {
                 glDeleteFramebuffers(destinationFbo);
                 destinationFbo = 0;
             }
             if (texture != 0) {
-                glDeleteTextures(texture);
+                // The composite and weather passes bind this name through the backend's
+                // texture cache; deleting through it drops the cached binding too.
+                GlStateManager._deleteTexture(texture);
                 texture = 0;
             }
             if (memoryObject != 0) {

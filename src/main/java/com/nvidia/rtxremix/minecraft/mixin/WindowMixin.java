@@ -6,50 +6,31 @@ package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.mojang.blaze3d.platform.Window;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-import static org.lwjgl.glfw.GLFW.GLFW_CONTEXT_VERSION_MAJOR;
-import static org.lwjgl.glfw.GLFW.GLFW_CONTEXT_VERSION_MINOR;
-import static org.lwjgl.glfw.GLFW.GLFW_OPENGL_CORE_PROFILE;
-import static org.lwjgl.glfw.GLFW.GLFW_OPENGL_PROFILE;
-import static org.lwjgl.glfw.GLFW.glfwWindowHint;
-
 /**
- * Raises the OpenGL context the window is created with to what the Remix GL
- * interop needs, and logs the GLFW handle once the window exists.
+ * Logs the SDL window handle once the window exists. The OpenGL context version
+ * the Remix GL interop needs is requested where 26.3 sets the context attributes,
+ * in {@code GlBackendMixin}, because the window no longer creates its own
+ * context: the GL device creates one shared context before any window.
  */
 @Mixin(Window.class)
 public abstract class WindowMixin {
-    
-    @Shadow
-    private long window;
 
+    @Shadow
+    @Final
+    private long handle;
+
+    /** The eight-argument constructor is the one every other constructor delegates to. */
     @Inject(
-        method = "<init>",
-        at = @At(
-            value = "INVOKE",
-            target = "Lorg/lwjgl/glfw/GLFW;glfwCreateWindow(IILjava/lang/CharSequence;JJ)J",
-            remap = false
-        )
-    )
-    private void rtxremix$requireOpenGl44(CallbackInfo ci) {
-        // Core-profile 4.4: the GL interop imports Remix's images and semaphores
-        // through EXT_memory_object and EXT_semaphore.
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 4);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    }
-    
-    /** Logs the GLFW window handle once the window exists. */
-    @Inject(
-        method = "<init>",
-        at = @At("TAIL")
-    )
+            method = "<init>(Lcom/mojang/blaze3d/platform/WindowEventHandler;Lcom/mojang/blaze3d/platform/DisplayData;Ljava/lang/String;ZLjava/lang/String;Lcom/mojang/blaze3d/platform/MonitorManager;Lcom/mojang/renderpearl/api/device/GpuBackend;I)V",
+            at = @At("TAIL"))
     private void rtxremix$onWindowCreated(CallbackInfo ci) {
-        RtxRemixMod.LOGGER.info("Window created with GLFW handle: {}", window);
+        RtxRemixMod.LOGGER.info("Window created with SDL handle: {}", handle);
     }
 }

@@ -1,17 +1,21 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#version 150
+#version 330
+#extension GL_ARB_separate_shader_objects : require
 
+#include <minecraft:projection.glsl>
+
+// Sampler0: the rain sheet texture. Sampler1: the Remix output image this frame,
+// stored top row first (hence the vertical flips on screen-space lookups).
 uniform sampler2D Sampler0;
 uniform sampler2D Sampler1;
-uniform mat4 ProjMat;
 
-in vec2 texCoord;
-in vec4 vertexColor;
-in vec3 viewPosition;
+layout(location = 0) in vec2 texCoord;
+layout(location = 1) in vec4 vertexColor;
+layout(location = 2) in vec3 viewPosition;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
 
 vec2 projectedUv(vec3 direction) {
     vec4 clip = ProjMat * vec4(direction, 0.0);

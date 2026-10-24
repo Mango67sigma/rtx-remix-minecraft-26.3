@@ -6,7 +6,7 @@ package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.JoinBurstHold;
 import com.nvidia.rtxremix.minecraft.RemixRenderer;
-import net.minecraft.client.gui.screens.ReceivingLevelScreen;
+import net.minecraft.client.gui.screens.LevelLoadingScreen;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -15,13 +15,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Keeps the terrain-download screen up until Remix's world-join burst has settled.
  *
- * <p>Vanilla closes this screen from its tick as soon as the player's own section has
- * built, which is while Remix pays its first-sight costs behind the screen. The close is
- * cancelled while {@link JoinBurstHold#keepScreen(long)} says so; vanilla retries every
- * tick, so the screen closes on the first tick after the hold ends.
+ * <p>Since 1.21.9 the download screen is {@code LevelLoadingScreen}, which also
+ * covers portal transitions. Vanilla closes it from its tick as soon as the load
+ * tracker reports the level ready, which it does once the player's own section is
+ * compiled and visible ({@code LevelRenderer.isSectionCompiledAndVisible} runs the
+ * tracker's callback); that is while Remix pays its first-sight costs behind the
+ * screen. The close is cancelled while {@link JoinBurstHold#keepScreen(long)} says
+ * so; vanilla retries every tick, so the screen closes on the first tick after the
+ * hold ends. Cancelling at the head also skips the "ready to play" narration until
+ * the screen really closes.
  */
-@Mixin(ReceivingLevelScreen.class)
-public abstract class DownloadingTerrainScreenMixin {
+@Mixin(LevelLoadingScreen.class)
+public abstract class LevelLoadingScreenMixin {
 
     private boolean rtxremix$holdBegun;
 

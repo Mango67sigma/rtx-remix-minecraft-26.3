@@ -4,112 +4,84 @@
  */
 package com.nvidia.rtxremix.minecraft.gl;
 
+import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.vertex.BufferBuilder;
-import com.mojang.blaze3d.vertex.BufferUploader;
-import com.mojang.blaze3d.vertex.DefaultVertexFormat;
-import com.mojang.blaze3d.vertex.Tesselator;
-import com.mojang.blaze3d.vertex.VertexFormat;
-import com.mojang.blaze3d.vertex.VertexSorting;
-import net.minecraft.client.Minecraft;
-import net.minecraft.client.renderer.GameRenderer;
-import org.joml.Matrix4f;
+import com.mojang.renderpearl.api.commands.RenderPass;
+import com.mojang.renderpearl.api.pipeline.ColorTargetState;
+import com.mojang.renderpearl.api.pipeline.PrimitiveTopology;
+import com.mojang.renderpearl.api.pipeline.RenderPipeline;
+import com.mojang.renderpearl.api.textures.FilterMode;
+import com.mojang.renderpearl.api.textures.GpuTextureView;
+import com.nvidia.rtxremix.minecraft.RtxRemixCommonMod;
+import net.minecraft.client.renderer.BindGroupLayouts;
+import net.minecraft.resources.Identifier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Optional;
+
 /**
- * Draws the Remix output texture as a full-screen, fully opaque quad on
- * Minecraft's main framebuffer, after the world and first-person model have
- * been submitted and before the screen overlays and HUD.
+ * Draws the Remix output image as a full-screen, fully opaque triangle on
+ * Minecraft's main render target, after the world and first-person model have
+ * been submitted and before the screen effects and HUD.
  *
- * <p>Render thread only. It goes through {@code RenderSystem} and
- * {@code Tessellator} rather than raw GL so the surrounding vanilla render
- * state stays valid.
+ * <p>Render thread only. The draw goes through a {@code RenderPass} with its own
+ * {@link RenderPipeline} rather than raw GL, so the GL backend's cached state
+ * stays valid for everything vanilla draws afterwards. The pipeline neither tests
+ * nor writes depth and does not blend: the Remix image replaces vanilla's output.
  */
 public class TextureOverlay {
-    
+
     private static final Logger LOGGER = LoggerFactory.getLogger(TextureOverlay.class);
-    
-    private final Minecraft client;
-    
+
+    /** Full-screen triangle from the vanilla screen-quad vertex stage; the fragment stage flips Y. */
+    private static final RenderPipeline BLIT = RenderPipeline.builder()
+            .withLocation(Identifier.fromNamespaceAndPath(RtxRemixCommonMod.MOD_ID, "pipeline/remix_blit"))
+            .withVertexShader("core/screenquad")
+            .withFragmentShader(Identifier.fromNamespaceAndPath(RtxRemixCommonMod.MOD_ID, "core/remix_blit"))
+            .withBindGroupLayout(BindGroupLayouts.IN_SAMPLER)
+            .withPrimitiveTopology(PrimitiveTopology.TRIANGLES)
+            .withColorTargetState(ColorTargetState.DEFAULT)
+            .build();
+
     public TextureOverlay() {
-        this.client = Minecraft.getInstance();
         LOGGER.info("TextureOverlay initialized");
     }
-    
+
     /**
-     * Renders a texture as a full-screen overlay.
-     * 
-     * @param textureId The GL texture ID to render as full-screen overlay
+     * Composites the Remix image onto {@code target}.
+     *
+     * @param remixColor the interop colour image's view, or null when no image exists this frame
+     * @param target     Minecraft's main render target
      */
-    public void render(int textureId) {
-        if (textureId <= 0) {
+    public void render(GpuTextureView remixColor, RenderTarget target) {
+        if (remixColor == null || target == null) {
             return;
         }
-        
-        if (client == null || client.getWindow() == null) {
+        GpuTextureView colorView = target.getColorTextureView();
+        if (colorView == null) {
             return;
         }
-        
         try {
-            renderTextureOverlay(textureId);
+            renderTextureOverlay(remixColor, colorView);
         } catch (Exception e) {
             LOGGER.error("Error rendering texture overlay", e);
         }
     }
-    
-    private void renderTextureOverlay(int texId) {
-        int width = client.getWindow().getGuiScaledWidth();
-        int height = client.getWindow().getGuiScaledHeight();
 
-        if (client.getMainRenderTarget() != null) {
-            client.getMainRenderTarget().bindWrite(true);
+    private void renderTextureOverlay(GpuTextureView remixColor, GpuTextureView colorView) {
+        try (RenderPass pass = RenderSystem.getDevice()
+                .createCommandEncoder()
+                .createRenderPass(() -> "Remix composite", colorView, Optional.empty())) {
+            pass.setPipeline(RenderSystem.getCompiledPipeline(BLIT));
+            pass.setUniform(
+                    "InSampler",
+                    remixColor,
+                    RenderSystem.getSamplerCache().getClampToEdge(FilterMode.LINEAR));
+            pass.draw(3, 1, 0, 0);
         }
-
-        Matrix4f savedProjection = RenderSystem.getProjectionMatrix();
-
-        // Opaque: the Remix image replaces vanilla's output rather than blending
-        // with it, and it neither tests nor writes depth.
-        RenderSystem.disableDepthTest();
-        RenderSystem.depthMask(false);
-        RenderSystem.disableBlend();
-
-        Matrix4f projMatrix = new Matrix4f().setOrtho(
-            0.0f, (float) width, (float) height, 0.0f, -1000.0f, 1000.0f
-        );
-        RenderSystem.setProjectionMatrix(projMatrix, VertexSorting.ORTHOGRAPHIC_Z);
-
-        RenderSystem.getModelViewStack().pushMatrix();
-        RenderSystem.getModelViewStack().identity();
-        RenderSystem.applyModelViewMatrix();
-
-        RenderSystem.setShader(GameRenderer::getPositionTexShader);
-        RenderSystem.setShaderTexture(0, texId);
-        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
-
-        // Standard GL UVs, with (0,0) at the top left: the interop blit already
-        // corrects the Vulkan image's orientation.
-        Matrix4f identity = new Matrix4f();
-        BufferBuilder bufferBuilder = Tesselator.getInstance()
-            .begin(VertexFormat.Mode.QUADS, DefaultVertexFormat.POSITION_TEX);
-
-        bufferBuilder.addVertex(identity, 0,     0,      0).setUv(0.0f, 0.0f);
-        bufferBuilder.addVertex(identity, 0,     height, 0).setUv(0.0f, 1.0f);
-        bufferBuilder.addVertex(identity, width, height, 0).setUv(1.0f, 1.0f);
-        bufferBuilder.addVertex(identity, width, 0,      0).setUv(1.0f, 0.0f);
-
-        BufferUploader.drawWithShader(bufferBuilder.buildOrThrow());
-
-        RenderSystem.getModelViewStack().popMatrix();
-        RenderSystem.applyModelViewMatrix();
-        RenderSystem.setProjectionMatrix(savedProjection, VertexSorting.ORTHOGRAPHIC_Z);
-
-        RenderSystem.depthMask(true);
-        RenderSystem.enableDepthTest();
-        // Blend is left disabled; the HUD enables it when it needs it.
-        RenderSystem.setShaderColor(1.0f, 1.0f, 1.0f, 1.0f);
     }
-    
+
     /**
      * Cleans up resources.
      */
