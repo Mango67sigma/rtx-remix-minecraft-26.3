@@ -21,15 +21,19 @@ import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.nvidia.rtxremix.minecraft.RemixRenderer;
 import com.nvidia.rtxremix.minecraft.mixin.BillboardParticleAccessor;
 import com.nvidia.rtxremix.minecraft.mixin.ParticleAccessor;
+import com.nvidia.rtxremix.minecraft.mixin.ParticleGroupAccessor;
 import com.nvidia.rtxremix.minecraft.mixin.ParticleManagerAccessor;
-import com.nvidia.rtxremix.minecraft.mixin.SpriteBillboardParticleAccessor;
+import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.particle.Particle;
+import net.minecraft.client.particle.ParticleGroup;
 import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.particle.SingleQuadParticle;
-import net.minecraft.client.particle.TextureSheetParticle;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
+import org.joml.Quaternionf;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,6 +51,24 @@ import java.util.Queue;
  * <p>Each render bucket owns one mesh for particles that share material and
  * draw-state. Particle slots are kept dense, so mesh recreation and drawing
  * submit only the active particle range instead of the high-water capacity.
+ *
+ * <p>Since 1.21.9 vanilla keeps particles in {@link ParticleGroup}s keyed by a
+ * {@link ParticleRenderType} that names the group, not a draw state, and every
+ * {@link SingleQuadParticle} names its own atlas and pipeline through its
+ * {@code SingleQuadParticle.Layer}. The bucket is therefore chosen per
+ * particle from the layer's atlas: the block atlas takes the terrain route the
+ * 1.21.1 {@code TERRAIN_SHEET} took, the particle atlas the route of the
+ * {@code PARTICLE_SHEET_*} sheets. Layers on any other atlas (the item atlas,
+ * which split from the block atlas after 1.21.1, and atlases of other mods)
+ * have no Remix material yet and are not drawn.
+ *
+ * <p>The quad is built as {@code SingleQuadParticle.extract} builds it: the
+ * particle's facing mode supplies the rotation, a nonzero roll turns it about
+ * the quad's own Z axis, {@code getQuadSize(partialTick)} scales it, and the
+ * corners and UVs are those of {@code QuadParticleRenderState.renderRotatedQuad}.
+ * Positions stay in world space, because the instance transform is identity.
+ * Unlike vanilla's extract, nothing is frustum culled: a path tracer sees
+ * particles behind the camera in reflections.
  */
 public class RemixParticleRenderer {
 
@@ -86,6 +108,13 @@ public class RemixParticleRenderer {
     private int lastMeshUpdateCount;
     private long frameCounter;
 
+    // This frame's bucket per layer atlas; written and read by the particle worker only.
+    private BlockTextureManager frameBlockTexMgr;
+    private boolean terrainRouteResolved;
+    private boolean particleRouteResolved;
+    private DynamicBucket terrainRouteBucket;
+    private DynamicBucket particleRouteBucket;
+
     private int particlesThisFrame;
     private int newSlotsThisFrame;
     private int removedSlotsThisFrame;
@@ -119,58 +148,49 @@ public class RemixParticleRenderer {
         }
 
         ParticleManagerAccessor pmAccess = (ParticleManagerAccessor) client.particleEngine;
-        Map<ParticleRenderType, Queue<Particle>> particleMap = pmAccess.getParticles();
-        if (particleMap == null || particleMap.isEmpty()) {
+        Map<ParticleRenderType, ParticleGroup<?>> groups = pmAccess.getParticles();
+        if (groups == null || groups.isEmpty()) {
             return finishPreparation(frame);
         }
 
-        BlockTextureManager blockTexMgr = renderer.getTextureManager();
-        var camRot = client.gameRenderer.getMainCamera().rotation();
-        float qx = camRot.x, qy = camRot.y, qz = camRot.z, qw = camRot.w;
-        ParticleBillboardBasis billboardBasis = ParticleBillboardBasis.fromCamera(qx, qy, qz, qw);
+        Camera camera = client.gameRenderer.mainCamera();
+        Quaternionf camRot = camera.rotation();
+        ParticleBillboardBasis lookAtXyz = ParticleBillboardBasis.fromRotation(camRot.x, camRot.y, camRot.z, camRot.w);
+        // SingleQuadParticle.FacingCameraMode.LOOKAT_Y keeps only the camera's yaw.
+        ParticleBillboardBasis lookAtY = ParticleBillboardBasis.fromRotation(0f, camRot.y, 0f, camRot.w);
+        beginFrameRoutes(renderer.getTextureManager());
 
-        for (var entry : particleMap.entrySet()) {
-            ParticleRenderType sheet = entry.getKey();
-            Queue<Particle> queue = entry.getValue();
+        for (var entry : groups.entrySet()) {
+            if (entry.getKey() == ParticleRenderType.NO_RENDER) continue;
+            ParticleGroup<?> group = entry.getValue();
+            if (group == null || group.isEmpty()) continue;
+            Queue<? extends Particle> queue = ((ParticleGroupAccessor) group).getParticles();
             if (queue == null || queue.isEmpty()) continue;
-            if (sheet == ParticleRenderType.NO_RENDER || sheet == ParticleRenderType.CUSTOM) {
-                continue;
-            }
-
-            boolean isTerrain = sheet == ParticleRenderType.TERRAIN_SHEET;
-            RemixMaterial material = resolveMaterial(sheet, blockTexMgr);
-            if (material == null || !material.isAlive()) continue;
-
-            int categoryFlags = isTerrain ? 0 : InstanceCategoryBit.PARTICLE;
-            int blendKind = isTerrain ? BLEND_TERRAIN : BLEND_PARTICLE;
-            DynamicBucket bucket = getOrCreateBucket(
-                    new BucketKey(material.getHandle(), categoryFlags, blendKind),
-                    material, categoryFlags, blendKind);
-            if (bucket == null) continue;
 
             for (Particle particle : queue) {
-                if (!(particle instanceof SingleQuadParticle)) continue;
+                // Item-pickup and elder-guardian groups hold model particles; only
+                // single quads are captured, as only the quad sheets were in 1.21.1.
+                if (!(particle instanceof SingleQuadParticle quadParticle)) continue;
 
                 ParticleAccessor pa = (ParticleAccessor) particle;
                 if (pa.getDead()) continue;
 
                 BillboardParticleAccessor billboard = (BillboardParticleAccessor) particle;
-                int boundsMin = 0;
-                int boundsMax = 0;
-                if (particle instanceof TextureSheetParticle) {
-                    TextureAtlasSprite sprite = ((SpriteBillboardParticleAccessor) particle).getSprite();
-                    if (sprite == null) continue;
-                    float spriteMinU = sprite.getU0();
-                    float spriteMinV = sprite.getV0();
-                    float spriteMaxU = sprite.getU1();
-                    float spriteMaxV = sprite.getV1();
-                    boundsMin = HardcodedVertex.packHalf2x16(
-                            Math.min(spriteMinU, spriteMaxU),
-                            Math.min(spriteMinV, spriteMaxV));
-                    boundsMax = HardcodedVertex.packHalf2x16(
-                            Math.max(spriteMinU, spriteMaxU),
-                            Math.max(spriteMinV, spriteMaxV));
-                }
+                DynamicBucket bucket = routeBucket(billboard.invokeGetLayer());
+                if (bucket == null) continue;
+
+                TextureAtlasSprite sprite = billboard.getSprite();
+                if (sprite == null) continue;
+                float spriteMinU = sprite.getU0();
+                float spriteMinV = sprite.getV0();
+                float spriteMaxU = sprite.getU1();
+                float spriteMaxV = sprite.getV1();
+                int boundsMin = HardcodedVertex.packHalf2x16(
+                        Math.min(spriteMinU, spriteMaxU),
+                        Math.min(spriteMinV, spriteMaxV));
+                int boundsMax = HardcodedVertex.packHalf2x16(
+                        Math.max(spriteMinU, spriteMaxU),
+                        Math.max(spriteMinV, spriteMaxV));
 
                 float u0 = billboard.invokeGetMinU();
                 float v0 = billboard.invokeGetMinV();
@@ -183,16 +203,62 @@ public class RemixParticleRenderer {
                 // Alpha stays the particle's own; a held puff is drawn at a lower
                 // alpha, see HeldItemSmoke.OPACITY for why the two are not one value.
                 int color = ParticleTint.isSoot(particle)
-                        ? packColor(ParticleTint.SOOT_GREY, ParticleTint.SOOT_GREY, ParticleTint.SOOT_GREY, pa.getAlpha())
-                        : packColor(pa.getRed(), pa.getGreen(), pa.getBlue(), pa.getAlpha());
+                        ? packColor(ParticleTint.SOOT_GREY, ParticleTint.SOOT_GREY, ParticleTint.SOOT_GREY, billboard.getAlpha())
+                        : packColor(billboard.getRed(), billboard.getGreen(), billboard.getBlue(), billboard.getAlpha());
+                ParticleBillboardBasis basis =
+                        quadParticle.getFacingCameraMode() == SingleQuadParticle.FacingCameraMode.LOOKAT_Y
+                                ? lookAtY : lookAtXyz;
                 writeParticleQuad(bucket.vertexBuffer, slot, pa, billboard,
-                        tickDelta, billboardBasis, u0, v0, u1, v1, color, boundsMin, boundsMax);
+                        quadParticle.getQuadSize(tickDelta),
+                        tickDelta, basis, u0, v0, u1, v1, color, boundsMin, boundsMax);
                 bucket.dirty = true;
                 particlesThisFrame++;
             }
         }
 
         return finishPreparation(frame);
+    }
+
+    /**
+     * Starts this frame's two layer routes. Each resolves lazily, so a frame
+     * touches the bucket map at most once per route rather than once per particle.
+     */
+    private void beginFrameRoutes(BlockTextureManager blockTexMgr) {
+        frameBlockTexMgr = blockTexMgr;
+        terrainRouteResolved = false;
+        particleRouteResolved = false;
+        terrainRouteBucket = null;
+        particleRouteBucket = null;
+    }
+
+    private DynamicBucket routeBucket(SingleQuadParticle.Layer layer) {
+        if (layer == null) return null;
+        Identifier atlas = layer.textureAtlasLocation();
+        if (TextureAtlas.LOCATION_PARTICLES.equals(atlas)) {
+            if (!particleRouteResolved) {
+                particleRouteResolved = true;
+                particleRouteBucket = resolveRoute(false);
+            }
+            return particleRouteBucket;
+        }
+        if (TextureAtlas.LOCATION_BLOCKS.equals(atlas)) {
+            if (!terrainRouteResolved) {
+                terrainRouteResolved = true;
+                terrainRouteBucket = resolveRoute(true);
+            }
+            return terrainRouteBucket;
+        }
+        return null;
+    }
+
+    private DynamicBucket resolveRoute(boolean terrain) {
+        RemixMaterial material = resolveMaterial(terrain, frameBlockTexMgr);
+        if (material == null || !material.isAlive()) return null;
+        int categoryFlags = terrain ? 0 : InstanceCategoryBit.PARTICLE;
+        int blendKind = terrain ? BLEND_TERRAIN : BLEND_PARTICLE;
+        return getOrCreateBucket(
+                new BucketKey(material.getHandle(), categoryFlags, blendKind),
+                material, categoryFlags, blendKind);
     }
 
     private PreparedFrame finishPreparation(long frame) {
@@ -302,8 +368,8 @@ public class RemixParticleRenderer {
         meshUpdatesThisFrame = 0;
     }
 
-    private RemixMaterial resolveMaterial(ParticleRenderType sheet, BlockTextureManager blockTexMgr) {
-        if (sheet == ParticleRenderType.TERRAIN_SHEET) {
+    private RemixMaterial resolveMaterial(boolean terrain, BlockTextureManager blockTexMgr) {
+        if (terrain) {
             return blockTexMgr != null ? blockTexMgr.getAtlasMaterial(BlockTextureManager.L_CUTOUT) : null;
         }
         return atlasManager.getMaterial();
@@ -377,32 +443,46 @@ public class RemixParticleRenderer {
         return snapshot;
     }
 
+    /**
+     * Writes one particle's quad as {@code SingleQuadParticle.extract} and
+     * {@code QuadParticleRenderState.renderRotatedQuad} build it: the vertex at
+     * local (i, j) is {@code position + R * Rz(roll) * (i, j, 0) * size}, with R
+     * the facing rotation, so the quad's in-plane axes are the facing basis's
+     * first two columns turned by the roll. Vanilla applies the roll only when
+     * {@code roll != 0}, interpolated from {@code oRoll}.
+     */
     private static void writeParticleQuad(ByteBuffer vertices, int slot,
                                           ParticleAccessor pa, BillboardParticleAccessor ba,
-                                          float tickDelta, ParticleBillboardBasis basis,
+                                          float size, float tickDelta, ParticleBillboardBasis basis,
                                           float u0, float v0, float u1, float v1, int color,
                                           int boundsMin, int boundsMax) {
         double px = Mth.lerp(tickDelta, pa.getPrevPosX(), pa.getX());
         double py = Mth.lerp(tickDelta, pa.getPrevPosY(), pa.getY());
         double pz = Mth.lerp(tickDelta, pa.getPrevPosZ(), pa.getZ());
 
-        float angle = Mth.lerp(tickDelta, pa.getPrevAngle(), pa.getAngle());
-        float scale = ba.getScale();
-        float cosA = Mth.cos(angle);
-        float sinA = Mth.sin(angle);
+        float roll = ba.getAngle();
+        float cosA = 1f;
+        float sinA = 0f;
+        if (roll != 0f) {
+            float angle = Mth.lerp(tickDelta, ba.getPrevAngle(), roll);
+            cosA = Mth.cos(angle);
+            sinA = Mth.sin(angle);
+        }
 
-        float s00 = (cosA * basis.r00 + sinA * basis.r10) * scale;
-        float s01 = (cosA * basis.r01 + sinA * basis.r11) * scale;
-        float s10 = (-sinA * basis.r00 + cosA * basis.r10) * scale;
-        float s11 = (-sinA * basis.r01 + cosA * basis.r11) * scale;
-        float z00 = basis.r20 * scale;
-        float z01 = basis.r21 * scale;
+        // The quad's local X (i) and Y (j) axes after the roll, scaled by size.
+        float ix = (cosA * basis.r00 + sinA * basis.r01) * size;
+        float iy = (cosA * basis.r10 + sinA * basis.r11) * size;
+        float iz = (cosA * basis.r20 + sinA * basis.r21) * size;
+        float jx = (-sinA * basis.r00 + cosA * basis.r01) * size;
+        float jy = (-sinA * basis.r10 + cosA * basis.r11) * size;
+        float jz = (-sinA * basis.r20 + cosA * basis.r21) * size;
 
         int base = slot * VERTEX_BYTES_PER_PARTICLE;
-        putActiveVertex(vertices, base,      px - s00 - s01, py - s10 - s11, pz - z00 - z01, basis.nx, basis.ny, basis.nz, u0, v1, color);
-        putActiveVertex(vertices, base + STRIDE, px + s00 - s01, py + s10 - s11, pz + z00 - z01, basis.nx, basis.ny, basis.nz, u1, v1, color);
-        putActiveVertex(vertices, base + STRIDE * 2, px + s00 + s01, py + s10 + s11, pz + z00 + z01, basis.nx, basis.ny, basis.nz, u1, v0, color);
-        putActiveVertex(vertices, base + STRIDE * 3, px - s00 + s01, py - s10 + s11, pz - z00 + z01, basis.nx, basis.ny, basis.nz, u0, v0, color);
+        // (i, j) = (-1, -1), (1, -1), (1, 1), (-1, 1): vanilla's corner cycle and UVs.
+        putActiveVertex(vertices, base,              px - ix - jx, py - iy - jy, pz - iz - jz, basis.nx, basis.ny, basis.nz, u0, v1, color);
+        putActiveVertex(vertices, base + STRIDE,     px + ix - jx, py + iy - jy, pz + iz - jz, basis.nx, basis.ny, basis.nz, u1, v1, color);
+        putActiveVertex(vertices, base + STRIDE * 2, px + ix + jx, py + iy + jy, pz + iz + jz, basis.nx, basis.ny, basis.nz, u1, v0, color);
+        putActiveVertex(vertices, base + STRIDE * 3, px - ix + jx, py - iy + jy, pz - iz + jz, basis.nx, basis.ny, basis.nz, u0, v0, color);
         writeAtlasBounds(vertices, base, boundsMin, boundsMax);
     }
 
@@ -629,20 +709,27 @@ public class RemixParticleRenderer {
             float r20, float r21,
             float nx, float ny, float nz) {
 
-        static ParticleBillboardBasis fromCamera(float qx, float qy, float qz, float qw) {
-            float xx = qx * qx, yy = qy * qy, zz = qz * qz;
+        /**
+         * Rotation matrix of {@code q}, normalised the way JOML's
+         * {@code Quaternionf.transform} normalises it, because vanilla's
+         * {@code LOOKAT_Y} quaternion (0, y, 0, w) is not unit length.
+         */
+        static ParticleBillboardBasis fromRotation(float qx, float qy, float qz, float qw) {
+            float xx = qx * qx, yy = qy * qy, zz = qz * qz, ww = qw * qw;
             float xy = qx * qy, xz = qx * qz, yz = qy * qz;
             float wx = qw * qx, wy = qw * qy, wz = qw * qz;
+            float norm = xx + yy + zz + ww;
+            float k = norm > 0f ? 1f / norm : 1f;
 
-            float r00 = 1f - 2f * (yy + zz);
-            float r01 = 2f * (xy - wz);
-            float r02 = 2f * (xz + wy);
-            float r10 = 2f * (xy + wz);
-            float r11 = 1f - 2f * (xx + zz);
-            float r12 = 2f * (yz - wx);
-            float r20 = 2f * (xz - wy);
-            float r21 = 2f * (yz + wx);
-            float r22 = 1f - 2f * (xx + yy);
+            float r00 = (xx - yy - zz + ww) * k;
+            float r01 = 2f * (xy - wz) * k;
+            float r02 = 2f * (xz + wy) * k;
+            float r10 = 2f * (xy + wz) * k;
+            float r11 = (yy - xx - zz + ww) * k;
+            float r12 = 2f * (yz - wx) * k;
+            float r20 = 2f * (xz - wy) * k;
+            float r21 = 2f * (yz + wx) * k;
+            float r22 = (zz - xx - yy + ww) * k;
 
             return new ParticleBillboardBasis(r00, r01, r10, r11, r20, r21, -r02, -r12, -r22);
         }

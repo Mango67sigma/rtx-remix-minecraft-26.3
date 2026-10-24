@@ -8,6 +8,11 @@ import net.minecraft.client.particle.Particle;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
+/**
+ * Position and liveness of a vanilla particle. Colour, roll and sprite moved to
+ * {@code SingleQuadParticle} in 1.21.9 and are read through
+ * {@link BillboardParticleAccessor}.
+ */
 @Mixin(Particle.class)
 public interface ParticleAccessor {
     @Accessor("x") double getX();
@@ -16,11 +21,5 @@ public interface ParticleAccessor {
     @Accessor("xo") double getPrevPosX();
     @Accessor("yo") double getPrevPosY();
     @Accessor("zo") double getPrevPosZ();
-    @Accessor("rCol") float getRed();
-    @Accessor("gCol") float getGreen();
-    @Accessor("bCol") float getBlue();
-    @Accessor("alpha") float getAlpha();
-    @Accessor("roll") float getAngle();
-    @Accessor("oRoll") float getPrevAngle();
     @Accessor("removed") boolean getDead();
 }

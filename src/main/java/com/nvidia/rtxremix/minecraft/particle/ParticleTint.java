@@ -34,7 +34,7 @@ public final class ParticleTint {
     /**
      * Whether the particle is one vanilla tints as a dark speck: a
      * {@link SmokeParticle} ({@code smoke} and {@code large_smoke}), which
-     * {@code AscendingParticle} colours random * 0.3 grey.
+     * {@code BaseAshSmokeParticle} colours random * 0.3 grey.
      * {@code CampfireSmokeParticle} is deliberately outside: vanilla draws it
      * white over mid-grey sprites, so it has no dark tint to reproduce and
      * keeps its sprite colour.
