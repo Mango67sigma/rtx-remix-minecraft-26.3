@@ -4,6 +4,7 @@
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
+import com.mojang.blaze3d.platform.NativeImage;
 import com.nvidia.rtxremix.RemixAPI;
 import com.nvidia.rtxremix.TextureBatchEntry;
 import com.nvidia.rtxremix.TextureFormat;
@@ -74,10 +75,11 @@ public final class AtlasAnimationForwarder {
         final int srcImageWidth;
         final int srcImageHeight;
         /**
-         * Raw pointer into the owning NativeImage's mip-0 backing memory.
+         * Raw pointer into the owning sprite sheet's mip-0 memory, or into the
+         * blend buffer of the sprite's AnimationState for an interpolated frame.
          * Read-only and valid only until flush() is called on the same
          * render-thread frame that produced this record:
-         *   1. The owning SpriteContents must not be closed (atlas rebuild
+         *   1. The owning SpriteContents and AnimationState must not be closed (atlas rebuild
          *      or world unload invalidates).
          *   2. The block atlas must not be re-stitched between capture
          *      and flush. RemixRenderer clears the forwarder on
@@ -161,7 +163,7 @@ public final class AtlasAnimationForwarder {
                                 long pixelPtr, int rowPitch) {
         // Drop patches when the forwarder is not active (SDK missing, RTX
         // disabled, or post-shutdown/reload). Prevents an unbounded queue
-        // when SpriteContents.upload still fires but we'll never flush.
+        // when the animation tick hook still fires but we'll never flush.
         if (!active) return;
 
         if (!BlockTextureManager.BLOCK_ATLAS_ID.equals(currentAtlasId.get())) {
@@ -189,6 +191,95 @@ public final class AtlasAnimationForwarder {
         pendingPatches.add(new PatchRecord(spriteId, dstX, dstY, srcX, srcY,
                                            width, height, srcImageWidth, srcImageHeight,
                                            pixelPtr, rowPitch));
+    }
+
+    /**
+     * Whether {@link #addPatch} would queue a patch for {@code spriteId} now, so a caller
+     * can skip building one. Read-only; the thread check stays in {@link #addPatch}.
+     */
+    public static boolean acceptsPatch(Identifier spriteId) {
+        if (!active || !BlockTextureManager.BLOCK_ATLAS_ID.equals(currentAtlasId.get())) {
+            return false;
+        }
+        Set<Identifier> allowedSprites = blockAtlasSpriteIds;
+        return allowedSprites != null && allowedSprites.contains(spriteId);
+    }
+
+    /**
+     * Queues frame {@code frameIndex} of a flipbook sheet, read in place: what 1.21.1's
+     * {@code SpriteContents.AnimatedTexture.uploadFrame} handed to {@code upload}.
+     *
+     * @param sheet        the sprite's full RGBA sheet, frame 0 at its origin
+     * @param frameRowSize frames per sheet row
+     */
+    public static void addFramePatch(Identifier spriteId, int dstX, int dstY, int width, int height,
+                                     NativeImage sheet, int frameRowSize, int frameIndex) {
+        if (sheet == null || sheet.isClosed() || sheet.format() != NativeImage.Format.RGBA || frameRowSize <= 0) {
+            return;
+        }
+        int srcX = (frameIndex % frameRowSize) * width;
+        int srcY = (frameIndex / frameRowSize) * height;
+        int sheetWidth = sheet.getWidth();
+        int sheetHeight = sheet.getHeight();
+        if (srcX + width > sheetWidth || srcY + height > sheetHeight) {
+            return;
+        }
+        long pixelPtr = sheet.getPointer() + ((long) srcY * sheetWidth + srcX) * 4;
+        addPatch(spriteId, dstX, dstY, srcX, srcY, width, height,
+                 sheetWidth, sheetHeight, pixelPtr, sheetWidth * 4);
+    }
+
+    /**
+     * Blends two frames of a flipbook sheet into {@code blendTarget} and queues the result,
+     * as 1.21.1's {@code SpriteContents.InterpolationData.uploadInterpolatedFrame} did. The
+     * patch is sprite-sized with its source at the origin, which is how
+     * {@link PatchRecord#isInterpolatedUpload} recognises it.
+     *
+     * @param currentWeight weight of the current frame: {@code 1 - subFrame / frameTime}
+     * @param blendTarget   {@code width * height * 4} writable bytes, alive until {@link #flush}
+     */
+    public static void addBlendedPatch(Identifier spriteId, int dstX, int dstY, int width, int height,
+                                       NativeImage sheet, int frameRowSize, int currentIndex, int nextIndex,
+                                       double currentWeight, long blendTarget) {
+        if (sheet == null || sheet.isClosed() || sheet.format() != NativeImage.Format.RGBA
+                || frameRowSize <= 0 || blendTarget == 0L) {
+            return;
+        }
+        int sheetWidth = sheet.getWidth();
+        int sheetHeight = sheet.getHeight();
+        int currentX = (currentIndex % frameRowSize) * width;
+        int currentY = (currentIndex / frameRowSize) * height;
+        int nextX = (nextIndex % frameRowSize) * width;
+        int nextY = (nextIndex / frameRowSize) * height;
+        if (currentX + width > sheetWidth || currentY + height > sheetHeight
+                || nextX + width > sheetWidth || nextY + height > sheetHeight) {
+            return;
+        }
+        blendFrames(sheet.getPointer(), sheetWidth, currentX, currentY, nextX, nextY,
+                    width, height, currentWeight, blendTarget);
+        addPatch(spriteId, dstX, dstY, 0, 0, width, height, width, height, blendTarget, width * 4);
+    }
+
+    /**
+     * 1.21.1's interpolation, channel by channel: red, green and blue are
+     * {@code (int) (w * current + (1 - w) * next)} and alpha is the current frame's.
+     */
+    static void blendFrames(long sheet, int sheetWidth, int currentX, int currentY, int nextX, int nextY,
+                            int width, int height, double currentWeight, long dst) {
+        double nextWeight = 1.0 - currentWeight;
+        for (int y = 0; y < height; y++) {
+            long current = sheet + ((long) (currentY + y) * sheetWidth + currentX) * 4;
+            long next = sheet + ((long) (nextY + y) * sheetWidth + nextX) * 4;
+            long out = dst + (long) y * width * 4;
+            for (int x = 0; x < width; x++, current += 4, next += 4, out += 4) {
+                for (int c = 0; c < 3; c++) {
+                    int a = MemoryUtil.memGetByte(current + c) & 0xFF;
+                    int b = MemoryUtil.memGetByte(next + c) & 0xFF;
+                    MemoryUtil.memPutByte(out + c, (byte) (int) (currentWeight * a + nextWeight * b));
+                }
+                MemoryUtil.memPutByte(out + 3, MemoryUtil.memGetByte(current + 3));
+            }
+        }
     }
 
     private static FrameSampling resolveLabPBRFrameSampling(

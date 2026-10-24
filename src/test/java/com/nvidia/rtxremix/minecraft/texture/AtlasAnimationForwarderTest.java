@@ -12,8 +12,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import net.minecraft.resources.Identifier;
+import org.lwjgl.system.MemoryUtil;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AtlasAnimationForwarderTest {
 
@@ -54,6 +57,62 @@ class AtlasAnimationForwarderTest {
             assertEquals(0, pendingPatchCount());
         } finally {
             AtlasAnimationForwarder.endAtlasUpload();
+        }
+    }
+
+    @Test
+    void acceptsPatchMatchesWhatAddPatchWouldQueue() {
+        Identifier blockSprite = Identifier.fromNamespaceAndPath("minecraft", "block/lava_still");
+        Identifier guiSprite = Identifier.fromNamespaceAndPath("minecraft", "gui/sprites/icon");
+        Identifier particleAtlas = Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/particles.png");
+
+        assertFalse(AtlasAnimationForwarder.acceptsPatch(blockSprite), "inactive before init");
+        AtlasAnimationForwarder.init(Map.of(), Set.of(blockSprite));
+        assertFalse(AtlasAnimationForwarder.acceptsPatch(blockSprite), "outside an atlas tick");
+
+        AtlasAnimationForwarder.beginAtlasUpload(particleAtlas);
+        try {
+            assertFalse(AtlasAnimationForwarder.acceptsPatch(blockSprite));
+        } finally {
+            AtlasAnimationForwarder.endAtlasUpload();
+        }
+
+        AtlasAnimationForwarder.beginAtlasUpload(BlockTextureManager.BLOCK_ATLAS_ID);
+        try {
+            assertTrue(AtlasAnimationForwarder.acceptsPatch(blockSprite));
+            assertFalse(AtlasAnimationForwarder.acceptsPatch(guiSprite));
+            AtlasAnimationForwarder.pause();
+            assertFalse(AtlasAnimationForwarder.acceptsPatch(blockSprite));
+        } finally {
+            AtlasAnimationForwarder.endAtlasUpload();
+        }
+    }
+
+    /**
+     * Pins 1.21.1's {@code InterpolationData} arithmetic, which the GPU animation of 26.3
+     * no longer runs on the CPU: colour channels mix with the current frame's weight and
+     * truncate, alpha is the current frame's.
+     */
+    @Test
+    void blendFramesMixesColourAndKeepsTheCurrentFramesAlpha() {
+        // A 2x1 sheet of 1x1 frames: frame 0 at x=0, frame 1 at x=1.
+        long sheet = MemoryUtil.nmemAlloc(8);
+        long out = MemoryUtil.nmemAlloc(4);
+        try {
+            byte[] frames = {(byte) 200, 100, 0, (byte) 255, 0, 50, (byte) 255, 10};
+            for (int i = 0; i < frames.length; i++) {
+                MemoryUtil.memPutByte(sheet + i, frames[i]);
+            }
+
+            AtlasAnimationForwarder.blendFrames(sheet, 2, 0, 0, 1, 0, 1, 1, 0.75, out);
+
+            assertEquals((int) (0.75 * 200 + 0.25 * 0), MemoryUtil.memGetByte(out) & 0xFF);
+            assertEquals((int) (0.75 * 100 + 0.25 * 50), MemoryUtil.memGetByte(out + 1) & 0xFF);
+            assertEquals((int) (0.75 * 0 + 0.25 * 255), MemoryUtil.memGetByte(out + 2) & 0xFF);
+            assertEquals(255, MemoryUtil.memGetByte(out + 3) & 0xFF);
+        } finally {
+            MemoryUtil.nmemFree(sheet);
+            MemoryUtil.nmemFree(out);
         }
     }
 

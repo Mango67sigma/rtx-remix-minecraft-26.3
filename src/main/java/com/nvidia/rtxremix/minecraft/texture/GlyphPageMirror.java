@@ -9,27 +9,28 @@ import java.nio.ByteBuffer;
 /**
  * CPU copy of one font glyph-atlas page.
  *
- * <p>Minecraft assembles a {@code GlyphAtlasTexture} on the GPU: each glyph is uploaded
+ * <p>Minecraft assembles a {@code FontTexture} page on the GPU: each glyph is uploaded
  * into its slot the first time it is rendered, from a source image that may be freed the
- * moment the upload returns, so the GL texture is the only complete copy of the page.
+ * moment the upload returns, so the GPU texture is the only complete copy of the page.
  * Remix needs the pixels to build a material for text quads, so this mirror follows
  * every glyph upload. {@code GlyphAtlasTextureMixin} opens an upload scope around the
- * glyph's {@code upload} call, and the upload mixins on {@code NativeImage} and
- * {@code GlStateManager} write the same rectangle here that they hand to GL.
+ * glyph's {@code upload} call, and {@code FrontendCommandEncoderMixin} writes the same
+ * rectangle here that the command encoder hands to the backend, whether it arrives as a
+ * texture write or as a copy from a staging buffer.
  *
  * <p>The mirror stores what the text shaders read, not what was uploaded. A colour page
- * is an RGBA8 texture and keeps the uploaded channels as {@code glTexSubImage2D}
- * converts them, missing colour channels zero and missing alpha opaque. An intensity
- * page is an R8 texture that {@code rendertype_text_intensity} samples as {@code .rrrr},
- * so red is spread across all four channels here.
+ * is an RGBA8 texture and keeps the uploaded channels, missing colour channels zero and
+ * missing alpha opaque. A grayscale page is an R8 texture that the {@code text} shader
+ * built with {@code IS_GRAYSCALE} samples as {@code .rrrr}, so red is spread across all
+ * four channels here.
  *
- * <p>Glyph uploads run only on the render thread ({@code NativeImage.uploadInternal}
- * asserts it) and every reader of {@link #data()} runs there too, so the page and the
- * upload scope carry no synchronisation.
+ * <p>Glyph uploads run only on the render thread (only it records commands on the
+ * device's encoder) and every reader of {@link #data()} runs there too, so the page and
+ * the upload scope carry no synchronisation.
  */
 public final class GlyphPageMirror {
 
-    /** Side of every page in pixels, as {@code GlyphAtlasTexture} hardcodes it for slots and UVs. */
+    /** Side of every page in pixels, as {@code FontTexture} hardcodes it for slots and UVs. */
     public static final int PAGE_SIZE = 256;
     private static final int CHANNELS = 4;
 
@@ -45,6 +46,10 @@ public final class GlyphPageMirror {
      */
     private static long nextVersion = 1L;
     private static GlyphPageMirror uploadTarget;
+    private static Object uploadDestination;
+    private static Object stagingBuffer;
+    private static long stagingAddress;
+    private static long stagingSize;
 
     private final boolean intensity;
     private final byte[] data = new byte[PAGE_SIZE * PAGE_SIZE * CHANNELS];
@@ -111,17 +116,65 @@ public final class GlyphPageMirror {
 
     // ---- Upload scope ----
 
-    /** Marks {@code page} as the destination of the glyph upload about to run. */
-    public static void beginUpload(GlyphPageMirror page) {
+    /**
+     * Marks {@code page} as the destination of the glyph upload about to run.
+     *
+     * @param destination the page's GPU texture; only a write into this object is mirrored
+     */
+    public static void beginUpload(GlyphPageMirror page, Object destination) {
         uploadTarget = page;
+        uploadDestination = destination;
     }
 
     public static void endUpload() {
         uploadTarget = null;
+        uploadDestination = null;
+        stagingBuffer = null;
+        stagingAddress = 0L;
+        stagingSize = 0L;
     }
 
     /** The page a glyph is being uploaded into, or null outside a glyph upload. */
     public static GlyphPageMirror uploadTarget() {
         return uploadTarget;
+    }
+
+    /**
+     * The page a write into {@code destination} lands in: the scope's page when
+     * {@code destination} is the texture the scope was opened for, else null. This is the
+     * check a command-encoder hook makes, so every other texture write costs one static read.
+     */
+    public static GlyphPageMirror uploadTarget(Object destination) {
+        GlyphPageMirror page = uploadTarget;
+        return page != null && destination == uploadDestination ? page : null;
+    }
+
+    /**
+     * Records the CPU copy behind a GPU staging buffer a glyph is about to be copied from.
+     * Bitmap-font glyphs reach the page through a buffer-to-texture copy whose source is a
+     * GPU buffer filled once from the font sheet; the sheet stays alive beside it, so its
+     * bytes are what the copy reads. Ignored outside a glyph upload.
+     *
+     * @param buffer  the staging buffer the copy will name as its source
+     * @param address address of the buffer's first byte in CPU memory
+     * @param size    bytes readable from {@code address}
+     */
+    public static void offerStagingSource(Object buffer, long address, long size) {
+        if (uploadTarget == null) {
+            return;
+        }
+        stagingBuffer = buffer;
+        stagingAddress = address;
+        stagingSize = size;
+    }
+
+    /** The CPU address offered for {@code buffer} in this glyph upload, or 0 if none was. */
+    public static long stagingAddress(Object buffer) {
+        return buffer != null && buffer == stagingBuffer ? stagingAddress : 0L;
+    }
+
+    /** Bytes readable from the offered staging address; 0 when none was offered. */
+    public static long stagingSize() {
+        return stagingBuffer != null ? stagingSize : 0L;
     }
 }

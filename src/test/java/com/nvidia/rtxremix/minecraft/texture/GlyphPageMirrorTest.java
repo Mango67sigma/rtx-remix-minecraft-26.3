@@ -10,14 +10,16 @@ import java.nio.ByteBuffer;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Pins how an uploaded glyph lands in its page mirror. The mirror must hold what the GL
+ * Pins how an uploaded glyph lands in its page mirror. The mirror must hold what the GPU
  * texture holds as the text shaders read it: a colour page keeps the uploaded channels
- * as {@code glTexSubImage2D} converts them into RGBA, an intensity page spreads red
- * across all four channels because {@code rendertype_text_intensity} samples
+ * widened to RGBA, a grayscale page spreads red
+ * across all four channels because the {@code IS_GRAYSCALE} text shader samples
  * {@code .rrrr}.
  */
 class GlyphPageMirrorTest {
@@ -108,6 +110,39 @@ class GlyphPageMirrorTest {
         assertTrue(second.version() > firstGlyph,
                 "a page written later is newer than one it may replace under the same id");
         assertTrue(first.version() > second.version());
+    }
+
+    /**
+     * The command-encoder hook sees every texture write in the game; only a write into the
+     * page the scope was opened for, during that scope, may reach the mirror, and a staging
+     * source offered for one glyph must not outlive it.
+     */
+    @Test
+    void theUploadScopeAdmitsOnlyItsOwnPageTextureAndStagingBuffer() {
+        GlyphPageMirror page = new GlyphPageMirror(false);
+        Object pageTexture = new Object();
+        Object otherTexture = new Object();
+        Object stagingBuffer = new Object();
+
+        assertNull(GlyphPageMirror.uploadTarget(pageTexture), "no scope, no target");
+        GlyphPageMirror.offerStagingSource(stagingBuffer, 64L, 16L);
+        assertEquals(0L, GlyphPageMirror.stagingAddress(stagingBuffer), "an offer outside a scope is dropped");
+
+        GlyphPageMirror.beginUpload(page, pageTexture);
+        try {
+            assertSame(page, GlyphPageMirror.uploadTarget(pageTexture));
+            assertNull(GlyphPageMirror.uploadTarget(otherTexture));
+            GlyphPageMirror.offerStagingSource(stagingBuffer, 64L, 16L);
+            assertEquals(64L, GlyphPageMirror.stagingAddress(stagingBuffer));
+            assertEquals(16L, GlyphPageMirror.stagingSize());
+            assertEquals(0L, GlyphPageMirror.stagingAddress(new Object()));
+        } finally {
+            GlyphPageMirror.endUpload();
+        }
+
+        assertNull(GlyphPageMirror.uploadTarget(pageTexture));
+        assertEquals(0L, GlyphPageMirror.stagingAddress(stagingBuffer));
+        assertEquals(0L, GlyphPageMirror.stagingSize());
     }
 
     @Test

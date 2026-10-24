@@ -33,13 +33,17 @@ accessible class net/minecraft/client/renderer/rendertype/RenderSetup$TextureBin
 
 # ===== section: textures =====
 
-# SpriteContents animation data for flipbook texture extraction
+# SpriteContents animation data for flipbook texture extraction and the animation
+# forwarder. FrameInfo is a package-private record in 26.3, read through its public
+# index()/time() accessors, so its fields need no widening; animatedTexture is read
+# through SpriteContentsAccessor.
 accessible class net/minecraft/client/renderer/texture/SpriteContents$AnimatedTexture
 accessible class net/minecraft/client/renderer/texture/SpriteContents$FrameInfo
-accessible field net/minecraft/client/renderer/texture/SpriteContents animatedTexture Lnet/minecraft/client/renderer/texture/SpriteContents$AnimatedTexture;
 accessible field net/minecraft/client/renderer/texture/SpriteContents$AnimatedTexture frames Ljava/util/List;
-accessible field net/minecraft/client/renderer/texture/SpriteContents$FrameInfo index I
-accessible field net/minecraft/client/renderer/texture/SpriteContents$FrameInfo time I
+
+# BitmapProvider keeps a bitmap font's sheet in a package-private nested holder;
+# widening it lets BitmapProviderImageDataHolderMixin name it as a class literal.
+accessible class net/minecraft/client/gui/font/providers/BitmapProvider$ImageDataHolder
 
 # ===== section: visibility =====
 
