@@ -24,7 +24,7 @@ import com.nvidia.rtxremix.minecraft.entity.CopperBeaconAnimationClock;
 import com.nvidia.rtxremix.minecraft.entity.RemixFirstPersonPass;
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
-import org.joml.Matrix4f;
+import org.joml.Matrix4fc;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.slf4j.Logger;
@@ -41,10 +41,10 @@ import java.util.Set;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.renderer.DimensionSpecialEffects;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
+import net.minecraft.world.attribute.EnvironmentAttributes;
 import net.minecraft.world.entity.Display;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EquipmentSlot;
@@ -55,6 +55,7 @@ import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.DyeItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.dimension.DimensionType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
@@ -409,7 +410,7 @@ public class LightManager {
 
         firstPersonShadowModelOffset = shadowModelPlacement.resolve(
                 world, camera, player, constraints, frameDtSeconds);
-        Vec3 displacedHeadCenter = camera.getPosition().add(firstPersonShadowModelOffset);
+        Vec3 displacedHeadCenter = camera.position().add(firstPersonShadowModelOffset);
 
         // The rig lights surfaces but never the air. A first-person emitter is
         // locked to the camera, and the volumetric grid reuses the previous
@@ -621,11 +622,11 @@ public class LightManager {
 
         Transformation transform =
                 renderState.transformation().get(display.calculateInterpolationProgress(tickDelta));
-        Matrix4f matrix = transform.getMatrix();
+        Matrix4fc matrix = transform.getMatrix();
 
         // Matches DisplayEntityRenderer.getBillboardRotation for BillboardMode.FIXED.
-        float yaw = Mth.rotLerp(tickDelta, display.yRotO, display.getYRot());
-        float pitch = Mth.lerp(tickDelta, display.xRotO, display.getXRot());
+        float yaw = display.getYRot(tickDelta);
+        float pitch = display.getXRot(tickDelta);
         Quaternionf billboard = scratchBillboard.rotationYXZ(
                 -Mth.DEG_TO_RAD * yaw,
                 Mth.DEG_TO_RAD * pitch,
@@ -799,7 +800,7 @@ public class LightManager {
                 lensOffsetDirection.scale(BeaconBeam.HELD_LENS_OFFSET));
         float coneAngle = BeaconBeam.CONE_ANGLE_DEGREES;
         if (localFirstPerson && collisionWorld != null && collisionCamera != null) {
-            Vec3 collisionOrigin = collisionCamera.getPosition();
+            Vec3 collisionOrigin = collisionCamera.position();
             Vec3 preferredOffset = pos.subtract(collisionOrigin);
             double preferredDistance = preferredOffset.length();
             if (preferredDistance > 1.0e-6) {
@@ -1034,11 +1035,12 @@ public class LightManager {
     // ================================================================
 
     private void updateSkyLight(ClientLevel world) {
-        // Only a NORMAL sky has a sun and a moon. The End and the Nether pin their time, so
-        // evaluating them would light a permanent noon or midnight that vanilla never draws.
-        skyLightState = world.effects().skyType() == DimensionSpecialEffects.SkyType.NORMAL
+        // Only an overworld-style skybox has a sun and a moon. The End and a skyless dimension
+        // have none, so evaluating them would light a permanent noon or midnight that vanilla
+        // never draws.
+        skyLightState = world.dimensionType().skybox() == DimensionType.Skybox.OVERWORLD
                 ? evaluateSkyLightState(
-                        world.getTimeOfDay(0f),
+                        skyAngle(world),
                         world.getRainLevel(0.0f),
                         world.getThunderLevel(0.0f))
                 : SkyLightState.empty();
@@ -1051,6 +1053,22 @@ public class LightManager {
         } catch (RemixException e) {
             LOGGER.error("Failed to update sky light: {}", e.getMessage());
         }
+    }
+
+    /**
+     * The sun's position along its path as a fraction of a turn, 0 at noon: the quantity
+     * 1.21.1 exposed as {@code getTimeOfDay}. 26.3 publishes it as the {@code SUN_ANGLE}
+     * environment attribute in degrees, the same value the sky pass rotates the sun by. The
+     * attribute is positional, so it is read at the camera; the tick-current value is used, as
+     * {@code getTimeOfDay(0)} did, because vanilla's sun moves in whole ticks too.
+     */
+    private static float skyAngle(ClientLevel world) {
+        Minecraft client = Minecraft.getInstance();
+        Vec3 at = client != null && client.gameRenderer != null
+                ? client.gameRenderer.mainCamera().position()
+                : Vec3.ZERO;
+        float degrees = world.environmentAttributes().getValue(EnvironmentAttributes.SUN_ANGLE, at);
+        return degrees / 360.0f;
     }
 
     private RemixLight updateDistantLight(RemixLight light, float[] positionDirection, float[] radiance,

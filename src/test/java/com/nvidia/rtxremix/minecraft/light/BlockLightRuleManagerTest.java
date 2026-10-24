@@ -25,7 +25,6 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
-import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import net.minecraft.network.chat.Component;
@@ -33,7 +32,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.server.packs.PackLocationInfo;
 import net.minecraft.server.packs.PackResources;
 import net.minecraft.server.packs.PackType;
-import net.minecraft.server.packs.metadata.MetadataSectionSerializer;
+import net.minecraft.server.packs.metadata.MetadataSectionType;
 import net.minecraft.server.packs.repository.KnownPack;
 import net.minecraft.server.packs.repository.PackSource;
 import net.minecraft.server.packs.resources.IoSupplier;
@@ -313,13 +312,13 @@ class BlockLightRuleManagerTest {
 
         @Override
         public Map<Identifier, Resource> listResources(String startingPath,
-                                                       Predicate<Identifier> allowedPathPredicate) {
+                                                       ResourceManager.Selector allowedPathPredicate) {
             return Map.of();
         }
 
         @Override
         public Map<Identifier, List<Resource>> listResourceStacks(String startingPath,
-                                                                Predicate<Identifier> allowedPathPredicate) {
+                                                                ResourceManager.Selector allowedPathPredicate) {
             findEntered.countDown();
             try {
                 if (!releaseFind.await(5, TimeUnit.SECONDS)) {
@@ -356,15 +355,15 @@ class BlockLightRuleManagerTest {
         }
 
         @Override
-        public Map<Identifier, Resource> listResources(String startingPath, Predicate<Identifier> allowedPathPredicate) {
+        public Map<Identifier, Resource> listResources(String startingPath, ResourceManager.Selector allowedPathPredicate) {
             return Map.of();
         }
 
         @Override
-        public Map<Identifier, List<Resource>> listResourceStacks(String startingPath, Predicate<Identifier> allowedPathPredicate) {
+        public Map<Identifier, List<Resource>> listResourceStacks(String startingPath, ResourceManager.Selector allowedPathPredicate) {
             return resources.entrySet().stream()
                     .filter(entry -> entry.getKey().getPath().startsWith(startingPath))
-                    .filter(entry -> allowedPathPredicate.test(entry.getKey()))
+                    .filter(entry -> allowedPathPredicate.isIncluded(entry.getKey()))
                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         }
 
@@ -395,7 +394,7 @@ class BlockLightRuleManagerTest {
         }
 
         @Override
-        public <T> T getMetadataSection(MetadataSectionSerializer<T> metaReader) throws IOException {
+        public <T> T getMetadataSection(MetadataSectionType<T> metaReader) throws IOException {
             return null;
         }
 

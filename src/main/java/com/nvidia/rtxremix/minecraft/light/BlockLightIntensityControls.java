@@ -21,6 +21,8 @@ public final class BlockLightIntensityControls {
             control("soul_torch", "block.minecraft.soul_torch"),
             control("wall_torch", "block.minecraft.wall_torch"),
             control("soul_wall_torch", "block.minecraft.soul_wall_torch"),
+            control("copper_torch", "block.minecraft.copper_torch"),
+            control("copper_wall_torch", "block.minecraft.copper_wall_torch"),
             control("redstone_torch", "block.minecraft.redstone_torch"),
             control("redstone_wall_torch", "block.minecraft.redstone_wall_torch"),
             control("small_amethyst_bud", "block.minecraft.small_amethyst_bud"),

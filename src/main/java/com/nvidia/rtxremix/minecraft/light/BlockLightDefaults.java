@@ -18,6 +18,7 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.CandleBlock;
+import net.minecraft.world.level.block.ColorCollection;
 import net.minecraft.world.level.block.RedstoneTorchBlock;
 import net.minecraft.world.level.block.RedstoneWallTorchBlock;
 import net.minecraft.world.level.block.WallTorchBlock;
@@ -39,6 +40,8 @@ final class BlockLightDefaults {
     static final LightEntry.ColorOverride TORCH_COLOR = LightEntry.ColorOverride.of(1.0f, 0.35f, 0.1f);
     private static final LightEntry.ColorOverride CAMPFIRE_COLOR = LightEntry.ColorOverride.of(1.0f, 0.1f, 0.05f);
     private static final LightEntry.ColorOverride SOUL_COLOR = LightEntry.ColorOverride.of(0.05f, 0.2f, 1.0f);
+    // Copper fire is not a 1.21.1 colour: a teal flame, between soul fire's blue and a green.
+    private static final LightEntry.ColorOverride COPPER_FIRE_COLOR = LightEntry.ColorOverride.of(0.1f, 0.85f, 0.6f);
     private static final LightEntry.ColorOverride REDSTONE_COLOR = LightEntry.ColorOverride.of(1.0f, 0.15f, 0.02f);
     private static final LightEntry.ColorOverride CONDUIT_COLOR = LightEntry.ColorOverride.of(0.45f, 0.9f, 1.0f);
     private static final LightEntry.ColorOverride AMETHYST_COLOR = LightEntry.ColorOverride.of(0.65f, 0.35f, 1.0f);
@@ -67,6 +70,12 @@ final class BlockLightDefaults {
                 TORCH_AUTHORED_INTENSITY_MULTIPLIER);
         add(rules, "soul_wall_torch", exact(Blocks.SOUL_WALL_TORCH),
                 (id, state, pos, centroid) -> List.of(wallTorch(id, state, pos, SOUL_COLOR)),
+                TORCH_AUTHORED_INTENSITY_MULTIPLIER);
+        add(rules, "copper_torch", exact(Blocks.COPPER_TORCH),
+                (id, state, pos, centroid) -> List.of(thinSphere(id, 0, state, pos, 0.5f, 0.7f, 0.5f, TORCH_RADIUS, COPPER_FIRE_COLOR)),
+                TORCH_AUTHORED_INTENSITY_MULTIPLIER);
+        add(rules, "copper_wall_torch", exact(Blocks.COPPER_WALL_TORCH),
+                (id, state, pos, centroid) -> List.of(wallTorch(id, state, pos, COPPER_FIRE_COLOR)),
                 TORCH_AUTHORED_INTENSITY_MULTIPLIER);
         add(rules, "redstone_torch", state -> state.is(Blocks.REDSTONE_TORCH) && state.getValue(RedstoneTorchBlock.LIT),
                 (id, state, pos, centroid) -> List.of(thinSphere(id, 0, state, pos, 0.5f, 0.7f, 0.5f, 0.16f, REDSTONE_COLOR)),
@@ -195,22 +204,18 @@ final class BlockLightDefaults {
     }
 
     private static Set<Block> candleBlocks() {
-        return Set.of(
-                Blocks.CANDLE, Blocks.WHITE_CANDLE, Blocks.ORANGE_CANDLE, Blocks.MAGENTA_CANDLE,
-                Blocks.LIGHT_BLUE_CANDLE, Blocks.YELLOW_CANDLE, Blocks.LIME_CANDLE, Blocks.PINK_CANDLE,
-                Blocks.GRAY_CANDLE, Blocks.LIGHT_GRAY_CANDLE, Blocks.CYAN_CANDLE, Blocks.PURPLE_CANDLE,
-                Blocks.BLUE_CANDLE, Blocks.BROWN_CANDLE, Blocks.GREEN_CANDLE, Blocks.RED_CANDLE,
-                Blocks.BLACK_CANDLE);
+        return Set.copyOf(withPlain(Blocks.CANDLE, Blocks.DYED_CANDLE));
     }
 
     private static Set<Block> candleCakeBlocks() {
-        return Set.of(
-                Blocks.CANDLE_CAKE, Blocks.WHITE_CANDLE_CAKE, Blocks.ORANGE_CANDLE_CAKE,
-                Blocks.MAGENTA_CANDLE_CAKE, Blocks.LIGHT_BLUE_CANDLE_CAKE, Blocks.YELLOW_CANDLE_CAKE,
-                Blocks.LIME_CANDLE_CAKE, Blocks.PINK_CANDLE_CAKE, Blocks.GRAY_CANDLE_CAKE,
-                Blocks.LIGHT_GRAY_CANDLE_CAKE, Blocks.CYAN_CANDLE_CAKE, Blocks.PURPLE_CANDLE_CAKE,
-                Blocks.BLUE_CANDLE_CAKE, Blocks.BROWN_CANDLE_CAKE, Blocks.GREEN_CANDLE_CAKE,
-                Blocks.RED_CANDLE_CAKE, Blocks.BLACK_CANDLE_CAKE);
+        return Set.copyOf(withPlain(Blocks.CANDLE_CAKE, Blocks.DYED_CANDLE_CAKE));
+    }
+
+    /** The undyed block plus the sixteen dyed ones, which 26.3 registers as a colour collection. */
+    private static List<Block> withPlain(Block plain, ColorCollection<Block> dyed) {
+        List<Block> blocks = new ArrayList<>(dyed.asList());
+        blocks.add(plain);
+        return blocks;
     }
 
     private static float[][] candleOffsets(int candles) {
