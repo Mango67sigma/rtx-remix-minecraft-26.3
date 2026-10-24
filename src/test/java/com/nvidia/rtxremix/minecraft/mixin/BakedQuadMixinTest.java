@@ -15,36 +15,21 @@ class BakedQuadMixinTest {
     @Test
     void zeroIsAValidCachedHash() {
         BakedQuadMixin cache = new BakedQuadMixin();
-        int[] vertexData = {1, 2, 3, 4};
 
-        assertFalse(cache.rtxremix$matchesStaticGeometry(vertexData, 11, 12));
-        cache.rtxremix$setStaticGeometryHash(0L, vertexData, 11, 12);
+        assertFalse(cache.rtxremix$hasStaticGeometryHash());
+        cache.rtxremix$setStaticGeometryHash(0L);
 
-        assertTrue(cache.rtxremix$matchesStaticGeometry(vertexData, 11, 12));
+        assertTrue(cache.rtxremix$hasStaticGeometryHash());
         assertEquals(0L, cache.rtxremix$getStaticGeometryHash());
     }
 
     @Test
-    void mutableVertexDataInvalidatesAndReusesTheSnapshot() {
+    void settingAgainReplacesTheHash() {
         BakedQuadMixin cache = new BakedQuadMixin();
-        int[] vertexData = {1, 2, 3, 4};
-        cache.rtxremix$setStaticGeometryHash(7L, vertexData, 11, 12);
+        cache.rtxremix$setStaticGeometryHash(7L);
+        cache.rtxremix$setStaticGeometryHash(8L);
 
-        vertexData[2] = 99;
-        assertFalse(cache.rtxremix$matchesStaticGeometry(vertexData, 11, 12));
-
-        cache.rtxremix$setStaticGeometryHash(8L, vertexData, 11, 12);
-        assertTrue(cache.rtxremix$matchesStaticGeometry(vertexData, 11, 12));
+        assertTrue(cache.rtxremix$hasStaticGeometryHash());
         assertEquals(8L, cache.rtxremix$getStaticGeometryHash());
-    }
-
-    @Test
-    void changedSpriteBoundsInvalidateUnchangedVertexData() {
-        BakedQuadMixin cache = new BakedQuadMixin();
-        int[] vertexData = {1, 2, 3, 4};
-        cache.rtxremix$setStaticGeometryHash(7L, vertexData, 11, 12);
-
-        assertFalse(cache.rtxremix$matchesStaticGeometry(vertexData, 21, 12));
-        assertFalse(cache.rtxremix$matchesStaticGeometry(vertexData, 11, 22));
     }
 }

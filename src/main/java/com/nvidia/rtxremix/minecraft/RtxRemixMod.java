@@ -584,13 +584,10 @@ public class RtxRemixMod implements ClientModInitializer {
         // features, translucent features, translucent terrain, weather and clouds.
         LevelRenderEvents.COLLECT_SUBMITS.register(context ->
             transitionWorldRenderPhase("WorldRender.vanilla.submits"));
+        // The block outline itself is captured by LevelRendererBlockOutlineMixin at
+        // vanilla's submit; this handler only marks the profiling phase.
         LevelRenderEvents.BEFORE_BLOCK_OUTLINE.register((context, outlineState) -> {
             transitionWorldRenderPhase("WorldRender.vanilla.blockOutline");
-            if (renderer != null
-                    && renderer.isInitialized()
-                    && isRtxEnabled()) {
-                renderer.captureBlockOutline(context, outlineState);
-            }
             return true;
         });
         LevelRenderEvents.BEFORE_GIZMOS.register(context ->
@@ -635,9 +632,6 @@ public class RtxRemixMod implements ClientModInitializer {
         RtxRemixMod mod = instance;
         if (mod == null) {
             return;
-        }
-        if (renderer != null && renderer.isInitialized()) {
-            renderer.beginBlockOutlineFrame();
         }
         if (mod.isRendererProfilingActive()) {
             try (ProfileScope startScope = ProfileScope.begin("WorldRender.START")) {

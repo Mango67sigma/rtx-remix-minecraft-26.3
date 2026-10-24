@@ -5,31 +5,24 @@
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.entity.BakedQuadStaticGeometryCache;
-import org.spongepowered.asm.mixin.Mixin;
-
-import java.util.Arrays;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
+import org.spongepowered.asm.mixin.Mixin;
 
 /**
  * Stores the bake-time geometry digest used by Remix entity mesh pooling. {@code BakedQuad}
- * is a record since 1.21.x; the JVM admits the extra fields a mixin adds to a record class,
- * only the language forbids declaring them, so the digest still rides on the quad itself.
+ * is an immutable record: the JVM admits the extra fields a mixin adds to a record class,
+ * only the language forbids declaring them, so the digest rides on the quad itself and is
+ * computed once per quad object. A resource reload bakes new quads with empty caches.
  */
 @Mixin(BakedQuad.class)
 public class BakedQuadMixin implements BakedQuadStaticGeometryCache {
 
-    private int[] rtxremix$staticGeometrySnapshot;
+    private boolean rtxremix$hasStaticGeometryHash;
     private long rtxremix$staticGeometryHash;
-    private int rtxremix$staticGeometryBoundsMin;
-    private int rtxremix$staticGeometryBoundsMax;
 
     @Override
-    public boolean rtxremix$matchesStaticGeometry(int[] vertexData,
-                                                   int texcoordBoundsMin,
-                                                   int texcoordBoundsMax) {
-        return rtxremix$staticGeometryBoundsMin == texcoordBoundsMin
-                && rtxremix$staticGeometryBoundsMax == texcoordBoundsMax
-                && Arrays.equals(rtxremix$staticGeometrySnapshot, vertexData);
+    public boolean rtxremix$hasStaticGeometryHash() {
+        return rtxremix$hasStaticGeometryHash;
     }
 
     @Override
@@ -38,19 +31,8 @@ public class BakedQuadMixin implements BakedQuadStaticGeometryCache {
     }
 
     @Override
-    public void rtxremix$setStaticGeometryHash(long hash,
-                                                int[] vertexData,
-                                                int texcoordBoundsMin,
-                                                int texcoordBoundsMax) {
-        if (rtxremix$staticGeometrySnapshot == null
-                || rtxremix$staticGeometrySnapshot.length != vertexData.length) {
-            rtxremix$staticGeometrySnapshot = Arrays.copyOf(vertexData, vertexData.length);
-        } else {
-            System.arraycopy(vertexData, 0, rtxremix$staticGeometrySnapshot, 0,
-                    vertexData.length);
-        }
-        rtxremix$staticGeometryBoundsMin = texcoordBoundsMin;
-        rtxremix$staticGeometryBoundsMax = texcoordBoundsMax;
+    public void rtxremix$setStaticGeometryHash(long hash) {
         rtxremix$staticGeometryHash = hash;
+        rtxremix$hasStaticGeometryHash = true;
     }
 }

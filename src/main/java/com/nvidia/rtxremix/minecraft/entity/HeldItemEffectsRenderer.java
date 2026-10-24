@@ -5,6 +5,7 @@
 package com.nvidia.rtxremix.minecraft.entity;
 
 import com.nvidia.rtxremix.minecraft.light.HeldLightState;
+import com.nvidia.rtxremix.minecraft.particle.ParticleSpriteSets;
 import com.nvidia.rtxremix.minecraft.particle.ParticleTint;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.particle.SpriteSet;
@@ -16,7 +17,6 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.particles.ParticleType;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.particles.SimpleParticleType;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.util.LightCoordsUtil;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.item.ItemDisplayContext;
@@ -24,7 +24,6 @@ import net.minecraft.world.item.ItemStack;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
-import com.nvidia.rtxremix.minecraft.mixin.ParticleManagerAccessor;
 import org.joml.Matrix4f;
 import org.joml.Quaternionfc;
 import org.joml.Vector3f;
@@ -145,10 +144,7 @@ public final class HeldItemEffectsRenderer {
     }
 
     private static SpriteSet spriteProvider(Minecraft client, ParticleType<?> particle) {
-        Object provider = ((ParticleManagerAccessor) client.particleEngine)
-                .getSpriteAwareFactories()
-                .get(BuiltInRegistries.PARTICLE_TYPE.getKey(particle));
-        return provider instanceof SpriteSet spriteProvider ? spriteProvider : null;
+        return ParticleSpriteSets.get(client, particle);
     }
 
     /**

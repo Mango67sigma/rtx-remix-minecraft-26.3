@@ -46,7 +46,9 @@ import net.minecraft.resources.Identifier;
  * keys weakly. Image-backed textures also count as released once their image is closed:
  * vanilla can close a map texture without removing it from the texture manager, and
  * in 26.3 a closed {@code DynamicTexture} keeps its closed image rather than
- * nulling it.
+ * nulling it. A {@code DynamicTexture} is judged by the image it currently holds, so a
+ * replaced image follows along; any other texture registered with an image is judged by
+ * that image.
  *
  * <p>Versions are monotonic for the life of the process. Consumers keep the version they
  * last applied and compare it against the current one, so a counter reset would let a
@@ -76,6 +78,10 @@ public final class DynamicTextureCache {
      */
     private static final Map<AbstractTexture, Identifier> TEXTURE_IDS =
             Collections.synchronizedMap(new WeakHashMap<>());
+
+    /** The image a texture was registered with, for the release test of textures that are not {@link DynamicTexture}s. */
+    private static final Map<AbstractTexture, NativeImage> REGISTERED_IMAGES =
+            Collections.synchronizedMap(new WeakHashMap<>());
     private static long nextVersion = 1L;
 
     // ---- Called from TextureManagerMixin ----
@@ -89,8 +95,11 @@ public final class DynamicTextureCache {
     public static void onRegisterTexture(Identifier id, AbstractTexture texture, NativeImage imageOrNull) {
         TEXTURE_IDS.put(texture, id);
         if (imageOrNull != null) {
+            REGISTERED_IMAGES.put(texture, imageOrNull);
             // Image available now (skins, capes, maps built before registration).
             store(id, extractPixels(imageOrNull));
+        } else {
+            REGISTERED_IMAGES.remove(texture);
         }
     }
 
@@ -173,8 +182,7 @@ public final class DynamicTextureCache {
         Set<Identifier> liveIds = new HashSet<>();
         synchronized (TEXTURE_IDS) {
             for (var entry : TEXTURE_IDS.entrySet()) {
-                if (!(entry.getKey() instanceof DynamicTexture texture)
-                        || isOpen(texture.getPixels())) {
+                if (!isReleased(entry.getKey())) {
                     liveIds.add(entry.getValue());
                 }
             }
@@ -185,6 +193,19 @@ public final class DynamicTextureCache {
     /** Whether {@code image} still holds pixels; a released {@code DynamicTexture} keeps its closed image. */
     public static boolean isOpen(NativeImage image) {
         return image != null && !image.isClosed();
+    }
+
+    /**
+     * Whether an image-backed texture has released its image. A texture that was never
+     * registered with an image, such as a skin captured at upload, is only ever released
+     * by being collected.
+     */
+    private static boolean isReleased(AbstractTexture texture) {
+        if (texture instanceof DynamicTexture dynamic) {
+            return !isOpen(dynamic.getPixels());
+        }
+        NativeImage registered = REGISTERED_IMAGES.get(texture);
+        return registered != null && !isOpen(registered);
     }
 
     private static Pixels extractPixels(NativeImage image) {

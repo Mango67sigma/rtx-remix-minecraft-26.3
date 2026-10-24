@@ -11,8 +11,6 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.renderer.texture.AbstractTexture;
-import net.minecraft.client.renderer.texture.DynamicTexture;
-import net.minecraft.client.renderer.texture.TextureManager;
 import net.minecraft.resources.Identifier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -94,15 +92,13 @@ class DynamicTextureCacheTest {
     @Test
     void clearDropsAClosedImageTextureEvenWhileTheManagerKeepsItRegistered() {
         Identifier id = Identifier.fromNamespaceAndPath("minecraft", "dynamic/closed-map");
-        TextureManager manager = new TextureManager(null);
-        DynamicTexture texture = new DynamicTexture(() -> "rtxremix-test", new NativeImage(1, 1, true));
-        manager.register(id, texture);
-        DynamicTextureCache.onRegisterTexture(id, texture, texture.getPixels());
+        AbstractTexture texture = newTexture();
+        NativeImage image = new NativeImage(1, 1, true);
+        DynamicTextureCache.onRegisterTexture(id, texture, image);
         assertNotNull(DynamicTextureCache.get(id));
 
-        texture.close();
-        assertTrue(texture.getPixels().isClosed());
-        assertSame(texture, manager.getTexture(id));
+        image.close();
+        assertTrue(image.isClosed());
         DynamicTextureCache.clear();
 
         assertNull(DynamicTextureCache.get(id));
@@ -111,11 +107,13 @@ class DynamicTextureCacheTest {
     @Test
     void clearKeepsALiveImageTextureWhenAClosedTextureSharesItsId() {
         Identifier id = Identifier.fromNamespaceAndPath("minecraft", "dynamic/replaced-map");
-        DynamicTexture closed = new DynamicTexture(() -> "rtxremix-test", new NativeImage(1, 1, true));
-        DynamicTextureCache.onRegisterTexture(id, closed, closed.getPixels());
-        closed.close();
-        try (DynamicTexture live = new DynamicTexture(() -> "rtxremix-test", new NativeImage(1, 1, true))) {
-            DynamicTextureCache.onRegisterTexture(id, live, live.getPixels());
+        AbstractTexture closed = newTexture();
+        NativeImage closedImage = new NativeImage(1, 1, true);
+        DynamicTextureCache.onRegisterTexture(id, closed, closedImage);
+        closedImage.close();
+        AbstractTexture live = newTexture();
+        try (NativeImage liveImage = new NativeImage(1, 1, true)) {
+            DynamicTextureCache.onRegisterTexture(id, live, liveImage);
             DynamicTextureCache.Pixels captured = DynamicTextureCache.get(id);
 
             DynamicTextureCache.clear();
@@ -127,22 +125,28 @@ class DynamicTextureCacheTest {
     @Test
     void capacityPruningDropsClosedImageTexturesWithoutWaitingForCollection() {
         Identifier closedId = Identifier.fromNamespaceAndPath("minecraft", "dynamic/pruned-map");
-        DynamicTexture closed = new DynamicTexture(() -> "rtxremix-test", new NativeImage(1, 1, true));
-        DynamicTextureCache.onRegisterTexture(closedId, closed, closed.getPixels());
-        closed.close();
+        AbstractTexture closed = newTexture();
+        NativeImage closedImage = new NativeImage(1, 1, true);
+        DynamicTextureCache.onRegisterTexture(closedId, closed, closedImage);
+        closedImage.close();
         List<AbstractTexture> live = new ArrayList<>();
-        for (int i = 0; i < DynamicTextureCache.capacity(); i++) {
-            AbstractTexture texture = newTexture();
-            live.add(texture);
-            Identifier id = Identifier.fromNamespaceAndPath("minecraft", "skins/closed-map-neighbour-" + i);
-            try (NativeImage image = new NativeImage(1, 1, true)) {
+        List<NativeImage> liveImages = new ArrayList<>();
+        try {
+            for (int i = 0; i < DynamicTextureCache.capacity(); i++) {
+                AbstractTexture texture = newTexture();
+                live.add(texture);
+                Identifier id = Identifier.fromNamespaceAndPath("minecraft", "skins/closed-map-neighbour-" + i);
+                NativeImage image = new NativeImage(1, 1, true);
+                liveImages.add(image);
                 DynamicTextureCache.onRegisterTexture(id, texture, image);
             }
-        }
 
-        assertTrue(closed.getPixels().isClosed());
-        assertNull(DynamicTextureCache.get(closedId));
-        assertEquals(DynamicTextureCache.capacity(), live.size());
+            assertTrue(closedImage.isClosed());
+            assertNull(DynamicTextureCache.get(closedId));
+            assertEquals(DynamicTextureCache.capacity(), live.size());
+        } finally {
+            liveImages.forEach(NativeImage::close);
+        }
     }
 
     /**

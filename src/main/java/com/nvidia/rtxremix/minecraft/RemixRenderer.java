@@ -50,16 +50,13 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.renderpearl.api.device.DeviceInfo;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import it.unimi.dsi.fastutil.longs.LongSet;
-import net.fabricmc.fabric.api.client.rendering.v1.level.LevelRenderContext;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
-import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.client.renderer.FirstPersonHandsAndItemsRenderer;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
-import net.minecraft.client.renderer.state.level.BlockOutlineRenderState;
 import net.minecraft.client.renderer.state.level.FirstPersonHandsAndItemsRenderState;
 import net.minecraft.client.renderer.state.level.PlayerRenderState;
 import net.minecraft.core.BlockPos;
@@ -719,13 +716,8 @@ public class RemixRenderer {
         if (EntityRenderContext.get().isActive()) {
             return false;
         }
-        Minecraft client = Minecraft.getInstance();
-        EntityRenderDispatcher dispatcher = client == null ? null : client.getEntityRenderDispatcher();
-        if (dispatcher == null) {
-            return false;
-        }
         entitySubmitter.beginFrame();
-        blockEntityPass.capture(be, call, dispatcher, entitySubmitter);
+        blockEntityPass.capture(be, call, entitySubmitter);
         return true;
     }
 
@@ -1476,28 +1468,7 @@ public class RemixRenderer {
         pendingTextureReload = true;
     }
 
-    /** Clears stale outline capture at the start of vanilla world rendering. */
-    public void beginBlockOutlineFrame() {
-        if (blockOutlinePass != null) {
-            blockOutlinePass.beginFrame();
-        }
-    }
 
-    /**
-     * Captures vanilla's targeted-block outline for Remix submission later in
-     * the same frame.
-     *
-     * <p>Called from the {@code LevelRenderEvents.BEFORE_BLOCK_OUTLINE} handler
-     * with the outline render state vanilla extracted for this frame; the
-     * context's {@code levelState()} carries the camera.
-     */
-    public void captureBlockOutline(
-            LevelRenderContext context,
-            BlockOutlineRenderState outline) {
-        if (blockOutlinePass != null) {
-            blockOutlinePass.captureBlockOutline(context, outline);
-        }
-    }
     
     /**
      * Actually clears all world-specific Remix resources (meshes, materials, lights)
@@ -1740,7 +1711,6 @@ public class RemixRenderer {
      * Minecraft's own animation and hand selection run while the geometry reaches
      * the Remix capture. {@code handsState} is the frame's extracted hand state and
      * {@code submitNodeCollector} the storage vanilla would have submitted into.
-     * The packed light is the camera entity's, as vanilla's 1.21.1 hand draw used.
      */
     public void captureFirstPersonModel(
             FirstPersonHandsAndItemsRenderer handsRenderer,
@@ -1752,15 +1722,6 @@ public class RemixRenderer {
         if (firstPersonPass == null || !initialized || !RtxRemixMod.isRtxEnabled()) {
             return;
         }
-        Minecraft client = Minecraft.getInstance();
-        LocalPlayer player = client.player;
-        Entity cameraEntity = client.getCameraEntity();
-        int light = cameraEntity == null
-                ? 0
-                : client.getEntityRenderDispatcher().getPackedLightCoords(cameraEntity, partialTicks);
-        // The pass still takes the 1.21.1 argument list; the hands renderer stands in
-        // for the retired ItemInHandRenderer until the entities port retypes it and
-        // takes the collector and render states this hook now provides.
-        firstPersonPass.capture(handsRenderer, partialTicks, poseStack, player, light);
+        firstPersonPass.capture(handsRenderer, partialTicks, poseStack, playerState, handsState);
     }
 }

@@ -4,6 +4,7 @@
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
+import com.mojang.math.Quadrant;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -14,7 +15,6 @@ import org.junit.jupiter.api.Test;
 
 import javax.imageio.ImageIO;
 import net.minecraft.client.model.geom.ModelPart;
-import net.minecraft.client.resources.model.BlockModelRotation;
 import net.minecraft.core.Direction;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -290,8 +290,7 @@ class CopperBeaconBlockEntityRendererTest {
                     readBaseModelDirection(variant.get("model").getAsString());
             directions.put(
                     mount,
-                    BlockModelRotation.by(x, y)
-                            .actualRotation()
+                    Quadrant.fromXYAngles(Quadrant.parseJson(x), Quadrant.parseJson(y))
                             .rotate(unrotatedDirection));
         }
         return directions;

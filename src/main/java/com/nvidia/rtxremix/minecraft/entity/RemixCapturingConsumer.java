@@ -700,7 +700,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
                     fnx, fny, fnz, boundsMin, boundsMax, quadBoneIndex);
             return;
         }
-        if (quad instanceof BakedQuadStaticGeometryCache cache) {
+        if ((Object) quad instanceof BakedQuadStaticGeometryCache cache) {
             pendingBakedQuadStart = vertexCount;
             pendingBakedQuadCache = cache;
         }
