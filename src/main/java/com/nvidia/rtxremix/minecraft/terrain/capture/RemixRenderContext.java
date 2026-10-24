@@ -4,275 +4,186 @@
  */
 package com.nvidia.rtxremix.minecraft.terrain.capture;
 
-import net.fabricmc.fabric.api.renderer.v1.material.RenderMaterial;
-import net.fabricmc.fabric.api.renderer.v1.mesh.MutableQuadView;
-import net.fabricmc.fabric.api.renderer.v1.mesh.QuadEmitter;
-import net.fabricmc.fabric.api.renderer.v1.mesh.QuadView;
-import net.fabricmc.fabric.api.renderer.v1.render.RenderContext;
-import net.minecraft.client.renderer.block.model.BakedQuad;
+import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadAtlas;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadEmitter;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadTransform;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadView;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.ShadeMode;
+import net.fabricmc.fabric.api.util.TriState;
+import net.minecraft.client.model.geom.builders.UVPair;
+import net.minecraft.client.renderer.Sheets;
+import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
+import net.minecraft.client.renderer.item.ItemStackRenderState;
+import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
-import net.minecraft.client.resources.model.BakedModel;
-import net.minecraft.core.BlockPos;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.client.resources.model.sprite.Material;
 import net.minecraft.core.Direction;
-import net.minecraft.resources.Identifier;
-import net.minecraft.util.RandomSource;
-import net.minecraft.world.level.BlockAndTintGetter;
-import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.util.LightCoordsUtil;
 import org.jetbrains.annotations.Nullable;
+import org.joml.Matrix4f;
 import org.joml.Vector2f;
 import org.joml.Vector3f;
+import org.joml.Vector3fc;
+import org.joml.Vector4f;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Deque;
 import java.util.List;
-import java.util.function.Predicate;
 
 /**
- * {@link RenderContext} implementation that captures quads emitted by FRAPI
- * models via {@code emitBlockQuads()}. The captured quads are converted to
- * {@link SectionBlockData.BlockQuad} records with full sprite/layer context.
+ * The Fabric {@link QuadEmitter} that block state models emit into during a section build.
  *
- * <p>Thread-local: one instance is reused per worker thread (via ThreadLocal
- * in {@link BlockQuadEmitter}).
+ * <p>Since Fabric API for 26.x every block model, vanilla or modded, reaches the terrain
+ * through {@code FabricBlockStateModel.emitQuads}: Fabric's own section-compiler hook routes
+ * {@code ModelBlockRenderer.tesselateBlock} that way, and the vanilla model classes carry
+ * allocation-free Fabric overrides. This emitter is therefore the one sink for block quads.
+ * {@link CapturingQuadEmitter#emit()} runs the pushed transforms, culls on the quad's cull
+ * face, and hands the quad to {@link BlockQuadEmitter#stageEmittedQuad}, which stages it into
+ * the section's {@link DirectQuadWriter}. Nothing is allocated per quad.
+ *
+ * <p>Thread-local: one instance is reused per worker thread (via ThreadLocal in
+ * {@link BlockQuadEmitter}).
  */
-final class RemixRenderContext implements RenderContext {
+final class RemixRenderContext {
 
-    private final CapturingQuadEmitter emitter = new CapturingQuadEmitter();
-    private final Deque<QuadTransform> transformStack = new ArrayDeque<>();
-    private final List<SectionBlockData.BlockQuad> captured = new ArrayList<>();
+    private final CapturingQuadEmitter emitter;
 
-    private BlockAndTintGetter world;
-    private BlockState state;
-    private BlockPos pos;
-    private Predicate<Direction> cullTest;
+    RemixRenderContext(BlockQuadEmitter sink) {
+        this.emitter = new CapturingQuadEmitter(sink);
+    }
 
-    void prepare(BlockAndTintGetter world, BlockState state, BlockPos pos,
-                 Predicate<Direction> cullTest) {
-        this.world = world;
-        this.state = state;
-        this.pos = pos;
-        this.cullTest = cullTest;
-        captured.clear();
-        transformStack.clear();
+    /** Resets the emitter for the next block. */
+    void prepare() {
+        emitter.transformStack.clear();
         emitter.clear();
     }
 
-    List<SectionBlockData.BlockQuad> harvest() {
-        return List.copyOf(captured);
-    }
-
-    // --- RenderContext ---
-
-    @Override
-    public QuadEmitter getEmitter() {
-        emitter.clear();
+    QuadEmitter emitter() {
         return emitter;
     }
 
-    @Override
-    public boolean isFaceCulled(@Nullable Direction face) {
-        if (face == null) return false;
-        return cullTest != null && cullTest.test(face);
-    }
-
-    @Override
-    public void pushTransform(QuadTransform transform) {
-        transformStack.push(transform);
-    }
-
-    @Override
-    public void popTransform() {
-        transformStack.pop();
-    }
-
-    @Override
-    public boolean hasTransform() {
-        return !transformStack.isEmpty();
-    }
-
-    // BakedModelConsumer (and the bakedModelConsumer() method on RenderContext)
-    // are @Deprecated(forRemoval = true) in Fabric API. Java 9+ tracks
-    // forRemoval separately from regular deprecation, so we need both
-    // suppressions. RenderContext still declares this as an abstract method,
-    // so we have to implement it until Fabric removes it from the interface.
-    // Replacement per the Fabric javadoc is to call FabricBakedModel.emitBlockQuads
-    // directly, which is what BlockQuadEmitter.emitFrapiBlock already does.
-    @SuppressWarnings({"deprecation", "removal"})
-    @Override
-    public BakedModelConsumer bakedModelConsumer() {
-        return new BakedModelConsumer() {
-            @Override
-            public void accept(BakedModel model) {
-                accept(model, RemixRenderContext.this.state);
-            }
-
-            @Override
-            public void accept(BakedModel model, @Nullable BlockState state) {
-                if (state == null) state = RemixRenderContext.this.state;
-
-                // Vanilla's per-position model-randomisation seed, matching
-                // BlockQuadEmitter.emitBlock. A constant here would put every
-                // instance of a multi-variant block on the same variant, which
-                // is the bug the seed plumbing exists to fix; this path is
-                // deprecated but still reachable, so it has to agree.
-                long seed = state.getSeed(RemixRenderContext.this.pos);
-                RandomSource random = RandomSource.create(seed);
-
-                for (Direction dir : Direction.values()) {
-                    // Re-seeded per direction, as vanilla does and as the loops
-                    // in BlockQuadEmitter.emitVanillaBlock do.
-                    random.setSeed(seed);
-                    for (BakedQuad quad : model.getQuads(state, dir, random)) {
-                        emitter.fromVanilla(quad, null, dir);
-                        emitter.emit();
-                    }
-                }
-                random.setSeed(seed);
-                for (BakedQuad quad : model.getQuads(state, null, random)) {
-                    emitter.fromVanilla(quad, null, null);
-                    emitter.emit();
-                }
-            }
-        };
-    }
-
     /**
-     * Complete {@link QuadEmitter} that stores quad data in flat arrays
-     * and captures on {@link #emit()}.
-     *
-     * <p>All setters return {@code QuadEmitter} (covariant with interface).
+     * Complete {@link QuadEmitter} that stores quad data in flat arrays and stages the quad on
+     * {@link #emit()}. Defaults after {@link #clear()} match Indigo's: white vertices, no cull
+     * face, the {@code CUTOUT} layer, default ambient occlusion, no tint, no tag.
      */
-    final class CapturingQuadEmitter implements QuadEmitter {
+    static final class CapturingQuadEmitter implements QuadEmitter {
+
+        private final BlockQuadEmitter sink;
 
         private final float[] posData = new float[12];
-        private final float[] uvData  = new float[8];
+        private final float[] uvData = new float[8];
         private final float[] normData = new float[12];
-        private final boolean[] normSet = new boolean[4];
+        private int normalFlags;
         private final int[] colors = new int[4];
         private final int[] lightmaps = new int[4];
 
         private Direction cullFaceVal;
         private Direction nominalFaceVal;
-        private RenderMaterial materialVal;
-        private int colorIndexVal = -1;
+        private QuadAtlas atlasVal = QuadAtlas.BLOCK;
+        private ChunkSectionLayer chunkLayerVal = ChunkSectionLayer.CUTOUT;
+        private RenderType itemRenderTypeVal;
+        private RenderType itemGlintRenderTypeVal;
+        private RenderType itemGlintSpecialRenderTypeVal;
+        private boolean emissiveVal;
+        private Direction shadeDirectionOverrideVal;
+        private TriState ambientOcclusionVal = TriState.DEFAULT;
+        private ItemStackRenderState.FoilType foilTypeVal;
+        private ShadeMode shadeModeVal = ShadeMode.ENHANCED;
+        private boolean animatedVal;
+        private int tintIndexVal = -1;
         private int tagVal;
 
+        /**
+         * The sprite the quad was baked with, recorded by {@link #fromBakedQuad} and
+         * {@link #materialBake}; a quad copied from a pre-built mesh carries none and is
+         * resolved through the atlas sprite finder when staged.
+         */
         private TextureAtlasSprite bakedSprite;
+
         private final Vector3f faceNormalCache = new Vector3f();
         private boolean faceNormalDirty = true;
 
-        void clear() {
+        /** Transforms in push order; applied last-pushed first, as Indigo does. */
+        final List<QuadTransform> transformStack = new ArrayList<>();
+
+        private final Vector3f scratchNormal = new Vector3f();
+        private final Vector4f scratchPos = new Vector4f();
+
+        CapturingQuadEmitter(BlockQuadEmitter sink) {
+            this.sink = sink;
+            clear();
+        }
+
+        TextureAtlasSprite bakedSprite() {
+            return bakedSprite;
+        }
+
+        @Override
+        public QuadEmitter clear() {
             for (int i = 0; i < 4; i++) {
                 colors[i] = -1; // 0xFFFFFFFF
                 lightmaps[i] = 0;
-                normSet[i] = false;
             }
             Arrays.fill(posData, 0);
             Arrays.fill(uvData, 0);
             Arrays.fill(normData, 0);
+            normalFlags = 0;
             cullFaceVal = null;
             nominalFaceVal = null;
-            materialVal = null;
-            colorIndexVal = -1;
+            atlasVal = QuadAtlas.BLOCK;
+            chunkLayerVal = ChunkSectionLayer.CUTOUT;
+            itemRenderTypeVal = null;
+            itemGlintRenderTypeVal = null;
+            itemGlintSpecialRenderTypeVal = null;
+            emissiveVal = false;
+            shadeDirectionOverrideVal = null;
+            ambientOcclusionVal = TriState.DEFAULT;
+            foilTypeVal = null;
+            shadeModeVal = ShadeMode.ENHANCED;
+            animatedVal = false;
+            tintIndexVal = -1;
             tagVal = 0;
             bakedSprite = null;
             faceNormalDirty = true;
+            return this;
         }
 
         @Override
         public QuadEmitter emit() {
-            if (!transformStack.isEmpty()) {
-                for (var it = transformStack.iterator(); it.hasNext(); ) {
-                    if (!it.next().transform(this)) {
-                        clear();
-                        return this;
-                    }
+            // Last pushed runs first, as in Indigo; a transform returning false drops the quad.
+            for (int i = transformStack.size() - 1; i >= 0; i--) {
+                if (!transformStack.get(i).transform(this)) {
+                    clear();
+                    return this;
                 }
             }
 
-            Direction cull = cullFace();
-            if (cull != null && isFaceCulled(cull)) {
+            Direction cull = cullFaceVal;
+            if (cull != null && sink.isFaceCulled(cull)) {
                 clear();
                 return this;
             }
 
-            float[] capturedPos = posData.clone();
-            float[] capturedUv = uvData.clone();
-
-            Vector3f fn = faceNormal();
-            float nx = fn.x(), ny = fn.y(), nz = fn.z();
-
-            int capturedColor = colors[0];
-
-            Identifier spriteId = null;
-            float su0 = 0, sv0 = 0, su1 = 1, sv1 = 1;
-            if (bakedSprite != null) {
-                spriteId = bakedSprite.contents().name();
-                su0 = bakedSprite.getU0();
-                sv0 = bakedSprite.getV0();
-                su1 = bakedSprite.getU1();
-                sv1 = bakedSprite.getV1();
-            }
-
-            captured.add(new SectionBlockData.BlockQuad(
-                capturedPos, capturedUv,
-                nx, ny, nz,
-                capturedColor,
-                spriteId,
-                su0, sv0, su1, sv1,
-                "solid",
-                false, false
-            ));
-
+            sink.stageEmittedQuad(this);
             clear();
             return this;
         }
 
         @Override
-        public QuadEmitter square(Direction nominalFace, float left, float bottom,
-                                   float right, float top, float depth) {
-            nominalFace(nominalFace);
-            switch (nominalFace) {
-                case UP -> {
-                    pos(0, left, 1 - depth, bottom);
-                    pos(1, left, 1 - depth, top);
-                    pos(2, right, 1 - depth, top);
-                    pos(3, right, 1 - depth, bottom);
-                }
-                case DOWN -> {
-                    pos(0, left, depth, top);
-                    pos(1, left, depth, bottom);
-                    pos(2, right, depth, bottom);
-                    pos(3, right, depth, top);
-                }
-                case NORTH -> {
-                    pos(0, 1 - left, top, depth);
-                    pos(1, 1 - left, bottom, depth);
-                    pos(2, 1 - right, bottom, depth);
-                    pos(3, 1 - right, top, depth);
-                }
-                case SOUTH -> {
-                    pos(0, left, top, 1 - depth);
-                    pos(1, left, bottom, 1 - depth);
-                    pos(2, right, bottom, 1 - depth);
-                    pos(3, right, top, 1 - depth);
-                }
-                case EAST -> {
-                    pos(0, 1 - depth, top, 1 - left);
-                    pos(1, 1 - depth, bottom, 1 - left);
-                    pos(2, 1 - depth, bottom, 1 - right);
-                    pos(3, 1 - depth, top, 1 - right);
-                }
-                case WEST -> {
-                    pos(0, depth, top, left);
-                    pos(1, depth, bottom, left);
-                    pos(2, depth, bottom, right);
-                    pos(3, depth, top, right);
-                }
+        public void pushTransform(QuadTransform transform) {
+            if (transform == null) {
+                throw new NullPointerException("QuadTransform cannot be null!");
             }
-            return this;
+            transformStack.add(transform);
+        }
+
+        @Override
+        public void popTransform() {
+            transformStack.remove(transformStack.size() - 1);
         }
 
         // --- Setters (return QuadEmitter per interface contract) ---
@@ -308,13 +219,7 @@ final class RemixRenderContext implements RenderContext {
         public QuadEmitter normal(int vertexIndex, float x, float y, float z) {
             int i = vertexIndex * 3;
             normData[i] = x; normData[i + 1] = y; normData[i + 2] = z;
-            normSet[vertexIndex] = true;
-            return this;
-        }
-
-        @Override
-        public QuadEmitter cullFace(@Nullable Direction face) {
-            this.cullFaceVal = face;
+            normalFlags |= 1 << vertexIndex;
             return this;
         }
 
@@ -325,14 +230,88 @@ final class RemixRenderContext implements RenderContext {
         }
 
         @Override
-        public QuadEmitter material(RenderMaterial material) {
-            this.materialVal = material;
+        public QuadEmitter cullFace(@Nullable Direction face) {
+            // Indigo makes the cull face the nominal face as well.
+            this.cullFaceVal = face;
+            this.nominalFaceVal = face;
             return this;
         }
 
         @Override
-        public QuadEmitter colorIndex(int colorIndex) {
-            this.colorIndexVal = colorIndex;
+        public QuadEmitter atlas(QuadAtlas quadAtlas) {
+            this.atlasVal = quadAtlas;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter chunkLayer(ChunkSectionLayer layer) {
+            this.chunkLayerVal = layer;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter itemRenderType(RenderType renderType) {
+            this.itemRenderTypeVal = renderType;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter itemGlintRenderType(RenderType renderType) {
+            this.itemGlintRenderTypeVal = renderType;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter itemGlintSpecialRenderType(RenderType renderType) {
+            this.itemGlintSpecialRenderTypeVal = renderType;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter emissive(boolean emissive) {
+            this.emissiveVal = emissive;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter shadeDirectionOverride(@Nullable Direction shadeDirection) {
+            this.shadeDirectionOverrideVal = shadeDirection;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter ambientOcclusion(TriState ao) {
+            if (ao == null) {
+                throw new NullPointerException("ambient occlusion TriState may not be null");
+            }
+            this.ambientOcclusionVal = ao;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter foilType(ItemStackRenderState.@Nullable FoilType foilType) {
+            this.foilTypeVal = foilType;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter shadeMode(ShadeMode mode) {
+            if (mode == null) {
+                throw new NullPointerException("ShadeMode may not be null");
+            }
+            this.shadeModeVal = mode;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter animated(boolean animated) {
+            this.animatedVal = animated;
+            return this;
+        }
+
+        @Override
+        public QuadEmitter tintIndex(int tintIndex) {
+            this.tintIndexVal = tintIndex;
             return this;
         }
 
@@ -342,136 +321,95 @@ final class RemixRenderContext implements RenderContext {
             return this;
         }
 
+        /**
+         * Bakes the sprite as the interface default does and remembers which sprite it was,
+         * so the staged quad resolves its material without a sprite-finder lookup.
+         */
         @Override
-        public QuadEmitter spriteBake(TextureAtlasSprite sprite, int bakeFlags) {
-            this.bakedSprite = sprite;
-
-            float sprMinU = sprite.getU0();
-            float sprMaxU = sprite.getU1();
-            float sprMinV = sprite.getV0();
-            float sprMaxV = sprite.getV1();
-
-            boolean lockUv    = (bakeFlags & MutableQuadView.BAKE_LOCK_UV)    != 0;
-            boolean flipU     = (bakeFlags & MutableQuadView.BAKE_FLIP_U)     != 0;
-            boolean flipV     = (bakeFlags & MutableQuadView.BAKE_FLIP_V)     != 0;
-            boolean normalized = (bakeFlags & MutableQuadView.BAKE_NORMALIZED) != 0;
-            int rotation = bakeFlags & 6;
-
-            if (lockUv) {
-                Direction face = nominalFaceVal != null ? nominalFaceVal : lightFace();
-                for (int v = 0; v < 4; v++) {
-                    float rawU, rawV;
-                    float px = posData[v * 3], py = posData[v * 3 + 1], pz = posData[v * 3 + 2];
-                    switch (face) {
-                        case UP, DOWN -> { rawU = px; rawV = pz; }
-                        case NORTH    -> { rawU = 1 - px; rawV = 1 - py; }
-                        case SOUTH    -> { rawU = px; rawV = 1 - py; }
-                        case EAST     -> { rawU = 1 - pz; rawV = 1 - py; }
-                        case WEST     -> { rawU = pz; rawV = 1 - py; }
-                        default       -> { rawU = 0; rawV = 0; }
-                    }
-                    if (normalized) { rawU *= 16f; rawV *= 16f; }
-                    uvData[v * 2] = rawU;
-                    uvData[v * 2 + 1] = rawV;
-                }
-            } else if (normalized) {
-                for (int v = 0; v < 4; v++) {
-                    uvData[v * 2] /= 16f;
-                    uvData[v * 2 + 1] /= 16f;
-                }
-            }
-
-            if (rotation != MutableQuadView.BAKE_ROTATE_NONE) {
-                for (int v = 0; v < 4; v++) {
-                    float u = uvData[v * 2], vv = uvData[v * 2 + 1];
-                    float du = u - 0.5f, dv = vv - 0.5f;
-                    switch (rotation) {
-                        case MutableQuadView.BAKE_ROTATE_90  -> { uvData[v * 2] = 0.5f + dv; uvData[v * 2 + 1] = 0.5f - du; }
-                        case MutableQuadView.BAKE_ROTATE_180 -> { uvData[v * 2] = 0.5f - du; uvData[v * 2 + 1] = 0.5f - dv; }
-                        case MutableQuadView.BAKE_ROTATE_270 -> { uvData[v * 2] = 0.5f - dv; uvData[v * 2 + 1] = 0.5f + du; }
-                    }
-                }
-            }
-
-            for (int v = 0; v < 4; v++) {
-                float u = uvData[v * 2], vv = uvData[v * 2 + 1];
-                if (flipU) u = 1 - u;
-                if (flipV) vv = 1 - vv;
-                uvData[v * 2]     = sprMinU + u * (sprMaxU - sprMinU);
-                uvData[v * 2 + 1] = sprMinV + vv * (sprMaxV - sprMinV);
-            }
-
+        public QuadEmitter materialBake(Material.Baked material, int bakeFlags) {
+            QuadEmitter.super.materialBake(material, bakeFlags);
+            this.bakedSprite = material.sprite();
             return this;
         }
 
         @Override
-        public QuadEmitter fromVanilla(int[] quadData, int startIndex) {
-            for (int v = 0; v < 4; v++) {
-                int off = startIndex + v * 8;
-                pos(v, Float.intBitsToFloat(quadData[off]),
-                       Float.intBitsToFloat(quadData[off + 1]),
-                       Float.intBitsToFloat(quadData[off + 2]));
-                color(v, quadData[off + 3]);
-                uv(v, Float.intBitsToFloat(quadData[off + 4]),
-                      Float.intBitsToFloat(quadData[off + 5]));
-                lightmap(v, quadData[off + 6]);
-                int packed = quadData[off + 7];
-                float nx = (byte) (packed & 0xFF) / 127f;
-                float ny = (byte) ((packed >> 8) & 0xFF) / 127f;
-                float nz = (byte) ((packed >> 16) & 0xFF) / 127f;
-                if (nx != 0 || ny != 0 || nz != 0) {
-                    normal(v, nx, ny, nz);
-                }
-            }
-            return this;
-        }
-
-        @Override
-        public QuadEmitter fromVanilla(BakedQuad quad, RenderMaterial material,
-                                        @Nullable Direction cullFace) {
-            this.cullFaceVal = cullFace;
-            this.materialVal = material;
-            this.colorIndexVal = quad.getTintIndex();
-            this.bakedSprite = quad.getSprite();
-            this.nominalFaceVal = quad.getDirection();
-
-            int[] vd = quad.getVertices();
-            for (int v = 0; v < 4; v++) {
-                int off = v * 8;
-                pos(v, Float.intBitsToFloat(vd[off]),
-                       Float.intBitsToFloat(vd[off + 1]),
-                       Float.intBitsToFloat(vd[off + 2]));
-                color(v, vd[off + 3]);
-                uv(v, Float.intBitsToFloat(vd[off + 4]),
-                      Float.intBitsToFloat(vd[off + 5]));
-                lightmap(v, vd[off + 6]);
-                int packed = vd[off + 7];
-                float nx = (byte) (packed & 0xFF) / 127f;
-                float ny = (byte) ((packed >> 8) & 0xFF) / 127f;
-                float nz = (byte) ((packed >> 16) & 0xFF) / 127f;
-                if (nx != 0 || ny != 0 || nz != 0) {
-                    normal(v, nx, ny, nz);
-                }
-            }
+        public QuadEmitter fromBakedQuad(BakedQuad quad) {
+            BakedQuad.MaterialInfo materialInfo = quad.materialInfo();
+            Vector3fc p0 = quad.position0();
+            Vector3fc p1 = quad.position1();
+            Vector3fc p2 = quad.position2();
+            Vector3fc p3 = quad.position3();
+            pos(0, p0.x(), p0.y(), p0.z());
+            pos(1, p1.x(), p1.y(), p1.z());
+            pos(2, p2.x(), p2.y(), p2.z());
+            pos(3, p3.x(), p3.y(), p3.z());
+            colors[0] = colors[1] = colors[2] = colors[3] = -1;
+            long packedUV0 = quad.packedUV0();
+            long packedUV1 = quad.packedUV1();
+            long packedUV2 = quad.packedUV2();
+            long packedUV3 = quad.packedUV3();
+            uv(0, UVPair.unpackU(packedUV0), UVPair.unpackV(packedUV0));
+            uv(1, UVPair.unpackU(packedUV1), UVPair.unpackV(packedUV1));
+            uv(2, UVPair.unpackU(packedUV2), UVPair.unpackV(packedUV2));
+            uv(3, UVPair.unpackU(packedUV3), UVPair.unpackV(packedUV3));
+            int lightEmission = materialInfo.lightEmission();
+            int lightmap = LightCoordsUtil.pack(lightEmission, lightEmission);
+            lightmaps[0] = lightmaps[1] = lightmaps[2] = lightmaps[3] = lightmap;
+            normalFlags = 0;
+            nominalFaceVal = quad.direction();
+            TextureAtlasSprite sprite = materialInfo.sprite();
+            QuadAtlas atlas = QuadAtlas.ofLocation(sprite.atlasLocation());
+            atlasVal = atlas == null ? QuadAtlas.BLOCK : atlas;
+            animatedVal = sprite.contents().isAnimated();
+            chunkLayerVal = materialInfo.layer();
+            itemRenderTypeVal = materialInfo.itemRenderType();
+            itemGlintRenderTypeVal = materialInfo.itemGlintRenderType();
+            itemGlintSpecialRenderTypeVal = materialInfo.itemGlintSpecialRenderType();
+            tintIndexVal = materialInfo.tintIndex();
+            shadeDirectionOverrideVal = materialInfo.shadeDirectionOverride();
+            emissiveVal = lightEmission == 15;
+            bakedSprite = sprite;
             return this;
         }
 
         @Override
         public QuadEmitter copyFrom(QuadView source) {
-            for (int v = 0; v < 4; v++) {
-                pos(v, source.x(v), source.y(v), source.z(v));
-                color(v, source.color(v));
-                uv(v, source.u(v), source.v(v));
-                lightmap(v, source.lightmap(v));
-                if (source.hasNormal(v)) {
-                    normal(v, source.normalX(v), source.normalY(v), source.normalZ(v));
+            if (source instanceof CapturingQuadEmitter other) {
+                System.arraycopy(other.posData, 0, posData, 0, 12);
+                System.arraycopy(other.uvData, 0, uvData, 0, 8);
+                System.arraycopy(other.normData, 0, normData, 0, 12);
+                System.arraycopy(other.colors, 0, colors, 0, 4);
+                System.arraycopy(other.lightmaps, 0, lightmaps, 0, 4);
+                normalFlags = other.normalFlags;
+                bakedSprite = other.bakedSprite;
+            } else {
+                for (int v = 0; v < 4; v++) {
+                    pos(v, source.x(v), source.y(v), source.z(v));
+                    colors[v] = source.color(v);
+                    uv(v, source.u(v), source.v(v));
+                    lightmaps[v] = source.lightmap(v);
+                    if (source.hasNormal(v)) {
+                        normal(v, source.normalX(v), source.normalY(v), source.normalZ(v));
+                    }
                 }
+                bakedSprite = null;
             }
-            cullFace(source.cullFace());
-            nominalFace(source.nominalFace());
-            material(source.material());
-            colorIndex(source.colorIndex());
-            tag(source.tag());
+            faceNormalDirty = true;
+            cullFaceVal = source.cullFace();
+            nominalFaceVal = source.nominalFace();
+            atlasVal = source.atlas();
+            chunkLayerVal = source.chunkLayer();
+            itemRenderTypeVal = source.itemRenderType();
+            itemGlintRenderTypeVal = source.itemGlintRenderType();
+            itemGlintSpecialRenderTypeVal = source.itemGlintSpecialRenderType();
+            emissiveVal = source.emissive();
+            shadeDirectionOverrideVal = source.shadeDirectionOverride();
+            ambientOcclusionVal = source.ambientOcclusion();
+            foilTypeVal = source.foilType();
+            shadeModeVal = source.shadeMode();
+            animatedVal = source.animated();
+            tintIndexVal = source.tintIndex();
+            tagVal = source.tag();
             return this;
         }
 
@@ -507,82 +445,128 @@ final class RemixRenderContext implements RenderContext {
         }
 
         @Override public int lightmap(int vertexIndex) { return lightmaps[vertexIndex]; }
-        @Override public boolean hasNormal(int vertexIndex) { return normSet[vertexIndex]; }
+
+        @Override
+        public boolean hasNormal(int vertexIndex) {
+            return (normalFlags & (1 << vertexIndex)) != 0;
+        }
 
         @Override
         public float normalX(int vertexIndex) {
-            return normSet[vertexIndex] ? normData[vertexIndex * 3] : Float.NaN;
+            return hasNormal(vertexIndex) ? normData[vertexIndex * 3] : Float.NaN;
         }
 
         @Override
         public float normalY(int vertexIndex) {
-            return normSet[vertexIndex] ? normData[vertexIndex * 3 + 1] : Float.NaN;
+            return hasNormal(vertexIndex) ? normData[vertexIndex * 3 + 1] : Float.NaN;
         }
 
         @Override
         public float normalZ(int vertexIndex) {
-            return normSet[vertexIndex] ? normData[vertexIndex * 3 + 2] : Float.NaN;
+            return hasNormal(vertexIndex) ? normData[vertexIndex * 3 + 2] : Float.NaN;
         }
 
         @Override
         public @Nullable Vector3f copyNormal(int vertexIndex, @Nullable Vector3f target) {
-            if (!normSet[vertexIndex]) return null;
+            if (!hasNormal(vertexIndex)) return null;
             if (target == null) target = new Vector3f();
             int i = vertexIndex * 3;
             target.set(normData[i], normData[i + 1], normData[i + 2]);
             return target;
         }
 
-        @Override public @Nullable Direction cullFace() { return cullFaceVal; }
-
+        /**
+         * The geometric face normal, from the first three vertices as the terrain capture has
+         * always computed it. A degenerate quad keeps its unnormalised, near-zero cross product
+         * rather than turning into NaN.
+         */
         @Override
-        public Direction lightFace() {
-            if (nominalFaceVal != null) return nominalFaceVal;
-            return Direction.getNearest(faceNormal().x(), faceNormal().y(), faceNormal().z());
-        }
-
-        @Override public @Nullable Direction nominalFace() { return nominalFaceVal; }
-
-        @Override
-        public Vector3f faceNormal() {
+        public Vector3fc faceNormal() {
             if (faceNormalDirty) {
                 float x0 = posData[0], y0 = posData[1], z0 = posData[2];
-                float x1 = posData[3], y1 = posData[4], z1 = posData[5];
-                float x2 = posData[6], y2 = posData[7], z2 = posData[8];
-                float e1x = x1 - x0, e1y = y1 - y0, e1z = z1 - z0;
-                float e2x = x2 - x0, e2y = y2 - y0, e2z = z2 - z0;
-                faceNormalCache.set(
-                    e1y * e2z - e1z * e2y,
-                    e1z * e2x - e1x * e2z,
-                    e1x * e2y - e1y * e2x
-                ).normalize();
+                float e1x = posData[3] - x0, e1y = posData[4] - y0, e1z = posData[5] - z0;
+                float e2x = posData[6] - x0, e2y = posData[7] - y0, e2z = posData[8] - z0;
+                float nx = e1y * e2z - e1z * e2y;
+                float ny = e1z * e2x - e1x * e2z;
+                float nz = e1x * e2y - e1y * e2x;
+                float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+                if (len > 0.001f) {
+                    nx /= len; ny /= len; nz /= len;
+                }
+                faceNormalCache.set(nx, ny, nz);
                 faceNormalDirty = false;
             }
             return faceNormalCache;
         }
 
-        @Override public RenderMaterial material() { return materialVal; }
-        @Override public int colorIndex() { return colorIndexVal; }
+        @Override
+        public Direction lightFace() {
+            Vector3fc n = faceNormal();
+            return Direction.getApproximateNearest(n.x(), n.y(), n.z());
+        }
+
+        @Override public @Nullable Direction nominalFace() { return nominalFaceVal; }
+        @Override public @Nullable Direction cullFace() { return cullFaceVal; }
+        @Override public QuadAtlas atlas() { return atlasVal; }
+        @Override public ChunkSectionLayer chunkLayer() { return chunkLayerVal; }
+
+        @Override
+        public RenderType itemRenderType() {
+            return itemRenderTypeVal != null ? itemRenderTypeVal : Sheets.cutoutBlockItemSheet();
+        }
+
+        @Override
+        public RenderType itemGlintRenderType() {
+            return itemGlintRenderTypeVal != null ? itemGlintRenderTypeVal : Sheets.cutoutBlockItemGlintSheet();
+        }
+
+        @Override
+        public RenderType itemGlintSpecialRenderType() {
+            return itemGlintSpecialRenderTypeVal != null
+                    ? itemGlintSpecialRenderTypeVal
+                    : Sheets.cutoutBlockItemGlintSpecialSheet();
+        }
+
+        @Override public boolean emissive() { return emissiveVal; }
+        @Override public @Nullable Direction shadeDirectionOverride() { return shadeDirectionOverrideVal; }
+        @Override public TriState ambientOcclusion() { return ambientOcclusionVal; }
+        @Override public ItemStackRenderState.@Nullable FoilType foilType() { return foilTypeVal; }
+        @Override public ShadeMode shadeMode() { return shadeModeVal; }
+        @Override public boolean animated() { return animatedVal; }
+        @Override public int tintIndex() { return tintIndexVal; }
         @Override public int tag() { return tagVal; }
 
         @Override
-        public void toVanilla(int[] target, int targetIndex) {
-            for (int v = 0; v < 4; v++) {
-                int off = targetIndex + v * 8;
-                target[off]     = Float.floatToRawIntBits(posData[v * 3]);
-                target[off + 1] = Float.floatToRawIntBits(posData[v * 3 + 1]);
-                target[off + 2] = Float.floatToRawIntBits(posData[v * 3 + 2]);
-                target[off + 3] = colors[v];
-                target[off + 4] = Float.floatToRawIntBits(uvData[v * 2]);
-                target[off + 5] = Float.floatToRawIntBits(uvData[v * 2 + 1]);
-                target[off + 6] = lightmaps[v];
-                int nx = (int) (normData[v * 3] * 127) & 0xFF;
-                int ny = (int) (normData[v * 3 + 1] * 127) & 0xFF;
-                int nz = (int) (normData[v * 3 + 2] * 127) & 0xFF;
-                target[off + 7] = nx | (ny << 8) | (nz << 16);
+        public void buffer(int overlayCoords, VertexConsumer vertexConsumer) {
+            Vector3fc fn = faceNormal();
+            for (int i = 0; i < 4; i++) {
+                float nx, ny, nz;
+                if (hasNormal(i)) {
+                    nx = normData[i * 3]; ny = normData[i * 3 + 1]; nz = normData[i * 3 + 2];
+                } else {
+                    nx = fn.x(); ny = fn.y(); nz = fn.z();
+                }
+                vertexConsumer.addVertex(x(i), y(i), z(i), colors[i], u(i), v(i),
+                        overlayCoords, lightmaps[i], nx, ny, nz);
             }
         }
 
-        TextureAtlasSprite getBakedSprite() { return bakedSprite; }
+        @Override
+        public void buffer(int overlayCoords, PoseStack.Pose pose, VertexConsumer vertexConsumer) {
+            Matrix4f posMatrix = pose.pose();
+            Vector3f normal = scratchNormal;
+            Vector4f position = scratchPos;
+            for (int i = 0; i < 4; i++) {
+                position.set(x(i), y(i), z(i), 1.0f);
+                position.mul(posMatrix);
+                if (hasNormal(i)) {
+                    pose.transformNormal(normData[i * 3], normData[i * 3 + 1], normData[i * 3 + 2], normal);
+                } else {
+                    pose.transformNormal(faceNormal(), normal);
+                }
+                vertexConsumer.addVertex(position.x(), position.y(), position.z(), colors[i], u(i), v(i),
+                        overlayCoords, lightmaps[i], normal.x(), normal.y(), normal.z());
+            }
+        }
     }
 }

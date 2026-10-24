@@ -7,14 +7,15 @@ package com.nvidia.rtxremix.minecraft.terrain.capture;
 import com.nvidia.rtxremix.minecraft.light.LightEntry;
 import java.util.List;
 import net.minecraft.core.SectionPos;
-import net.minecraft.resources.Identifier;
 
 /**
  * Captured block-level mesh data for a single chunk section (16x16x16),
  * produced by {@link BlockQuadEmitter}.
  *
  * <p>Mesh data is pre-categorized and interleaved in HardcodedVertex
- * layout via {@link SectionMeshData}. No intermediate SoA copies.
+ * layout via {@link SectionMeshData}. No intermediate SoA copies: since the
+ * 26.x port every model quad is staged straight from the Fabric emitter, so the
+ * per-quad record the FRAPI harvest path once used is gone.
  */
 public record SectionBlockData(
     SectionPos sectionPos,
@@ -46,34 +47,4 @@ public record SectionBlockData(
      */
     long[] opacityBitmap
 ) {
-    /**
-     * A single quad with all rendering context resolved at generation time.
-     *
-     * @param positions   12 floats: 4 vertices x (x, y, z), section-local coords [0..16]
-     * @param uvs         8 floats: 4 vertices x (u, v), atlas coordinates
-     * @param nx          face normal X
-     * @param ny          face normal Y
-     * @param nz          face normal Z
-     * @param color       pre-resolved ARGB vertex color (tint already applied)
-     * @param spriteId    exact sprite identifier for O(1) material lookup
-     * @param spriteU0    sprite atlas UV bounds min U
-     * @param spriteV0    sprite atlas UV bounds min V
-     * @param spriteU1    sprite atlas UV bounds max U
-     * @param spriteV1    sprite atlas UV bounds max V
-     * @param renderLayer render layer name ("solid", "cutout", "cutout_mipped", "translucent")
-     * @param isOverlay   true if this quad is a decal overlay (transparent sprite on shared face)
-     * @param isFluid     true if this quad belongs to a fluid (water, lava)
-     */
-    public record BlockQuad(
-        float[] positions,
-        float[] uvs,
-        float nx, float ny, float nz,
-        int color,
-        Identifier spriteId,
-        float spriteU0, float spriteV0,
-        float spriteU1, float spriteV1,
-        String renderLayer,
-        boolean isOverlay,
-        boolean isFluid
-    ) {}
 }

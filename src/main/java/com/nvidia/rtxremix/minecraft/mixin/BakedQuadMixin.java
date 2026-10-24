@@ -8,9 +8,13 @@ import com.nvidia.rtxremix.minecraft.entity.BakedQuadStaticGeometryCache;
 import org.spongepowered.asm.mixin.Mixin;
 
 import java.util.Arrays;
-import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
 
-/** Stores the bake-time geometry digest used by Remix entity mesh pooling. */
+/**
+ * Stores the bake-time geometry digest used by Remix entity mesh pooling. {@code BakedQuad}
+ * is a record since 1.21.x; the JVM admits the extra fields a mixin adds to a record class,
+ * only the language forbids declaring them, so the digest still rides on the quad itself.
+ */
 @Mixin(BakedQuad.class)
 public class BakedQuadMixin implements BakedQuadStaticGeometryCache {
 
