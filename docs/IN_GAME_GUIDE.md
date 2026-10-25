@@ -23,7 +23,7 @@ renderer is not initialized, run `/rtx status` first.
 | `/rtx blockentities` | Toggle path-traced chests, signs, banners, and beds |
 | `/rtx particles` | Toggle path-traced particles |
 | `/rtx sky` | Toggle the path-traced sky |
-| `/rtx heldlights` | Put out or relight all lights held by the local player, like Toggle Held Lights (default `G`) |
+| `/rtx heldlights` | Put out or relight all lights held by the local player, like Toggle Held Lights (default `H`) |
 | `/rtx heldlights underwater` | Toggle whether held open flames stay lit when the holder's eyes are under water; they go out by default |
 
 The capture toggles are diagnostic. Turning one off tells you which part of the
@@ -158,7 +158,7 @@ folder. Camera commands are unavailable while a benchmark is running.
 |---|---|
 | Toggle RTX Rendering (default `F8`) | Turn path tracing off, or back on, without opening chat. The new state shows above the hotbar |
 | `Alt+X` | Open the RTX Remix runtime's own developer overlay, or close whichever Remix overlay is open, including the Graphics Settings menu that the button on the settings screen opens; each menu's own close button closes it too. What you change in either overrides the mod's settings. While one is open, Minecraft receives no keyboard or mouse input at all, Escape included; close the menu or press `Alt+X` to return |
-| Toggle Held Lights (default `G`) | Put out everything lit in your hands, a torch's flame and light or a Copper Beacon's beam, and light it again |
+| Toggle Held Lights (default `H`) | Put out everything lit in your hands, a torch's flame and light or a Copper Beacon's beam, and light it again |
 | `R` | Start and stop a camera recording, once `/rtx camera record` has armed it |
 | `=` and `-` | While recording, move the time of day forward or back in normal steps. Hold `Ctrl` for larger steps |
 | `F1` | Hide the interface, including your own hand |

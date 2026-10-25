@@ -368,7 +368,7 @@ public class RtxRemixMod implements ClientModInitializer {
             new KeyMapping(
                 "key.rtxremix.toggleHeldLights",
                 InputConstants.Type.KEYBOARD,
-                InputConstants.KEY_G,
+                InputConstants.KEY_H,
                 keyCategory
             )
         );
