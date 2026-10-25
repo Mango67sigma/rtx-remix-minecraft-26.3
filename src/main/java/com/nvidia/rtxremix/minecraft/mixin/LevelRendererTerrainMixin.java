@@ -89,8 +89,8 @@ public abstract class LevelRendererTerrainMixin implements WorldRendererTerrainA
     }
 
     /**
-     * No-op while {@code NeighbourReflagFilter} is deferred: no snapshot mask is recorded,
-     * so there is no bit to clear.
+     * No-op in 26.3: no snapshot mask is recorded (see {@code NeighbourReflagFilter}), so
+     * there is no bit to clear. Kept until the {@code CHUNK_UNLOAD} handler stops calling it.
      */
     @Override
     public void rtxremix$onNeighbourColumnInvalidated(int cx, int cz) {

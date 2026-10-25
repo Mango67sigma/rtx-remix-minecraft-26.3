@@ -44,10 +44,10 @@ public interface WorldRendererTerrainAccess {
     void rtxremix$scheduleResidentSectionRebuild(int cx, int sy, int cz);
 
     /**
-     * Forgets that column (cx, cz) was in the region snapshots of its eight
-     * neighbour columns' slots, because it unloaded or is being reloaded in
-     * place. Its next load then re-flags those slots instead of being dropped
-     * as already captured. A no-op while {@code NeighbourReflagFilter} is deferred.
+     * Legacy 1.21.1 hook that forgot an unloaded column in its neighbours' region
+     * snapshot masks. A no-op in 26.3, which records no snapshot mask because its
+     * first-build gate already waits for every neighbour column (see
+     * {@code NeighbourReflagFilter}). Remove it with its {@code CHUNK_UNLOAD} caller.
      */
     void rtxremix$onNeighbourColumnInvalidated(int cx, int cz);
 }

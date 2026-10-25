@@ -5,28 +5,35 @@
 package com.nvidia.rtxremix.minecraft.terrain;
 
 import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.Decision;
+import net.minecraft.client.SectionUpdateTracker;
+import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.LevelHeightAccessor;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.function.BiConsumer;
 
+import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COLUMN_ABSENT;
+import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COLUMN_LIT;
+import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COLUMN_UNLIT;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COMPLETE;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.DX;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.DZ;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.NEIGHBOUR_COUNT;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.bit;
+import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.buildIsAheadOfChunkLight;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.decideNeighbour;
+import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.dropsLightDataReflag;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.mirroredIndex;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.neighbourIndex;
+import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.rebuildsRequested;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.sectionInRange;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,9 +41,291 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NeighbourReflagFilterTest {
-    private static final int SECTIONS_PER_COLUMN = 24;
-    private static final int FLAG_RUNNABLES_PER_FRAME = 10;
-    private static final int ROW_HALF_WIDTH = 32;
+    /** Overworld height: sections -4..19. */
+    private static final int MIN_Y = -64;
+    private static final int HEIGHT = 384;
+    private static final int MIN_SECTION_Y = -4;
+    private static final int MAX_SECTION_Y = 19;
+    private static final int TRACKER_RADIUS = 3;
+
+    @Test
+    void enabledDefaultsToTrueAndHonoursAnExplicitFalse() {
+        assertTrue(NeighbourReflagFilter.enabledFrom(null));
+        assertTrue(NeighbourReflagFilter.enabledFrom("true"));
+        assertFalse(NeighbourReflagFilter.enabledFrom("false"));
+    }
+
+    @Test
+    void aLightDataReflagIsDroppedOnlyWhileEnabledAndCapturing() {
+        assertTrue(dropsLightDataReflag(true, true));
+        assertFalse(dropsLightDataReflag(true, false));
+        assertFalse(dropsLightDataReflag(false, true));
+        assertFalse(dropsLightDataReflag(false, false));
+    }
+
+    @Test
+    void countersDrainAndReset() {
+        NeighbourReflagFilter.drainKept();
+        NeighbourReflagFilter.drainBuildsAheadOfChunkLight();
+        SkippedSectionRebuilds.drainLightDataReflags();
+
+        NeighbourReflagFilter.recordKept(3);
+        NeighbourReflagFilter.recordKept(0);
+        NeighbourReflagFilter.recordBuildAheadOfChunkLight();
+        SkippedSectionRebuilds.recordLightDataReflags(5);
+        SkippedSectionRebuilds.recordLightDataReflags(0);
+
+        assertEquals(3, NeighbourReflagFilter.drainKept());
+        assertEquals(0, NeighbourReflagFilter.drainKept());
+        assertEquals(1, NeighbourReflagFilter.drainBuildsAheadOfChunkLight());
+        assertEquals(0, NeighbourReflagFilter.drainBuildsAheadOfChunkLight());
+        assertEquals(5, SkippedSectionRebuilds.drainLightDataReflags());
+        assertEquals(0, SkippedSectionRebuilds.drainLightDataReflags());
+    }
+
+    /**
+     * Against vanilla's own tracker: the count is exactly the number of states that
+     * {@code LevelExtractor.setSectionDirtyWithNeighbors} (vanilla's 3x3x3 loop over
+     * {@code SectionUpdateTracker.setDirty(x, y, z, false)}) turns from clean to dirty,
+     * including cubes that reach past the window and past the world's height.
+     */
+    @Test
+    void rebuildsRequestedIsWhatVanillasReflagChangesInTheTracker() {
+        int[][] centres = {
+            {0, 5, 0},
+            {TRACKER_RADIUS, 5, 0},
+            {-TRACKER_RADIUS, 5, TRACKER_RADIUS},
+            {TRACKER_RADIUS + 1, 5, 0},
+            {1, MIN_SECTION_Y, -1},
+            {1, MAX_SECTION_Y, 2},
+            {0, MAX_SECTION_Y + 1, 0},
+            {0, MIN_SECTION_Y - 1, 0},
+            {TRACKER_RADIUS + 2, 5, 0},
+        };
+        Random random = new Random(26_3);
+        for (int round = 0; round < 40; round++) {
+            for (int[] centre : centres) {
+                SectionUpdateTracker tracker = newTracker();
+                // Random clean/dirty pattern, some of it dirty from the player.
+                forEachWindowSection((x, y, z) -> {
+                    SectionUpdateTracker.SectionDirtyState state = tracker.getDirtyState(SectionPos.asLong(x, y, z));
+                    int roll = random.nextInt(4);
+                    if (roll == 0) {
+                        state.setNotDirty();
+                        state.setDirty(true);
+                    } else if (roll == 1) {
+                        state.setNotDirty();
+                        state.setDirty(false);
+                    } else {
+                        state.setNotDirty();
+                    }
+                });
+                Map<Long, Boolean> dirtyBefore = new HashMap<>();
+                Map<Long, Boolean> fromPlayerBefore = new HashMap<>();
+                snapshot(tracker, dirtyBefore, fromPlayerBefore);
+
+                int requested = rebuildsRequested(tracker, centre[0], centre[1], centre[2]);
+
+                for (int z = centre[2] - 1; z <= centre[2] + 1; z++) {
+                    for (int x = centre[0] - 1; x <= centre[0] + 1; x++) {
+                        for (int y = centre[1] - 1; y <= centre[1] + 1; y++) {
+                            tracker.setDirty(x, y, z, false);
+                        }
+                    }
+                }
+                Map<Long, Boolean> dirtyAfter = new HashMap<>();
+                Map<Long, Boolean> fromPlayerAfter = new HashMap<>();
+                snapshot(tracker, dirtyAfter, fromPlayerAfter);
+
+                int flipped = 0;
+                for (Map.Entry<Long, Boolean> entry : dirtyBefore.entrySet()) {
+                    boolean before = entry.getValue();
+                    boolean after = dirtyAfter.get(entry.getKey());
+                    if (!before && after) {
+                        flipped++;
+                    }
+                    if (before) {
+                        // An already dirty state is left exactly as it was.
+                        assertTrue(after);
+                        assertEquals(fromPlayerBefore.get(entry.getKey()), fromPlayerAfter.get(entry.getKey()));
+                    }
+                }
+                assertEquals(flipped, requested, "centre " + centre[0] + "," + centre[1] + "," + centre[2]);
+            }
+        }
+    }
+
+    @Test
+    void rebuildsRequestedCountsTheWholeCleanCubeAndNothingOutsideTheWindow() {
+        SectionUpdateTracker tracker = newTracker();
+        forEachWindowSection((x, y, z) -> tracker.getDirtyState(SectionPos.asLong(x, y, z)).setNotDirty());
+        assertEquals(27, rebuildsRequested(tracker, 0, 5, 0));
+        // Half the cube past the window's x edge.
+        assertEquals(18, rebuildsRequested(tracker, TRACKER_RADIUS, 5, 0));
+        // The light sections just outside the world have no state, as vanilla's tracker has none.
+        assertEquals(18, rebuildsRequested(tracker, 0, MAX_SECTION_Y, 0));
+        assertEquals(9, rebuildsRequested(tracker, 0, MAX_SECTION_Y + 1, 0));
+        assertEquals(0, rebuildsRequested(tracker, TRACKER_RADIUS + 2, 5, 0));
+        // A fresh tracker starts every state dirty, so nothing would be requested.
+        assertEquals(0, rebuildsRequested(newTracker(), 0, 5, 0));
+    }
+
+    @Test
+    void aBuildIsAheadOfChunkLightOnlyWhenAHeldColumnOfItsNeighbourhoodIsUnlit() {
+        Map<Long, Integer> states = new HashMap<>();
+        NeighbourReflagFilter.ColumnProbe probe = (cx, cz) -> states.getOrDefault(columnKey(cx, cz), COLUMN_ABSENT);
+        long node = SectionPos.asLong(10, 3, -7);
+
+        assertFalse(buildIsAheadOfChunkLight(node, probe));
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                states.put(columnKey(10 + dx, -7 + dz), COLUMN_LIT);
+            }
+        }
+        assertFalse(buildIsAheadOfChunkLight(node, probe));
+
+        // Unlit columns just outside the 3x3 neighbourhood do not count.
+        for (int d = -2; d <= 2; d++) {
+            states.put(columnKey(10 + d, -9), COLUMN_UNLIT);
+            states.put(columnKey(10 + d, -5), COLUMN_UNLIT);
+            states.put(columnKey(8, -7 + d), COLUMN_UNLIT);
+            states.put(columnKey(12, -7 + d), COLUMN_UNLIT);
+        }
+        assertFalse(buildIsAheadOfChunkLight(node, probe));
+
+        // Any held but unlit column of the neighbourhood, the section's own included.
+        for (int dz = -1; dz <= 1; dz++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                long key = columnKey(10 + dx, -7 + dz);
+                states.put(key, COLUMN_UNLIT);
+                assertTrue(buildIsAheadOfChunkLight(node, probe), dx + "," + dz);
+                states.put(key, COLUMN_ABSENT);
+                assertFalse(buildIsAheadOfChunkLight(node, probe), dx + "," + dz);
+                states.put(key, COLUMN_LIT);
+            }
+        }
+    }
+
+    /**
+     * A join sent nearest first, as {@code PlayerChunkSender} sorts each batch, with every
+     * column ready to send, however far the light queue falls behind: 26.3 builds every
+     * section whose eight neighbour columns arrive exactly once, and no build is ahead of a
+     * column's light. Every column has a strictly farther neighbour that arrives after it, so
+     * its own light task runs before its last neighbour's. This is the redundancy the 1.21.1
+     * snapshot-mask filter removed, gone in vanilla.
+     */
+    @Test
+    void freshColumnsSentNearestFirstAreBuiltExactlyOnceUnderAnyLightQueueBacklog() {
+        for (int seed = 0; seed < 60; seed++) {
+            Random random = new Random(seed);
+            Model model = new Model(14);
+            int centreX = random.nextInt(model.width);
+            int centreZ = random.nextInt(model.width);
+            List<long[]> order = model.allColumns();
+            Collections.shuffle(order, random);
+            order.sort(java.util.Comparator.comparingLong(column -> {
+                long dx = column[0] - centreX;
+                long dz = column[1] - centreZ;
+                return dx * dx + dz * dz;
+            }));
+            model.arriveInFrames(order, 1 + random.nextInt(80), random);
+            model.settle();
+
+            assertInteriorBuilt(model, 1, 1, "seed " + seed);
+            assertEquals(0, model.redundantBuilds, "seed " + seed);
+            assertEquals(0, model.buildsAhead, "seed " + seed);
+        }
+    }
+
+    /**
+     * In an arbitrary arrival order a column can arrive after all eight neighbours; while its
+     * light waits behind a backlog its first build reads the same blocks as the rebuild its
+     * own light task then requests. Every such repeat follows a build the probe counted.
+     */
+    @Test
+    void freshColumnsInAnyOrderRepeatOnlyBuildsTheProbeCounts() {
+        int scenariosWithRepeats = 0;
+        for (int seed = 0; seed < 60; seed++) {
+            Random random = new Random(seed);
+            Model model = new Model(14);
+            List<long[]> order = model.allColumns();
+            Collections.shuffle(order, random);
+            model.arriveInFrames(order, 1 + random.nextInt(80), random);
+            model.settle();
+
+            assertInteriorBuilt(model, 1, 2, "seed " + seed);
+            assertTrue(model.redundantBuilds <= model.buildsAhead, "seed " + seed);
+            assertEquals(model.redundantBuilds, model.redundantAfterAhead, "seed " + seed);
+            assertEquals(model.totalBuilds - model.interiorCount(), model.redundantBuilds, "seed " + seed);
+            if (model.redundantBuilds > 0) {
+                scenariosWithRepeats++;
+            }
+        }
+        assertTrue(scenariosWithRepeats > 0, "out-of-order arrivals under a backlog repeat some first builds");
+    }
+
+    private static void assertInteriorBuilt(Model model, int minBuilds, int maxBuilds, String context) {
+        for (int x = 0; x < model.width; x++) {
+            for (int z = 0; z < model.width; z++) {
+                Column column = model.column(x, z);
+                if (model.isInterior(x, z)) {
+                    assertTrue(column.builds >= minBuilds && column.builds <= maxBuilds,
+                            context + " column " + x + "," + z + " built " + column.builds);
+                } else {
+                    // An edge column lacks a neighbour column, so vanilla never admits it.
+                    assertEquals(0, column.builds, context + " column " + x + "," + z);
+                }
+            }
+        }
+    }
+
+    /**
+     * The residual: columns return next to sections that kept their meshes, and the light
+     * queue falls behind. A kept section re-flagged by one returning column is rebuilt
+     * before the next one's light, then again from the same blocks. Every such repeat
+     * follows a build the probe counted; when the light queue keeps up there is none.
+     */
+    @Test
+    void returningColumnsRepeatOnlyBuildsTheProbeCounts() {
+        int scenariosWithRepeats = 0;
+        for (int seed = 0; seed < 60; seed++) {
+            Random random = new Random(seed);
+            Model model = new Model(14);
+            model.arriveInFrames(model.allColumns(), 400, random);
+            model.settle();
+            model.resetCounters();
+
+            List<long[]> band = new ArrayList<>();
+            for (long[] column : model.allColumns()) {
+                if (column[0] >= 7) {
+                    band.add(column);
+                }
+            }
+            for (long[] column : band) {
+                model.drop((int) column[0], (int) column[1]);
+            }
+            model.settle();
+            assertEquals(0, model.totalBuilds, "a drop flags nothing");
+
+            Collections.shuffle(band, random);
+            boolean backlog = random.nextBoolean();
+            // Without a backlog at most 10 light tasks wait at the poll, which runs them all.
+            model.arriveInFrames(band, backlog ? 20 + random.nextInt(60) : 1 + random.nextInt(5), random);
+            model.settle();
+
+            assertTrue(model.redundantBuilds <= model.buildsAhead, "seed " + seed);
+            assertEquals(model.redundantBuilds, model.redundantAfterAhead, "seed " + seed);
+            if (!backlog) {
+                assertEquals(0, model.redundantBuilds, "seed " + seed);
+                assertEquals(0, model.buildsAhead, "seed " + seed);
+            } else if (model.redundantBuilds > 0) {
+                scenariosWithRepeats++;
+            }
+        }
+        assertTrue(scenariosWithRepeats > 0, "the residual exists under a light-queue backlog");
+    }
+
+    // ---- Legacy 1.21.1 helpers still referenced by BuiltChunkStorageMixin -------------------
 
     @Test
     void offsetTableHasEightDistinctNeighboursAndMirrorIsAnInvolution() {
@@ -63,13 +352,10 @@ class NeighbourReflagFilterTest {
         assertEquals(Decision.SKIP_NOT_RESIDENT, decideNeighbour(false, false, 0, loader));
         assertEquals(Decision.SKIP_NOT_RESIDENT, decideNeighbour(false, true, COMPLETE, loader));
         assertEquals(Decision.SKIP_AWAITING_BUILD, decideNeighbour(true, true, 0, loader));
-        assertEquals(Decision.SKIP_AWAITING_BUILD, decideNeighbour(true, true, COMPLETE, loader));
         assertEquals(Decision.DROP_IN_SNAPSHOT, decideNeighbour(true, false, loader, loader));
         assertEquals(Decision.FLAG, decideNeighbour(true, false, COMPLETE & ~loader, loader));
+        // 26.3 records no mask, so the legacy rule always flags as vanilla does.
         assertEquals(Decision.FLAG, decideNeighbour(true, false, 0, loader));
-        for (int k = 0; k < NEIGHBOUR_COUNT; k++) {
-            assertEquals(Decision.DROP_IN_SNAPSHOT, decideNeighbour(true, false, COMPLETE, bit(k)));
-        }
     }
 
     @Test
@@ -82,436 +368,241 @@ class NeighbourReflagFilterTest {
         assertFalse(sectionInRange(bottom + sizeY, bottom, sizeY));
     }
 
-    @Test
-    void incompleteFirstBuildNeedsAFirstBuildBeyondNearRangeWithAMissingNeighbour() {
-        assertFalse(NeighbourReflagFilter.isIncompleteFirstBuild(false, 1.0e6, 0));
-        assertFalse(NeighbourReflagFilter.isIncompleteFirstBuild(true, 576.0, 0));
-        assertFalse(NeighbourReflagFilter.isIncompleteFirstBuild(true, 1.0e6, COMPLETE));
-        assertTrue(NeighbourReflagFilter.isIncompleteFirstBuild(true, 576.5, COMPLETE & ~bit(0)));
+    // ---- Helpers -----------------------------------------------------------------------
+
+    private interface SectionVisitor {
+        void visit(int x, int y, int z);
     }
 
-    @Test
-    void enabledDefaultsToTrueAndHonoursAnExplicitFalse() {
-        assertTrue(NeighbourReflagFilter.enabledFrom(null));
-        assertTrue(NeighbourReflagFilter.enabledFrom("true"));
-        assertFalse(NeighbourReflagFilter.enabledFrom("false"));
+    private static SectionUpdateTracker newTracker() {
+        SectionUpdateTracker tracker = new SectionUpdateTracker(LevelHeightAccessor.create(MIN_Y, HEIGHT), TRACKER_RADIUS);
+        tracker.repositionCamera(SectionPos.of(0, 5, 0));
+        return tracker;
     }
 
-    @Test
-    void countersDrainAndReset() {
-        NeighbourReflagFilter.drainKept();
-        NeighbourReflagFilter.drainIncompleteFirstBuilds();
-        SkippedSectionRebuilds.drainNeighbourInSnapshot();
-
-        NeighbourReflagFilter.recordKept();
-        NeighbourReflagFilter.recordKept();
-        NeighbourReflagFilter.recordIncompleteFirstBuild();
-        SkippedSectionRebuilds.recordNeighbourInSnapshot();
-
-        assertEquals(2, NeighbourReflagFilter.drainKept());
-        assertEquals(0, NeighbourReflagFilter.drainKept());
-        assertEquals(1, NeighbourReflagFilter.drainIncompleteFirstBuilds());
-        assertEquals(0, NeighbourReflagFilter.drainIncompleteFirstBuilds());
-        assertEquals(1, SkippedSectionRebuilds.drainNeighbourInSnapshot());
-        assertEquals(0, SkippedSectionRebuilds.drainNeighbourInSnapshot());
-    }
-
-    /**
-     * The benchmark route's chunk-boundary crossing in single-player: the integrated server
-     * sends the whole new row in one tick, so all 65 columns are in the client chunk map
-     * before the deferred flag runnables drain at ten per frame in distance order. The
-     * frontier row one chunk nearer already sits in the storage awaiting its first build,
-     * which the visibility walk admits within the first frames once the new row, its
-     * cardinal, is present. Every frontier section then snapshots the complete row, and each
-     * trailing runnable re-flags it with data its capture already read.
-     */
-    @Test
-    void singlePlayerRowCrossingBuildsEachFrontierSectionOnceWhereVanillaBuildsItTwoToThreeTimes() {
-        StorageModel filtered = simulateRowCrossing(true, 6039L, 2, 2);
-        StorageModel vanilla = simulateRowCrossing(false, 6039L, 2, 2);
-
-        int filteredTotal = 0;
-        int vanillaTotal = 0;
-        for (int x = -ROW_HALF_WIDTH; x <= ROW_HALF_WIDTH; x++) {
-            for (int sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
-                Slot f = filtered.residentSlot(x, sy, StorageModel.FRONTIER_ROW);
-                Slot v = vanilla.residentSlot(x, sy, StorageModel.FRONTIER_ROW);
-                assertEquals(1, f.builds, "filtered builds of section " + x + "," + sy);
-                assertTrue(v.builds >= 2 && v.builds <= 3, "vanilla builds of section " + x + "," + sy + ": " + v.builds);
-                assertFalse(f.needsRebuild);
-                assertFalse(v.needsRebuild);
-                assertEquals(v.snapshotMask, f.snapshotMask, "the filter changes when a section builds, not what it sees");
-                filteredTotal += f.builds;
-                vanillaTotal += v.builds;
-            }
-        }
-        int rowSections = (2 * ROW_HALF_WIDTH + 1) * SECTIONS_PER_COLUMN;
-        assertEquals(rowSections, filteredTotal);
-        assertTrue(vanillaTotal >= 2 * filteredTotal, "vanilla total " + vanillaTotal);
-        assertEquals(0, filtered.kept);
-        // Every new column re-flags its three frontier neighbours per section; the row ends have two.
-        assertEquals(3 * rowSections - 2 * SECTIONS_PER_COLUMN, filtered.dropped);
-    }
-
-    /** The exactly-once property does not depend on how admission and the runnables interleave. */
-    @Test
-    void rowCrossingBuildsEachFrontierSectionOnceUnderAnyRunnableInterleaving() {
-        for (long seed = 1; seed <= 5; seed++) {
-            StorageModel filtered = simulateRowCrossing(true, seed, 7, 0);
-            StorageModel vanilla = simulateRowCrossing(false, seed, 7, 0);
-            int filteredTotal = 0;
-            int vanillaTotal = 0;
-            for (int x = -ROW_HALF_WIDTH; x <= ROW_HALF_WIDTH; x++) {
-                for (int sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
-                    Slot f = filtered.residentSlot(x, sy, StorageModel.FRONTIER_ROW);
-                    Slot v = vanilla.residentSlot(x, sy, StorageModel.FRONTIER_ROW);
-                    assertEquals(1, f.builds, "seed " + seed + " section " + x + "," + sy);
-                    assertTrue(v.builds >= 1);
-                    assertEquals(v.snapshotMask, f.snapshotMask);
-                    filteredTotal += f.builds;
-                    vanillaTotal += v.builds;
-                }
-            }
-            assertTrue(vanillaTotal > filteredTotal, "seed " + seed);
-        }
-    }
-
-    /**
-     * A dedicated server sends three to nine columns per tick, so a frontier section's first
-     * build often precedes some of its neighbours. Those later loads must still re-flag it,
-     * while a load whose flag runnable merely trails a snapshot that already saw it must not.
-     * Each neighbour decision is checked against the columns the snapshot really held.
-     */
-    @Test
-    void partialBatchesFlagExactlyTheLoadsAbsentFromASectionSnapshot() {
-        int size = 9;
-        int framesPerTick = 3;
-        StorageModel model = new StorageModel(true);
-        Random random = new Random(31L);
-        List<Column> arrivals = new ArrayList<>();
-        for (int x = 0; x < size; x++) {
-            for (int z = 0; z < size; z++) {
-                model.addColumn(x, z, 0);
-                arrivals.add(new Column(x, z));
-            }
-        }
-        Collections.shuffle(arrivals, random);
-
-        Map<Integer, List<Column>> runnablesByFrame = new HashMap<>();
-        int next = 0;
-        while (next < arrivals.size() || !runnablesByFrame.isEmpty()) {
-            if (model.frame % framesPerTick == 0 && next < arrivals.size()) {
-                int batch = 3 + random.nextInt(7);
-                for (int i = 0; i < batch && next < arrivals.size(); i++, next++) {
-                    Column column = arrivals.get(next);
-                    model.load(column.cx(), column.cz());
-                    runnablesByFrame.computeIfAbsent(model.frame + 1 + random.nextInt(2), f -> new ArrayList<>())
-                            .add(column);
-                }
-            }
-            List<Column> due = runnablesByFrame.remove(model.frame);
-            if (due != null) {
-                for (Column column : due) {
-                    model.runFlagRunnable(column.cx(), column.cz());
-                }
-            }
-            model.updateChunks();
-        }
-        model.updateChunks();
-
-        assertTrue(model.kept > 0, "some loads arrived after a neighbour's first build");
-        assertTrue(model.dropped > 0, "some flag runnables trailed a snapshot that already held the column");
-        for (int x = 1; x < size - 1; x++) {
-            for (int z = 1; z < size - 1; z++) {
-                for (int sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
-                    Slot slot = model.residentSlot(x, sy, z);
-                    assertTrue(slot.builds >= 1, "section " + x + "," + sy + "," + z + " never built");
-                    assertFalse(slot.needsRebuild, "section " + x + "," + sy + "," + z + " left pending");
-                    assertEquals(model.currentNeighbourMask(x, z), slot.snapshotMask,
-                            "section " + x + "," + sy + "," + z + " holds a stale neighbourhood");
+    private static void forEachWindowSection(SectionVisitor visitor) {
+        for (int x = -TRACKER_RADIUS; x <= TRACKER_RADIUS; x++) {
+            for (int z = -TRACKER_RADIUS; z <= TRACKER_RADIUS; z++) {
+                for (int y = MIN_SECTION_Y; y <= MAX_SECTION_Y; y++) {
+                    visitor.visit(x, y, z);
                 }
             }
         }
     }
 
-    @Test
-    void unloadAndInPlaceReloadClearExactlyTheNeighbourBit() {
-        // A 7x7 region so that every neighbour of the centre's neighbours has its cardinals
-        // loaded and is built; the outermost ring never passes shouldBuild and has no snapshot.
-        StorageModel model = new StorageModel(true);
-        for (int x = -3; x <= 3; x++) {
-            for (int z = -3; z <= 3; z++) {
-                model.addColumn(x, z, 0);
-                model.load(x, z);
-                model.lit.add(new Column(x, z));
-            }
-        }
-        model.updateChunks();
-        Slot centre = model.residentSlot(0, 3, 0);
-        assertEquals(COMPLETE, centre.snapshotMask);
-        int neighbourSections = NEIGHBOUR_COUNT * SECTIONS_PER_COLUMN;
-
-        for (int k = 0; k < NEIGHBOUR_COUNT; k++) {
-            int cx = DX[k];
-            int cz = DZ[k];
-            model.unload(cx, cz);
-            assertEquals(COMPLETE & ~bit(k), centre.snapshotMask, "unloading neighbour " + k);
-            model.forEachSlot((column, slot) -> {
-                if (slot.builds > 0) {
-                    assertEquals(model.currentNeighbourMask(column.cx(), column.cz()), slot.snapshotMask,
-                            "unloading " + cx + "," + cz + " changed more than its own bit in " + column);
-                }
-            });
-
-            int keptBefore = model.kept;
-            int droppedBefore = model.dropped;
-            model.load(cx, cz);
-            model.runFlagRunnable(cx, cz);
-            assertTrue(centre.needsRebuild);
-            assertEquals(keptBefore + neighbourSections, model.kept, "the reload re-flags all eight neighbours");
-            assertEquals(droppedBefore, model.dropped);
-            model.updateChunks();
-            assertEquals(COMPLETE, centre.snapshotMask);
-
-            model.runFlagRunnable(cx, cz);
-            assertEquals(keptBefore + neighbourSections, model.kept, "a trailing re-flag of a present column is dropped");
-            assertEquals(droppedBefore + neighbourSections, model.dropped);
-            model.updateChunks();
-        }
-
-        int keptBefore = model.kept;
-        model.clearNeighbourSnapshotBits(1, 1);
-        assertEquals(COMPLETE & ~bit(neighbourIndex(1, 1)), centre.snapshotMask, "in-place reload forgets the column");
-        model.runFlagRunnable(1, 1);
-        assertEquals(keptBefore + neighbourSections, model.kept);
-        assertTrue(centre.needsRebuild);
+    private static void snapshot(SectionUpdateTracker tracker, Map<Long, Boolean> dirty, Map<Long, Boolean> fromPlayer) {
+        forEachWindowSection((x, y, z) -> {
+            long node = SectionPos.asLong(x, y, z);
+            SectionUpdateTracker.SectionDirtyState state = tracker.getDirtyState(node);
+            dirty.put(node, state.isDirty());
+            fromPlayer.put(node, state.isDirtyFromPlayer());
+        });
     }
 
-    private static StorageModel simulateRowCrossing(boolean filtered, long seed, int admissionFrames, int firstRunnableFrame) {
-        StorageModel model = new StorageModel(filtered);
-        Random random = new Random(seed);
-        int nearerRow = StorageModel.FRONTIER_ROW - 1;
-        int newRow = StorageModel.FRONTIER_ROW + 1;
-        for (int x = -ROW_HALF_WIDTH - 1; x <= ROW_HALF_WIDTH + 1; x++) {
-            model.load(x, nearerRow);
-            model.load(x, StorageModel.FRONTIER_ROW);
-            model.lit.add(new Column(x, StorageModel.FRONTIER_ROW));
-        }
-        for (int x = -ROW_HALF_WIDTH; x <= ROW_HALF_WIDTH; x++) {
-            model.addColumn(x, StorageModel.FRONTIER_ROW, random.nextInt(admissionFrames));
-        }
-
-        List<Integer> distanceOrder = new ArrayList<>();
-        for (int x = -ROW_HALF_WIDTH; x <= ROW_HALF_WIDTH; x++) {
-            distanceOrder.add(x);
-            model.load(x, newRow);
-        }
-        distanceOrder.sort(Comparator.comparingInt((Integer x) -> Math.abs(x)).thenComparingInt(x -> x));
-        ArrayDeque<Integer> runnables = new ArrayDeque<>(distanceOrder);
-
-        while (!runnables.isEmpty()) {
-            if (model.frame >= firstRunnableFrame) {
-                for (int i = 0; i < FLAG_RUNNABLES_PER_FRAME && !runnables.isEmpty(); i++) {
-                    model.runFlagRunnable(runnables.poll(), newRow);
-                }
-            }
-            model.updateChunks();
-        }
-        for (int i = 0; i < admissionFrames + 2; i++) {
-            model.updateChunks();
-        }
-        return model;
+    private static long columnKey(int x, int z) {
+        return ((long) x << 32) ^ (z & 0xFFFFFFFFL);
     }
 
-    private record Column(int cx, int cz) {
-    }
-
-    /** A built-chunk slot as the rule sees it, plus the ground truth the assertions compare against. */
-    private static final class Slot {
-        boolean needsRebuild = true;
-        int snapshotMask;
-        final Set<Column> snapshotColumns = new HashSet<>();
-        int admittedFrame;
+    /** One column with one section, as 26.3's chunk-load scheduling sees it. */
+    private static final class Column {
+        boolean held;
+        boolean lit;
+        /** Bumped on every arrival: the blocks a snapshot of this column reads. */
+        int version;
+        /** {@code SectionDirtyState}: a fresh state is dirty. */
+        boolean dirty = true;
+        /** {@code sectionMesh != UNCOMPILED}; an unload leaves the slot's mesh in place. */
+        boolean compiled;
         int builds;
+        int[] lastSnapshot;
+        boolean lastBuildAhead;
+    }
+
+    /** A queued light task: a chunk's arrival or its light removal. */
+    private record LightTask(int x, int z, boolean arrival) {
     }
 
     /**
-     * Render-thread model of BuiltChunkStorage under either rule. Every column in the storage
-     * has a full stack of resident slots. A slot builds once vanilla's visibility walk has
-     * admitted it, its column's light data has arrived, and its four cardinal columns are
-     * loaded (shouldBuild); the build snapshots the loaded neighbourhood exactly as
-     * ChunkRendererRegionBuilder does.
+     * A transcription of 26.3's chunk-load scheduling over a square of columns:
+     * {@code ClientChunkCache.replaceWithPacketData} holds the column at once and queues its
+     * light task ({@code ClientPacketListener.handleLevelChunkWithLight}); the task enables
+     * the column's light and, if the column is still held, flags its 3x3 neighbourhood
+     * ({@code applyLightData}, {@code enableChunkLight}); {@code ClientLevel.pollLightUpdates}
+     * runs {@code max(10, n/10)} of {@code n} queued tasks per frame (all of them from 1000);
+     * a drop releases the column and switches its light off at once ({@code ClientLevel.unload})
+     * and queues the light removal; and {@code LevelExtractor.extract} builds a dirty section of
+     * a held column if it has a mesh or all eight neighbour columns are held and lit.
      */
-    private static final class StorageModel {
-        static final int FRONTIER_ROW = 1;
+    private static final class Model implements NeighbourReflagFilter.ColumnProbe {
+        final int width;
+        final Column[] columns;
+        final ArrayDeque<LightTask> lightQueue = new ArrayDeque<>();
+        int totalBuilds;
+        int redundantBuilds;
+        int redundantAfterAhead;
+        int buildsAhead;
 
-        final boolean filtered;
-        final Set<Column> loaded = new HashSet<>();
-        final Set<Column> lit = new HashSet<>();
-        final Map<Column, Slot[]> storage = new HashMap<>();
-        int frame;
-        int kept;
-        int dropped;
-
-        StorageModel(boolean filtered) {
-            this.filtered = filtered;
-        }
-
-        void addColumn(int cx, int cz, int admittedFrame) {
-            Slot[] slots = new Slot[SECTIONS_PER_COLUMN];
-            for (int sy = 0; sy < slots.length; sy++) {
-                slots[sy] = new Slot();
-                slots[sy].admittedFrame = admittedFrame;
-            }
-            storage.put(new Column(cx, cz), slots);
-        }
-
-        void load(int cx, int cz) {
-            loaded.add(new Column(cx, cz));
-        }
-
-        void unload(int cx, int cz) {
-            loaded.remove(new Column(cx, cz));
-            lit.remove(new Column(cx, cz));
-            clearNeighbourSnapshotBits(cx, cz);
-        }
-
-        /** BuiltChunkStorageMixin.rtxremix$clearNeighbourSnapshotBits. */
-        void clearNeighbourSnapshotBits(int cx, int cz) {
-            for (int k = 0; k < NEIGHBOUR_COUNT; k++) {
-                Slot[] slots = storage.get(new Column(cx + DX[k], cz + DZ[k]));
-                if (slots == null) {
-                    continue;
-                }
-                int bit = bit(mirroredIndex(k));
-                for (Slot slot : slots) {
-                    slot.snapshotMask &= ~bit;
-                    slot.snapshotColumns.remove(new Column(cx, cz));
-                }
+        Model(int width) {
+            this.width = width;
+            this.columns = new Column[width * width];
+            for (int i = 0; i < columns.length; i++) {
+                columns[i] = new Column();
             }
         }
 
-        Slot residentSlot(int cx, int sy, int cz) {
-            Slot[] slots = storage.get(new Column(cx, cz));
-            return slots == null || !sectionInRange(sy, 0, SECTIONS_PER_COLUMN) ? null : slots[sy];
+        List<long[]> allColumns() {
+            List<long[]> all = new ArrayList<>();
+            for (int x = 0; x < width; x++) {
+                for (int z = 0; z < width; z++) {
+                    all.add(new long[] {x, z});
+                }
+            }
+            return all;
         }
 
-        void forEachSlot(BiConsumer<Column, Slot> visitor) {
-            for (Map.Entry<Column, Slot[]> column : storage.entrySet()) {
-                for (Slot slot : column.getValue()) {
-                    visitor.accept(column.getKey(), slot);
+        Column column(int x, int z) {
+            return x < 0 || z < 0 || x >= width || z >= width ? null : columns[x * width + z];
+        }
+
+        boolean isInterior(int x, int z) {
+            return x > 0 && z > 0 && x < width - 1 && z < width - 1;
+        }
+
+        int interiorCount() {
+            return (width - 2) * (width - 2);
+        }
+
+        @Override
+        public int rtxremix$columnState(int x, int z) {
+            Column column = column(x, z);
+            if (column == null || !column.held) {
+                return COLUMN_ABSENT;
+            }
+            return column.lit ? COLUMN_LIT : COLUMN_UNLIT;
+        }
+
+        void resetCounters() {
+            totalBuilds = 0;
+            redundantBuilds = 0;
+            redundantAfterAhead = 0;
+            buildsAhead = 0;
+        }
+
+        void arrive(int x, int z) {
+            Column column = column(x, z);
+            column.held = true;
+            column.version++;
+            lightQueue.add(new LightTask(x, z, true));
+        }
+
+        void drop(int x, int z) {
+            Column column = column(x, z);
+            column.held = false;
+            column.lit = false;
+            lightQueue.add(new LightTask(x, z, false));
+        }
+
+        void arriveInFrames(List<long[]> order, int maxPerFrame, Random random) {
+            int next = 0;
+            while (next < order.size()) {
+                int count = 1 + random.nextInt(maxPerFrame);
+                for (int i = 0; i < count && next < order.size(); i++, next++) {
+                    arrive((int) order.get(next)[0], (int) order.get(next)[1]);
                 }
+                frame();
             }
         }
 
-        /**
-         * The deferred chunk runnable: light data enables the column, then scheduleBlockRenders(III)
-         * per section. The client issues that request once per light type and once more with the
-         * chunk data, so its dropped count runs two to three times the per-section count modelled here.
-         */
-        void runFlagRunnable(int cx, int cz) {
-            lit.add(new Column(cx, cz));
-            for (int sy = 0; sy < SECTIONS_PER_COLUMN; sy++) {
-                if (filtered) {
-                    flagFiltered(cx, sy, cz);
-                } else {
-                    flagVanilla(cx, sy, cz);
-                }
+        void settle() {
+            int quietFrames = 0;
+            for (int guard = 0; guard < 10_000 && quietFrames < 3; guard++) {
+                int before = totalBuilds;
+                boolean hadTasks = !lightQueue.isEmpty();
+                frame();
+                quietFrames = !hadTasks && totalBuilds == before ? quietFrames + 1 : 0;
             }
+            assertTrue(lightQueue.isEmpty());
         }
 
-        private void flagVanilla(int cx, int sy, int cz) {
-            for (int dz = -1; dz <= 1; dz++) {
-                for (int dx = -1; dx <= 1; dx++) {
-                    for (int dy = -1; dy <= 1; dy++) {
-                        Slot slot = residentSlot(cx + dx, sy + dy, cz + dz);
-                        if (slot != null) {
-                            slot.needsRebuild = true;
-                        }
-                    }
-                }
+        void frame() {
+            int size = lightQueue.size();
+            int perFrame = size < 1000 ? Math.max(10, size / 10) : size;
+            for (int i = 0; i < perFrame && !lightQueue.isEmpty(); i++) {
+                runLightTask(lightQueue.poll());
             }
+            extract();
         }
 
-        /** BuiltChunkStorageMixin.rtxremix$flagLoadedSection, each neighbour decision checked against the snapshot's columns. */
-        private void flagFiltered(int cx, int sy, int cz) {
-            if (!sectionInRange(sy, 0, SECTIONS_PER_COLUMN)) {
+        private void runLightTask(LightTask task) {
+            Column column = column(task.x(), task.z());
+            if (!task.arrival()) {
+                column.lit = false;
                 return;
             }
-            Slot own = residentSlot(cx, sy, cz);
-            if (own != null) {
-                own.needsRebuild = true;
+            column.lit = true;
+            if (!column.held) {
+                return;
             }
-            Column loader = new Column(cx, cz);
-            for (int k = 0; k < NEIGHBOUR_COUNT; k++) {
-                Slot slot = residentSlot(cx + DX[k], sy, cz + DZ[k]);
-                boolean resident = slot != null;
-                Decision decision = decideNeighbour(
-                        resident,
-                        resident && slot.needsRebuild,
-                        resident ? slot.snapshotMask : 0,
-                        bit(mirroredIndex(k)));
-                if (resident && !slot.needsRebuild) {
-                    Decision expected = slot.snapshotColumns.contains(loader) ? Decision.DROP_IN_SNAPSHOT : Decision.FLAG;
-                    assertEquals(expected, decision, "load of " + loader + " seen from neighbour " + k);
-                }
-                switch (decision) {
-                    case FLAG -> {
-                        slot.needsRebuild = true;
-                        kept++;
-                    }
-                    case DROP_IN_SNAPSHOT -> dropped++;
-                    default -> {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    Column neighbour = column(task.x() + dx, task.z() + dz);
+                    if (neighbour != null) {
+                        neighbour.dirty = true;
                     }
                 }
             }
         }
 
-        /** WorldRenderer.updateChunks: createRebuildTask for every admitted slot that needs one, then the frame ends. */
-        void updateChunks() {
-            for (Map.Entry<Column, Slot[]> entry : storage.entrySet()) {
-                Column column = entry.getKey();
-                if (!lit.contains(column) || !cardinalsLoaded(column.cx(), column.cz())) {
-                    continue;
+        private void extract() {
+            for (int x = 0; x < width; x++) {
+                for (int z = 0; z < width; z++) {
+                    Column column = column(x, z);
+                    if (!column.held || !column.dirty || !(column.compiled || hasAllNeighbours(x, z))) {
+                        continue;
+                    }
+                    boolean ahead = buildIsAheadOfChunkLight(SectionPos.asLong(x, 0, z), this);
+                    int[] snapshot = snapshot(x, z);
+                    if (column.lastSnapshot != null && java.util.Arrays.equals(snapshot, column.lastSnapshot)) {
+                        redundantBuilds++;
+                        if (column.lastBuildAhead) {
+                            redundantAfterAhead++;
+                        }
+                    }
+                    if (ahead) {
+                        buildsAhead++;
+                    }
+                    column.lastSnapshot = snapshot;
+                    column.lastBuildAhead = ahead;
+                    column.compiled = true;
+                    column.dirty = false;
+                    column.builds++;
+                    totalBuilds++;
                 }
-                for (Slot slot : entry.getValue()) {
-                    if (slot.needsRebuild && slot.admittedFrame <= frame) {
-                        build(slot, column.cx(), column.cz());
+            }
+        }
+
+        private boolean hasAllNeighbours(int x, int z) {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    if ((dx != 0 || dz != 0) && rtxremix$columnState(x + dx, z + dz) != COLUMN_LIT) {
+                        return false;
                     }
                 }
             }
-            frame++;
+            return true;
         }
 
-        private boolean cardinalsLoaded(int cx, int cz) {
-            return loaded.contains(new Column(cx - 1, cz))
-                    && loaded.contains(new Column(cx + 1, cz))
-                    && loaded.contains(new Column(cx, cz - 1))
-                    && loaded.contains(new Column(cx, cz + 1));
-        }
-
-        private void build(Slot slot, int cx, int cz) {
-            slot.snapshotMask = currentNeighbourMask(cx, cz);
-            slot.snapshotColumns.clear();
-            for (int k = 0; k < NEIGHBOUR_COUNT; k++) {
-                Column neighbour = new Column(cx + DX[k], cz + DZ[k]);
-                if (loaded.contains(neighbour)) {
-                    slot.snapshotColumns.add(neighbour);
+        /** The blocks a region snapshot reads: each column's version, or -1 when the column is not held. */
+        private int[] snapshot(int x, int z) {
+            int[] versions = new int[9];
+            int i = 0;
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    Column neighbour = column(x + dx, z + dz);
+                    versions[i++] = neighbour != null && neighbour.held ? neighbour.version : -1;
                 }
             }
-            slot.needsRebuild = false;
-            slot.builds++;
-        }
-
-        /** BuiltChunkMixin.rtxremix$recordSnapshotNeighbourhood's probe over the loaded set. */
-        int currentNeighbourMask(int cx, int cz) {
-            int mask = 0;
-            for (int k = 0; k < NEIGHBOUR_COUNT; k++) {
-                if (loaded.contains(new Column(cx + DX[k], cz + DZ[k]))) {
-                    mask |= bit(k);
-                }
-            }
-            return mask;
+            return versions;
         }
     }
 }

@@ -6,6 +6,8 @@ package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import com.nvidia.rtxremix.minecraft.terrain.LevelExtractorTerrainAccess;
+import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter;
+import com.nvidia.rtxremix.minecraft.terrain.SkippedSectionRebuilds;
 import com.nvidia.rtxremix.minecraft.terrain.capture.BlockQuadEmitter;
 import com.nvidia.rtxremix.minecraft.terrain.capture.RegionBuilderRelease;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
@@ -25,6 +27,7 @@ import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.ViewArea;
 import net.minecraft.client.renderer.chunk.CompiledSectionMesh;
 import net.minecraft.client.renderer.chunk.RenderRegionCache;
+import net.minecraft.client.renderer.chunk.RenderSectionRegion;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.extract.LevelExtractor;
 import net.minecraft.core.SectionPos;
@@ -47,6 +50,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * <ul>
  *   <li>the water-occlusion margin on block-update rebuilds ({@code setBlocksDirty});</li>
+ *   <li>the light-data neighbour re-flag filter ({@code setSectionDirtyWithNeighbors}) and its
+ *       chunk-load measurement ({@link NeighbourReflagFilter});</li>
  *   <li>the frame's region cache, whose snapshot references are dropped once every
  *       region of the frame has been created;</li>
  *   <li>the Remix terrain recapture, applied to the view area a reload creates;</li>
@@ -56,7 +61,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * <p>Everything here runs on the render thread, the only thread that extracts.
  */
 @Mixin(LevelExtractor.class)
-public abstract class LevelExtractorTerrainMixin implements LevelExtractorTerrainAccess {
+public abstract class LevelExtractorTerrainMixin implements LevelExtractorTerrainAccess, NeighbourReflagFilter.ColumnProbe {
 
     @Shadow
     @Final
@@ -116,6 +121,66 @@ public abstract class LevelExtractorTerrainMixin implements LevelExtractorTerrai
             }
         }
         ci.cancel();
+    }
+
+    /**
+     * Light-data neighbour re-flags. In 26.3 the only caller is
+     * {@code ClientPacketListener.readSectionList} through {@code ClientLevel}, and only on a
+     * light update packet ({@code applyLightData(..., true)}); a chunk load applies its light
+     * with {@code scheduleRebuild} false and re-flags through {@code setSectionRangeDirty}.
+     * While capture is on the rebuild would recapture identical geometry, because Remix
+     * terrain reads no client light; the gate is the one the light-only rebuild skip in
+     * {@link ClientChunkManagerMixin} uses, and toggling RTX off reloads every section.
+     */
+    @Inject(method = "setSectionDirtyWithNeighbors(III)V", at = @At("HEAD"), cancellable = true)
+    private void rtxremix$filterLightDataReflag(int sectionX, int sectionY, int sectionZ, CallbackInfo ci) {
+        if (!RtxRemixMod.isRtxEnabled()) {
+            return;
+        }
+        SectionUpdateTracker tracker = sectionUpdateTracker;
+        int requested = tracker != null
+                ? NeighbourReflagFilter.rebuildsRequested(tracker, sectionX, sectionY, sectionZ)
+                : 0;
+        if (NeighbourReflagFilter.dropsLightDataReflag(NeighbourReflagFilter.ENABLED, true)) {
+            SkippedSectionRebuilds.recordLightDataReflags(requested);
+            ci.cancel();
+        } else {
+            NeighbourReflagFilter.recordKept(requested);
+        }
+    }
+
+    /**
+     * Counts the frame's section builds that a queued chunk-load re-flag will repeat
+     * ({@link NeighbourReflagFilter#buildIsAheadOfChunkLight}). This is the section-update
+     * loop's only region; the snapshot is taken in the wrapped call, so the probe sees the
+     * columns the build reads.
+     */
+    @WrapOperation(
+            method = "extract",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/renderer/chunk/RenderRegionCache;createRegion(Lnet/minecraft/client/multiplayer/ClientLevel;J)Lnet/minecraft/client/renderer/chunk/RenderSectionRegion;"))
+    private RenderSectionRegion rtxremix$countBuildAheadOfChunkLight(
+            RenderRegionCache cache, ClientLevel regionLevel, long sectionNode, Operation<RenderSectionRegion> original) {
+        if (RtxRemixMod.isRtxEnabled() && NeighbourReflagFilter.buildIsAheadOfChunkLight(sectionNode, this)) {
+            NeighbourReflagFilter.recordBuildAheadOfChunkLight();
+        }
+        return original.call(cache, regionLevel, sectionNode);
+    }
+
+    /**
+     * The column state behind {@code SectionUpdateTracker.hasAllNeighbors}: held by the client
+     * cache at {@code FULL}, and lit when both light engines have the column enabled.
+     */
+    @Override
+    public int rtxremix$columnState(int chunkX, int chunkZ) {
+        ClientLevel current = level;
+        if (current == null || current.getChunkSource().getChunk(chunkX, chunkZ, false) == null) {
+            return NeighbourReflagFilter.COLUMN_ABSENT;
+        }
+        return current.getLightEngine().lightOnInColumn(SectionPos.getZeroNode(chunkX, chunkZ))
+                ? NeighbourReflagFilter.COLUMN_LIT
+                : NeighbourReflagFilter.COLUMN_UNLIT;
     }
 
     @WrapOperation(

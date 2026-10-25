@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /** Counts vanilla section rebuild requests the mod declined because Remix would not use them. */
 public final class SkippedSectionRebuilds {
     private static final AtomicInteger LIGHT_ONLY = new AtomicInteger();
-    private static final AtomicInteger NEIGHBOUR_IN_SNAPSHOT = new AtomicInteger();
+    private static final AtomicInteger LIGHT_DATA_REFLAGS = new AtomicInteger();
 
     private SkippedSectionRebuilds() {
     }
@@ -29,13 +29,23 @@ public final class SkippedSectionRebuilds {
         return LIGHT_ONLY.getAndSet(0);
     }
 
-    /** Records a chunk-load neighbour re-flag dropped because the slot's snapshot already held the column. */
-    public static void recordNeighbourInSnapshot() {
-        NEIGHBOUR_IN_SNAPSHOT.incrementAndGet();
+    /** Records {@code count} rebuilds a dropped light-data neighbour re-flag would have requested. */
+    public static void recordLightDataReflags(int count) {
+        if (count > 0) {
+            LIGHT_DATA_REFLAGS.addAndGet(count);
+        }
     }
 
-    /** Returns and resets the dropped neighbour re-flag count, for the per-frame terrain counters. */
-    public static int drainNeighbourInSnapshot() {
-        return NEIGHBOUR_IN_SNAPSHOT.getAndSet(0);
+    /** Returns and resets the dropped light-data re-flag count, for the per-frame terrain counters. */
+    public static int drainLightDataReflags() {
+        return LIGHT_DATA_REFLAGS.getAndSet(0);
+    }
+
+    /**
+     * Legacy 1.21.1 snapshot-mask drop, kept only for
+     * {@code BuiltChunkStorageMixin.rtxremix$flagLoadedSection}, which nothing calls in 26.3.
+     */
+    public static void recordNeighbourInSnapshot() {
+        recordLightDataReflags(1);
     }
 }

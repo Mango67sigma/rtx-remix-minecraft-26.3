@@ -29,8 +29,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *       logged at the return so the frustum index can re-bucket exactly the slots that
  *       moved.
  *   <li><b>reset:</b> runs at the head of every {@code setSectionNode} and from
- *       {@code ViewArea.releaseAllBuffers}; forgets the per-slot block-entity and snapshot
- *       state.
+ *       {@code ViewArea.releaseAllBuffers}; forgets the per-slot block-entity state.
  *   <li><b>setSectionMesh:</b> the one place a compiled mesh is published, the 26.3
  *       successor of {@code setCompiled}. Tracks whether the section contains block
  *       entities and flags a mesh without renderable layers as a removal candidate. The
@@ -38,9 +37,10 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *       because with capture on every section publishes a mesh without layers.
  * </ul>
  *
- * <p>The snapshot mask of {@link BuiltChunkNeighbourhoodAccess} is not recorded while
- * {@code NeighbourReflagFilter} is deferred (see the terrain-state port note): it stays 0,
- * which makes every consumer of it decide exactly as vanilla does.
+ * <p>{@link BuiltChunkNeighbourhoodAccess} is the legacy 1.21.1 snapshot mask. Minecraft 26.3
+ * admits a first build only once all eight neighbour columns are loaded and lit, so the mask
+ * is not recorded and reads 0; the slot keeps the interface only until its last, uncalled
+ * consumer in {@code BuiltChunkStorageMixin} is removed.
  */
 @Mixin(SectionRenderDispatcher.RenderSection.class)
 public abstract class BuiltChunkMixin implements ChunkBuilderBlockEntityAccess, BuiltChunkNeighbourhoodAccess {
@@ -57,9 +57,6 @@ public abstract class BuiltChunkMixin implements ChunkBuilderBlockEntityAccess, 
 
     private boolean rtxremix$hasBlockEntities;
 
-    /** Bit k set iff neighbour column (DX[k], DZ[k]) was loaded when the last region snapshot was taken. */
-    private int rtxremix$snapshotMask;
-
     @Override
     public boolean rtxremix$hasBlockEntities() {
         return rtxremix$hasBlockEntities;
@@ -67,18 +64,16 @@ public abstract class BuiltChunkMixin implements ChunkBuilderBlockEntityAccess, 
 
     @Override
     public int rtxremix$snapshotMask() {
-        return rtxremix$snapshotMask;
+        return 0;
     }
 
     @Override
     public void rtxremix$clearSnapshotBit(int bit) {
-        rtxremix$snapshotMask &= ~bit;
     }
 
     @Inject(method = "reset()V", at = @At("HEAD"))
     private void rtxremix$onReset(CallbackInfo ci) {
         rtxremix$hasBlockEntities = false;
-        rtxremix$snapshotMask = 0;
     }
 
     @Inject(method = "setSectionNode(J)V", at = @At("RETURN"))
