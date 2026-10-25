@@ -5,6 +5,9 @@
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
+import net.minecraft.CrashReport;
+import net.minecraft.CrashReportCategory;
+import net.minecraft.ReportedException;
 import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.renderer.SectionBufferBuilderPack;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
@@ -18,6 +21,7 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
+import com.nvidia.rtxremix.minecraft.terrain.capture.CompileRegion;
 import com.nvidia.rtxremix.minecraft.terrain.capture.SectionBlockData;
 import com.nvidia.rtxremix.minecraft.terrain.capture.BlockQuadEmitter;
 import com.nvidia.rtxremix.minecraft.terrain.capture.BlockDataQueue;
@@ -28,6 +32,7 @@ import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
@@ -53,6 +58,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *   <li>RETURN inject: finalises the section mesh data and enqueues it
  *       for the render thread.</li>
  * </ul>
+ *
+ * <p>Every hook acts only in a build that latched capture on at HEAD, so a build in vanilla
+ * mode never touches the Remix emitter, whatever state an earlier failed build left it in.
  */
 @Mixin(SectionCompiler.class)
 public class SectionBuilderMixin {
@@ -69,8 +77,8 @@ public class SectionBuilderMixin {
      * a toggle could land <em>between</em> two of them inside one build, routing
      * some blocks of a section into the Remix emitter and the rest into vanilla's
      * GL path. Reading one latched value keeps a build wholly in one mode;
-     * {@code setRtxEnabled} forces a LevelRenderer.allChanged(), so sections built
-     * in the losing mode are rebuilt immediately afterwards.
+     * {@code setRtxEnabled} forces a reload, so sections built in the losing mode
+     * are rebuilt immediately afterwards.
      *
      * <p>The latch is taken through {@link VanillaSectionBuilds}: a build that
      * latched capture off reads client light on this worker, and the client light
@@ -111,7 +119,13 @@ public class SectionBuilderMixin {
         rtxremix$captureForBuild.set(capturing);
         if (!capturing) return;
 
-        rtxremix$blockDataCaptureToken.set(BlockDataQueue.beginCapture(sectionPos.getX(), sectionPos.getZ()));
+        // The region was stamped when its snapshot was taken on the render thread, so the
+        // sequence orders captures of one section by the world state they read.
+        long sequence = (Object) renderRegion instanceof CompileRegion region
+                ? region.rtxremix$captureSequence()
+                : BlockDataQueue.nextCaptureSequence();
+        rtxremix$blockDataCaptureToken.set(
+                BlockDataQueue.beginCapture(sectionPos.getX(), sectionPos.getZ(), sequence));
         rtxremix$tracyOuter.set(ProfileScope.begin("SectionBuilder"));
         rtxremix$tracyBlockLoop.set(null);
 
@@ -127,14 +141,30 @@ public class SectionBuilderMixin {
         rtxremix$tracyBlockLoop.set(ProfileScope.begin("block loop"));
     }
 
-    // getBlockState: capture opacity / face masks / lights / quads for every position
+    /**
+     * getBlockState: capture opacity / face masks / lights / quads for every position.
+     *
+     * <p>Vanilla reads the state at {@code SectionCompiler.java:78}, before the per-block try
+     * that turns a tesselation failure into a crash report, so a failure in the capture would
+     * escape that wrapper. {@code SectionRenderDispatcher.runTask} then requeues the task
+     * silently on a {@code NullPointerException} without returning its buffer pack, and a few
+     * such failures stop all section compilation. The capture therefore wraps itself the way
+     * vanilla wraps the tesselation: the section is abandoned and the failure becomes a
+     * {@link ReportedException}, which {@code runTask} reports as a delayed crash.
+     */
     @Redirect(method = "compile",
               at = @At(value = "INVOKE",
                        target = "Lnet/minecraft/client/renderer/chunk/RenderSectionRegion;getBlockState(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;"))
     private BlockState rtxremix$captureBlock(RenderSectionRegion region, BlockPos pos) {
         BlockState state = region.getBlockState(pos);
+        if (!rtxremix$capturing()) {
+            return state;
+        }
         BlockQuadEmitter emitter = BlockQuadEmitter.current();
-        if (emitter != null && emitter.isActive()) {
+        if (emitter == null || !emitter.isActive()) {
+            return state;
+        }
+        try {
             // The same cached flag vanilla feeds its VisGraph a few lines later.
             boolean opaque = state.isSolidRender();
             emitter.processBlock(state, region, pos, opaque);
@@ -143,6 +173,13 @@ public class SectionBuilderMixin {
             if (BlockQuadEmitter.getRenderTypeCached(state) == RenderShape.MODEL) {
                 emitter.emitBlock(state, pos, region);
             }
+        } catch (Throwable t) {
+            emitter.abortSection();
+            rtxremix$endBuild();
+            CrashReport report = CrashReport.forThrowable(t, "Capturing block for RTX Remix");
+            CrashReportCategory category = report.addCategory("Block being captured");
+            CrashReportCategory.populateBlockDetails(category, region, pos, state);
+            throw new ReportedException(report);
         }
         return state;
     }
@@ -169,6 +206,8 @@ public class SectionBuilderMixin {
         if (rtxremix$capturing()) {
             BlockQuadEmitter emitter = BlockQuadEmitter.threadLocal();
             if (!emitter.isActive()) return;
+            // Inside vanilla's per-block try: a failure here is reported by vanilla, and the
+            // next capturing build on this thread releases what this one staged.
             emitter.emitFluid(pos, world, fluidState);
         } else {
             fluidRenderer.tesselate(world, pos, output, blockState, fluidState);
@@ -185,10 +224,12 @@ public class SectionBuilderMixin {
             CallbackInfoReturnable<SectionCompiler.Results> cir) {
 
         try {
-            BlockQuadEmitter emitter = BlockQuadEmitter.threadLocal();
-            if (!emitter.isActive()) return;
+            if (!rtxremix$capturing()) return;
+            BlockQuadEmitter emitter = BlockQuadEmitter.current();
+            if (emitter == null || !emitter.isActive()) return;
 
             ProfileScope blockScope = rtxremix$tracyBlockLoop.get();
+            rtxremix$tracyBlockLoop.remove();
             if (blockScope != null) blockScope.close();
 
             // The token is set at compile HEAD before beginSection, so an active emitter
@@ -196,16 +237,26 @@ public class SectionBuilderMixin {
             SectionBlockData blockData = emitter.finishSection(sectionPos);
             BlockDataQueue.enqueue(blockData, rtxremix$blockDataCaptureToken.get());
         } finally {
-            ProfileScope outerScope = rtxremix$tracyOuter.get();
-            if (outerScope != null) outerScope.close();
-            rtxremix$tracyOuter.remove();
-            rtxremix$tracyBlockLoop.remove();
-            rtxremix$blockDataCaptureToken.remove();
-            // A build that throws skips this inject and stays counted; vanilla turns a
-            // section build exception into a client crash, so the stale count cannot
-            // outlive the session.
-            VanillaSectionBuilds.endBuild(rtxremix$capturing());
-            rtxremix$captureForBuild.remove();
+            rtxremix$endBuild();
         }
+    }
+
+    /**
+     * Closes this thread's build: its profiling scopes, capture token and latch. Called at
+     * RETURN, and by the block capture before it throws, since RETURN then never runs. A
+     * vanilla build that throws skips RETURN and stays counted; vanilla turns a section build
+     * exception into a client crash, so the stale count cannot outlive the session.
+     */
+    @Unique
+    private static void rtxremix$endBuild() {
+        ProfileScope blockScope = rtxremix$tracyBlockLoop.get();
+        if (blockScope != null) blockScope.close();
+        ProfileScope outerScope = rtxremix$tracyOuter.get();
+        if (outerScope != null) outerScope.close();
+        rtxremix$tracyOuter.remove();
+        rtxremix$tracyBlockLoop.remove();
+        rtxremix$blockDataCaptureToken.remove();
+        VanillaSectionBuilds.endBuild(rtxremix$capturing());
+        rtxremix$captureForBuild.remove();
     }
 }

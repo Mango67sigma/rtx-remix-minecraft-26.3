@@ -117,7 +117,11 @@ class BlockDataQueueTest {
 
         assertEquals(1, BlockDataQueue.trackedChunkCount(),
                 "Unloaded coordinates must not accumulate token state");
-        assertEquals(liveCapture, BlockDataQueue.beginCapture(-40, 25));
+        BlockDataQueue.CaptureToken liveAgain = BlockDataQueue.beginCapture(-40, 25);
+        assertTrue(liveCapture.sameIncarnation(liveAgain),
+                "A live coordinate keeps its incarnation across captures");
+        assertTrue(liveAgain.sequence() > liveCapture.sequence(),
+                "Each capture takes a later sequence");
 
         BlockDataQueue.CaptureToken oldCapture = BlockDataQueue.beginCapture(77, -88);
         assertTrue(issuedTokens.add(oldCapture.chunkToken()));

@@ -4,7 +4,6 @@
  */
 package com.nvidia.rtxremix.minecraft.terrain;
 
-import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.Decision;
 import net.minecraft.client.SectionUpdateTracker;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.LevelHeightAccessor;
@@ -14,30 +13,18 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
-import java.util.Set;
 
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COLUMN_ABSENT;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COLUMN_LIT;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COLUMN_UNLIT;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.COMPLETE;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.DX;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.DZ;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.NEIGHBOUR_COUNT;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.bit;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.buildIsAheadOfChunkLight;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.decideNeighbour;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.dropsLightDataReflag;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.mirroredIndex;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.neighbourIndex;
 import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.rebuildsRequested;
-import static com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter.sectionInRange;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class NeighbourReflagFilterTest {
@@ -323,49 +310,6 @@ class NeighbourReflagFilterTest {
             }
         }
         assertTrue(scenariosWithRepeats > 0, "the residual exists under a light-queue backlog");
-    }
-
-    // ---- Legacy 1.21.1 helpers still referenced by BuiltChunkStorageMixin -------------------
-
-    @Test
-    void offsetTableHasEightDistinctNeighboursAndMirrorIsAnInvolution() {
-        Set<Integer> offsets = new HashSet<>();
-        for (int k = 0; k < NEIGHBOUR_COUNT; k++) {
-            int dx = DX[k];
-            int dz = DZ[k];
-            assertTrue(Math.abs(dx) <= 1 && Math.abs(dz) <= 1 && (dx != 0 || dz != 0), "k=" + k);
-            assertTrue(offsets.add(dx * 3 + dz), "duplicate offset at k=" + k);
-            assertEquals(k, neighbourIndex(dx, dz));
-            int mirrored = mirroredIndex(k);
-            assertEquals(-dx, DX[mirrored]);
-            assertEquals(-dz, DZ[mirrored]);
-            assertEquals(k, mirroredIndex(mirrored));
-        }
-        assertEquals(NEIGHBOUR_COUNT, offsets.size());
-        assertThrows(IllegalArgumentException.class, () -> neighbourIndex(0, 0));
-        assertThrows(IllegalArgumentException.class, () -> neighbourIndex(2, 0));
-    }
-
-    @Test
-    void decideNeighbourTruthTable() {
-        int loader = bit(3);
-        assertEquals(Decision.SKIP_NOT_RESIDENT, decideNeighbour(false, false, 0, loader));
-        assertEquals(Decision.SKIP_NOT_RESIDENT, decideNeighbour(false, true, COMPLETE, loader));
-        assertEquals(Decision.SKIP_AWAITING_BUILD, decideNeighbour(true, true, 0, loader));
-        assertEquals(Decision.DROP_IN_SNAPSHOT, decideNeighbour(true, false, loader, loader));
-        assertEquals(Decision.FLAG, decideNeighbour(true, false, COMPLETE & ~loader, loader));
-        // 26.3 records no mask, so the legacy rule always flags as vanilla does.
-        assertEquals(Decision.FLAG, decideNeighbour(true, false, 0, loader));
-    }
-
-    @Test
-    void sectionInRangeIsHalfOpenOnTheStorageRows() {
-        int bottom = -4;
-        int sizeY = 24;
-        assertFalse(sectionInRange(bottom - 1, bottom, sizeY));
-        assertTrue(sectionInRange(bottom, bottom, sizeY));
-        assertTrue(sectionInRange(bottom + sizeY - 1, bottom, sizeY));
-        assertFalse(sectionInRange(bottom + sizeY, bottom, sizeY));
     }
 
     // ---- Helpers -----------------------------------------------------------------------

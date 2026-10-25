@@ -88,14 +88,6 @@ public abstract class LevelRendererTerrainMixin implements WorldRendererTerrainA
                 .rtxremix$scheduleResidentSectionRebuild(cx, sy, cz);
     }
 
-    /**
-     * No-op in 26.3: no snapshot mask is recorded (see {@code NeighbourReflagFilter}), so
-     * there is no bit to clear. Kept until the {@code CHUNK_UNLOAD} handler stops calling it.
-     */
-    @Override
-    public void rtxremix$onNeighbourColumnInvalidated(int cx, int cz) {
-    }
-
     @Inject(method = "compileSections", at = @At("HEAD"))
     private void rtxremix$compileSectionsHead(CameraRenderState camera, CallbackInfo ci) {
         int queued = rtxremix$compileQueueSize();

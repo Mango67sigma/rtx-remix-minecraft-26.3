@@ -9,9 +9,13 @@ import com.nvidia.rtxremix.minecraft.light.BlockLightRuleManager;
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
 import com.nvidia.rtxremix.minecraft.light.LightEntry;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
+import it.unimi.dsi.fastutil.ints.IntArrayList;
 import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadAtlas;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadView;
 import net.fabricmc.fabric.api.client.renderer.v1.sprite.FabricTextureAtlas;
 import net.fabricmc.fabric.api.client.renderer.v1.sprite.SpriteFinder;
+import net.fabricmc.fabric.api.client.rendering.v1.BlockColorRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.BlockTintsFactory;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.color.block.BlockTintSource;
@@ -35,6 +39,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
@@ -84,7 +89,21 @@ public final class BlockQuadEmitter {
     private static final ThreadLocal<Boolean> threadNamed =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
-    private final RemixRenderContext renderContext = new RemixRenderContext(this);
+    /**
+     * The renderer's quad emitter, built once per worker thread; see {@link RemixRenderContext}
+     * for why it must be the renderer's own.
+     */
+    private final RemixRenderContext renderContext = new RemixRenderContext(new RemixRenderContext.QuadSink() {
+        @Override
+        public boolean isFaceCulled(Direction face) {
+            return BlockQuadEmitter.this.isFaceCulled(face);
+        }
+
+        @Override
+        public void stageEmittedQuad(QuadView quad) {
+            BlockQuadEmitter.this.stageEmittedQuad(quad);
+        }
+    });
     private final SingleThreadedRandomSource random = new SingleThreadedRandomSource(42);
     private final BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
     private final BlockPos.MutableBlockPos neighborPos = new BlockPos.MutableBlockPos();
@@ -125,6 +144,12 @@ public final class BlockQuadEmitter {
      * neighbour state, side) and therefore position-independent to the same degree. Vanilla's
      * cache allocates its lookup key on every opaque-neighbour face; this direct-mapped table
      * of packed state ids allocates nothing on a hit and defers to vanilla on a miss.
+     *
+     * <p>Vanilla caches only the shape comparison; this table caches the whole decision,
+     * {@code skipRendering} included. That is sound only for decisions that depend on the two
+     * states alone, so a leaves-against-leaves face, which also depends on the global
+     * {@code LeavesBlock.cutoutLeaves} flag behind the Cutout Leaves option, is never cached;
+     * see {@link #shouldDrawBlockSide}.
      */
     private static final int FACE_CULL_CACHE_BITS = 13;
     private static final byte FACE_CULL_UNKNOWN = 0;
@@ -160,6 +185,13 @@ public final class BlockQuadEmitter {
     private boolean emitGlass;
     /** The block's tint sources, fetched on the first tinted quad. */
     private List<BlockTintSource> tintSources;
+    /**
+     * Tints from the block's Fabric {@link BlockTintsFactory}, collected on the first tinted
+     * quad of a block with no vanilla tint source; reused per worker so nothing is allocated
+     * once it has grown.
+     */
+    private final IntArrayList factoryTints = new IntArrayList();
+    private boolean factoryTintsCollected;
 
     // Per-section state set by beginSection / processBlock
     /**
@@ -174,9 +206,8 @@ public final class BlockQuadEmitter {
     private FluidStateModelSet fluidModels;
     private BlockColors blockColors;
     /**
-     * Fabric's block-atlas sprite finder, resolved on the first quad of the section that
-     * arrives without a baked sprite (one copied from a pre-built mesh) and dropped at the
-     * next section, so an atlas reload is picked up.
+     * Fabric's block-atlas sprite finder, resolved on the first quad of the section and
+     * dropped at the next section, so an atlas reload is picked up.
      */
     private SpriteFinder blockSpriteFinder;
     private boolean blockSpriteFinderResolved;
@@ -355,6 +386,7 @@ public final class BlockQuadEmitter {
         mutablePos.set(pos);
         tintValidMask = 0;
         tintSources = null;
+        factoryTintsCollected = false;
 
         // Vanilla derives model randomisation from the block position, in the
         // same ModelBlockRenderer.tesselateBlock this emitter replaces, and seeds
@@ -438,6 +470,21 @@ public final class BlockQuadEmitter {
     }
 
     /**
+     * Abandons the section in progress after its build failed: releases the writer's staged
+     * buffers and deactivates the emitter, so nothing of the failed build is published and a
+     * later build on this thread starts clean. Safe to call when no section is active.
+     */
+    public void abortSection() {
+        if (active) {
+            active = false;
+            writer.releaseBuffers();
+        }
+        lights.clear();
+        emitState = null;
+        emitWorld = null;
+    }
+
+    /**
      * Fabric's cull test, also the test {@link RemixRenderContext} applies to a quad's cull
      * face after its transforms ran. The null face is never culled, as in vanilla.
      */
@@ -449,11 +496,11 @@ public final class BlockQuadEmitter {
      * Stages one quad the current block's model emitted. Positions are moved to the block's
      * section-local origin (model offset included), the tint index is resolved against the
      * block's tint sources exactly as {@code ModelBlockRenderer.putQuadWithTint} does, the
-     * sprite is the baked one or, for a quad copied from a pre-built mesh, the one the block
-     * atlas finds at its UVs, and the layer is the quad's own chunk layer, which 26.x derives
-     * from the sprite's transparency, unless the block is clear glass.
+     * sprite is the one the block atlas finds at the quad's UVs, and the layer is the quad's
+     * own chunk layer, which 26.x derives from the sprite's transparency, unless the block is
+     * clear glass.
      */
-    void stageEmittedQuad(RemixRenderContext.CapturingQuadEmitter quad) {
+    void stageEmittedQuad(QuadView quad) {
         float lx = emitOriginX, ly = emitOriginY, lz = emitOriginZ;
         for (int v = 0; v < 4; v++) {
             tempPositions[v * 3]     = quad.x(v) + lx;
@@ -463,10 +510,23 @@ public final class BlockQuadEmitter {
             tempUvs[v * 2 + 1] = quad.v(v);
         }
 
-        // The face normal from the vertex positions, as every terrain quad has been normalled;
-        // vanilla baked quads carry none, and a model's per-vertex normals are shading hints.
-        org.joml.Vector3fc fn = quad.faceNormal();
-        float nx = fn.x(), ny = fn.y(), nz = fn.z();
+        // The geometric face normal from the first three vertices, as every terrain quad has
+        // been normalled; vanilla baked quads carry none, and a model's per-vertex normals are
+        // shading hints. Computed here rather than read from the renderer's quad, which snaps
+        // it to the nominal face. A degenerate quad keeps its near-zero cross product.
+        float e1x = tempPositions[3] - tempPositions[0];
+        float e1y = tempPositions[4] - tempPositions[1];
+        float e1z = tempPositions[5] - tempPositions[2];
+        float e2x = tempPositions[6] - tempPositions[0];
+        float e2y = tempPositions[7] - tempPositions[1];
+        float e2z = tempPositions[8] - tempPositions[2];
+        float nx = e1y * e2z - e1z * e2y;
+        float ny = e1z * e2x - e1x * e2z;
+        float nz = e1x * e2y - e1y * e2x;
+        float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (len > 0.001f) {
+            nx /= len; ny /= len; nz /= len;
+        }
 
         // Vanilla's lighter leaves the vertex colour white and the renderer multiplies the
         // tint in; a model that sets its own vertex colours keeps them under the tint.
@@ -479,8 +539,11 @@ public final class BlockQuadEmitter {
 
         String layerName = emitGlass ? "glass" : layerName(quad.chunkLayer());
 
-        TextureAtlasSprite sprite = quad.bakedSprite();
-        if (sprite == null && quad.atlas() == QuadAtlas.BLOCK) {
+        // The renderer's quad does not keep the sprite a baked quad named, so every quad is
+        // resolved at its UVs, as Fabric's own consumers do; the lookup walks a quad tree and
+        // allocates nothing. A quad on another atlas stages without a sprite.
+        TextureAtlasSprite sprite = null;
+        if (quad.atlas() == QuadAtlas.BLOCK) {
             SpriteFinder finder = blockSpriteFinder();
             if (finder != null) {
                 sprite = finder.find(quad);
@@ -502,8 +565,7 @@ public final class BlockQuadEmitter {
 
     /**
      * Fabric's sprite finder for the block atlas, which maps a quad's UVs back to its sprite.
-     * Only a quad from a pre-built Fabric mesh needs it; baked quads name their sprite. Null
-     * until the atlas has been stitched, in which case the quad stages without a sprite.
+     * Null until the atlas has been stitched, in which case the quad stages without a sprite.
      */
     private SpriteFinder blockSpriteFinder() {
         if (!blockSpriteFinderResolved) {
@@ -925,6 +987,13 @@ public final class BlockQuadEmitter {
         int neighborY = mutablePos.getY() + side.getStepY();
         int neighborZ = mutablePos.getZ() + side.getStepZ();
         BlockState neighbor = getCachedBlockState(world, neighborX, neighborY, neighborZ);
+        if (dependsOnCutoutLeaves(state, neighbor)) {
+            // LeavesBlock.skipRendering reads the global cutoutLeaves flag, which the Cutout
+            // Leaves option flips at runtime; a cached answer would outlive the toggle. Leaves
+            // do not occlude, so vanilla decides this pair before any shape comparison and
+            // allocates nothing.
+            return Block.shouldRenderFace(state, neighbor, side);
+        }
         long key = ((long) Block.getId(state) << 35)
                 | ((long) Block.getId(neighbor) << 3)
                 | side.ordinal();
@@ -939,6 +1008,14 @@ public final class BlockQuadEmitter {
         faceCullKeys[slot] = key;
         faceCullResults[slot] = drawn ? FACE_CULL_DRAWN : FACE_CULL_HIDDEN;
         return drawn;
+    }
+
+    /**
+     * Whether {@link Block#shouldRenderFace} for this pair reads {@code LeavesBlock.cutoutLeaves}:
+     * {@code LeavesBlock.skipRendering} consults it only for a leaves block against leaves.
+     */
+    static boolean dependsOnCutoutLeaves(BlockState state, BlockState neighbor) {
+        return state.getBlock() instanceof LeavesBlock && neighbor.getBlock() instanceof LeavesBlock;
     }
 
     private BlockState getCachedBlockState(BlockGetter world, int worldX, int worldY, int worldZ) {
@@ -1012,8 +1089,11 @@ public final class BlockQuadEmitter {
     }
 
     /**
-     * {@code ModelBlockRenderer.computeTintColor}: the block's tint source for the layer, in
-     * world, or white when the block has no source for that index.
+     * {@code ModelBlockRenderer.computeTintColor} with Fabric's extension of it: the block's
+     * tint source for the layer, in world; for a block with no vanilla tint source, the value
+     * its Fabric {@link BlockTintsFactory} collected for that index (Fabric's
+     * {@code ModelBlockRendererMixin} and Indigo's {@code AltModelBlockRendererImpl} consult
+     * {@link BlockColorRegistry#getFactory} exactly then); white past the end of either list.
      */
     private int computeBlockTint(BlockState state, BlockAndTintGetter world, int colorIndex) {
         List<BlockTintSource> sources = tintSources;
@@ -1021,10 +1101,26 @@ public final class BlockQuadEmitter {
             sources = blockColors.getTintSources(state);
             tintSources = sources;
         }
-        if (colorIndex >= sources.size()) {
-            return -1;
+        if (!sources.isEmpty()) {
+            if (colorIndex >= sources.size()) {
+                return -1;
+            }
+            return sources.get(colorIndex).colorInWorld(state, world, mutablePos);
         }
-        return sources.get(colorIndex).colorInWorld(state, world, mutablePos);
+        if (!factoryTintsCollected) {
+            factoryTintsCollected = true;
+            factoryTints.clear();
+            BlockTintsFactory factory = BlockColorRegistry.getFactory(state);
+            if (factory != null) {
+                factory.collect(state, world, mutablePos, factoryTints);
+            }
+        }
+        return factoryTint(factoryTints, colorIndex);
+    }
+
+    /** A collected factory tint, or white past the end, as vanilla indexes its tint sources. */
+    static int factoryTint(IntArrayList tints, int colorIndex) {
+        return colorIndex >= 0 && colorIndex < tints.size() ? tints.getInt(colorIndex) : -1;
     }
 
     /** Clear glass takes the mod's own refractive layer; see {@link #classifyBlockLayer}. */

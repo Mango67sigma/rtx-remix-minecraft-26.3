@@ -159,6 +159,35 @@ public class TerrainState {
             this.opacityBitmap = opacityBitmap;
         }
 
+        /**
+         * Snapshot sequence of the newest capture this entry stands for
+         * ({@code BlockDataQueue.CaptureToken.sequence}); 0 when unknown. Render thread only.
+         */
+        private long captureSequence;
+
+        public long captureSequence() { return captureSequence; }
+
+        /**
+         * Records that a capture stamped {@code sequence} is represented by this entry, either
+         * because it created the entry or because it was identical to it. Never moves back.
+         */
+        public void noteCaptureSequence(long sequence) {
+            if (sequence > captureSequence) {
+                captureSequence = sequence;
+            }
+        }
+
+        /**
+         * Whether a capture stamped {@code sequence} read older world state than this entry
+         * shows, so applying it would bring back geometry a newer capture replaced. Two
+         * compiles of one section can be in flight together: vanilla cancels the older task
+         * but does not stop it once it runs, and the two can finish in either order. An
+         * unstamped capture (0) or entry is never treated as older.
+         */
+        public boolean supersedes(long sequence) {
+            return sequence != 0 && sequence < captureSequence;
+        }
+
         public Map<BlockLightKey, TerrainLight> lights() { return lights; }
         public List<TerrainLight> lightEntries() { return lightEntries; }
         public int lightCount() { return lightEntries.size(); }

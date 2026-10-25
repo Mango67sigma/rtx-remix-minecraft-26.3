@@ -4,10 +4,13 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
+import com.nvidia.rtxremix.minecraft.terrain.capture.BlockDataQueue;
+import com.nvidia.rtxremix.minecraft.terrain.capture.CompileRegion;
 import com.nvidia.rtxremix.minecraft.terrain.capture.RegionSnapshotRelease;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -20,11 +23,16 @@ import net.minecraft.client.renderer.chunk.SectionCopy;
 /**
  * A render region ({@code RenderSectionRegion}, the old {@code RenderChunkRegion}) holds one
  * reference on each of its 27 section snapshots from construction until
- * {@link #rtxremix$release}, which the compile task that consumed it calls exactly once; see
- * {@link RebuildTaskMixin}.
+ * {@link #rtxremix$release}, which runs exactly once: from the compile task that claimed the
+ * region (see {@link RebuildTaskMixin}), or, for a region no task claimed, where vanilla
+ * drops its section update ({@link LevelExtractorTerrainMixin}).
+ *
+ * <p>Regions are constructed on the render thread by {@code RenderRegionCache.createRegion},
+ * after the section copies they read were taken, so the capture sequence stamped here orders
+ * the snapshots of one section ({@link CompileRegion}).
  */
 @Mixin(RenderSectionRegion.class)
-public abstract class ChunkRendererRegionMixin implements RegionSnapshotRelease {
+public abstract class ChunkRendererRegionMixin implements RegionSnapshotRelease, CompileRegion {
 
     @Shadow
     @Final
@@ -32,12 +40,20 @@ public abstract class ChunkRendererRegionMixin implements RegionSnapshotRelease 
 
     private final AtomicBoolean rtxremix$released = new AtomicBoolean();
 
+    @Unique
+    private long rtxremix$captureSequence;
+
+    /** Render thread only: claims and the unclaimed release both run there. */
+    @Unique
+    private boolean rtxremix$claimed;
+
     @Inject(method = "<init>", at = @At("RETURN"))
     private void rtxremix$retainSnapshots(ClientLevel level, int minSectionX, int minSectionY, int minSectionZ,
                                           SectionCopy[] regionSections, CallbackInfo ci) {
         for (SectionCopy snapshot : sections) {
             ((RegionSnapshotRelease) snapshot).rtxremix$retain();
         }
+        rtxremix$captureSequence = BlockDataQueue.nextCaptureSequence();
     }
 
     @Override
@@ -53,5 +69,24 @@ public abstract class ChunkRendererRegionMixin implements RegionSnapshotRelease 
         for (SectionCopy snapshot : sections) {
             ((RegionSnapshotRelease) snapshot).rtxremix$release();
         }
+    }
+
+    @Override
+    public long rtxremix$captureSequence() {
+        return rtxremix$captureSequence;
+    }
+
+    @Override
+    public void rtxremix$claimForTask() {
+        rtxremix$claimed = true;
+    }
+
+    @Override
+    public boolean rtxremix$releaseIfUnclaimed() {
+        if (rtxremix$claimed || rtxremix$released.get()) {
+            return false;
+        }
+        rtxremix$release();
+        return true;
     }
 }

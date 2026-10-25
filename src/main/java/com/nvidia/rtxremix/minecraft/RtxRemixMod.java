@@ -556,9 +556,6 @@ public class RtxRemixMod implements ClientModInitializer {
             if (renderer != null && renderer.getChunkManager() != null) {
                 renderer.getChunkManager().onChunkUnloaded(pos);
             }
-            if (Minecraft.getInstance().levelRenderer instanceof WorldRendererTerrainAccess access) {
-                access.rtxremix$onNeighbourColumnInvalidated(pos.x(), pos.z());
-            }
         });
 
         // Zone discovery: server-thread scan of command blocks as chunks load.

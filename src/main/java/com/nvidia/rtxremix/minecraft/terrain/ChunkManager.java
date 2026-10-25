@@ -872,9 +872,24 @@ public class ChunkManager {
         if (wc == null) {
             return false;
         }
+        return isSectionEmpty(wc, sy);
+    }
+
+    private static boolean isSectionEmpty(LevelChunk wc, int sy) {
         // ChunkAccess.isSectionEmpty(sectionY) is gone since 1.21.2; this is its body.
         int index = wc.getSectionIndexFromSectionY(sy);
         return index >= 0 && index < wc.getSectionsCount() && wc.getSection(index).hasOnlyAir();
+    }
+
+    /**
+     * Whether a capture must not be applied: its section is all air now, or the section's
+     * entry already shows a capture whose snapshot was taken later. A capture of an older
+     * compile can still be in flight when either becomes true; applying it would bring back
+     * removed or replaced geometry.
+     */
+    static boolean isSupersededCapture(boolean liveSectionEmpty, TerrainState.SectionEntry current,
+                                       long captureSequence) {
+        return liveSectionEmpty || (current != null && current.supersedes(captureSequence));
     }
 
     private int drainBlockData() {
@@ -920,6 +935,22 @@ public class ChunkManager {
                 LOGGER.debug("Cancelled deferred unload for reloaded chunk ({},{})", cx, cz);
             }
 
+            // 26.3 removes a section that turns to air as soon as onSectionEmptinessChanged
+            // fires, and a newer compile of a section can finish before an older one; re-check
+            // the live section and the snapshot order before the capture can undo either.
+            long captureSequence = queued.capture().sequence();
+            boolean liveEmpty = isSectionEmpty(liveChunk, sy);
+            TerrainState.SectionEntry current = terrain.findSection(cx, sy, cz);
+            if (isSupersededCapture(liveEmpty, current, captureSequence)) {
+                skipped++;
+                releaseMeshData(cap);
+                if (liveEmpty && current != null) {
+                    // Let the validated removal path retire whatever the section still shows.
+                    SectionLeftRenderSetQueue.enqueueEmptyCandidate(cx, sy, cz);
+                }
+                continue;
+            }
+
             int hash = hashCapture(cap);
 
             TerrainState.SectionEntry newEntry = terrain.addSection(cx, sy, cz, hash, cap.meshData(),
@@ -931,8 +962,12 @@ public class ChunkManager {
             if (newEntry == null) {
                 newEntry = terrain.findSection(cx, sy, cz);
                 if (newEntry == null) continue;
+                // Identical to what the section shows, so the entry now stands for this
+                // later snapshot as well.
+                newEntry.noteCaptureSequence(captureSequence);
                 oldEntry = newEntry;
             } else {
+                newEntry.noteCaptureSequence(captureSequence);
                 oldEntry = terrain.getReplacedEntry();
                 markColumnDirty(cx, cz, categoryDifferenceMask(
                         oldEntry != null ? oldEntry.data : null,
@@ -951,7 +986,7 @@ public class ChunkManager {
         }
 
         if (skipped > 0 && LOGGER.isDebugEnabled()) {
-            LOGGER.debug("Skipped {} stale BlockDataQueue entries for unloaded chunks", skipped);
+            LOGGER.debug("Skipped {} stale BlockDataQueue entries (unloaded chunk, emptied section or older snapshot)", skipped);
         }
         return processed;
     }

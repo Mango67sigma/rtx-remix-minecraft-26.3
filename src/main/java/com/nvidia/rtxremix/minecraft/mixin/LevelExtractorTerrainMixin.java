@@ -9,6 +9,7 @@ import com.nvidia.rtxremix.minecraft.terrain.LevelExtractorTerrainAccess;
 import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter;
 import com.nvidia.rtxremix.minecraft.terrain.SkippedSectionRebuilds;
 import com.nvidia.rtxremix.minecraft.terrain.capture.BlockQuadEmitter;
+import com.nvidia.rtxremix.minecraft.terrain.capture.CompileRegion;
 import com.nvidia.rtxremix.minecraft.terrain.capture.RegionBuilderRelease;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
@@ -18,6 +19,7 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
@@ -30,6 +32,8 @@ import net.minecraft.client.renderer.chunk.RenderRegionCache;
 import net.minecraft.client.renderer.chunk.RenderSectionRegion;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.extract.LevelExtractor;
+import net.minecraft.client.renderer.state.level.LevelRenderState;
+import net.minecraft.client.renderer.state.level.SectionUpdateRenderState;
 import net.minecraft.core.SectionPos;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.phys.Vec3;
@@ -53,7 +57,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *   <li>the light-data neighbour re-flag filter ({@code setSectionDirtyWithNeighbors}) and its
  *       chunk-load measurement ({@link NeighbourReflagFilter});</li>
  *   <li>the frame's region cache, whose snapshot references are dropped once every
- *       region of the frame has been created;</li>
+ *       region of the frame has been created, and the regions of section updates vanilla
+ *       drops without compiling them;</li>
  *   <li>the Remix terrain recapture, applied to the view area a reload creates;</li>
  *   <li>resident-only rebuild flags for captures evicted under backpressure.</li>
  * </ul>
@@ -79,6 +84,10 @@ public abstract class LevelExtractorTerrainMixin implements LevelExtractorTerrai
 
     @Shadow
     private boolean shouldInvalidateCompiledGeometry;
+
+    @Shadow
+    @Final
+    private LevelRenderState levelRenderState;
 
     @Shadow
     public abstract void setSectionDirty(int sectionX, int sectionY, int sectionZ);
@@ -204,6 +213,29 @@ public abstract class LevelExtractorTerrainMixin implements LevelExtractorTerrai
         RenderRegionCache cache = rtxremix$frameRegionCache;
         rtxremix$frameRegionCache = null;
         rtxremix$releaseRegionCache(cache);
+    }
+
+    /**
+     * Releases the regions of last frame's section updates that no compile task claimed.
+     * {@code LevelRenderer.compileSections} hands every update's region to a task, which then
+     * owns its release; an update list that no render consumed (an extract not followed by
+     * {@code compileSections}) is cleared here by {@code LevelRenderState.reset} with its
+     * regions still holding their snapshot references. Allocation-free; the list is last
+     * frame's section updates.
+     */
+    @Inject(
+            method = "extract",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lnet/minecraft/client/renderer/state/level/LevelRenderState;reset()V"))
+    private void rtxremix$releaseUncompiledSectionUpdates(DeltaTracker deltaTracker, Camera camera,
+                                                          float worldPartialTicks, CallbackInfo ci) {
+        List<SectionUpdateRenderState> updates = levelRenderState.sectionUpdateRenderStates;
+        for (int i = 0, n = updates.size(); i < n; i++) {
+            if ((Object) updates.get(i).region() instanceof CompileRegion region) {
+                region.rtxremix$releaseIfUnclaimed();
+            }
+        }
     }
 
     /**

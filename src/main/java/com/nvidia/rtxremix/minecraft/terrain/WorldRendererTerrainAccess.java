@@ -42,12 +42,4 @@ public interface WorldRendererTerrainAccess {
      * A section that has left the window is skipped: it is dirty again when it re-enters.
      */
     void rtxremix$scheduleResidentSectionRebuild(int cx, int sy, int cz);
-
-    /**
-     * Legacy 1.21.1 hook that forgot an unloaded column in its neighbours' region
-     * snapshot masks. A no-op in 26.3, which records no snapshot mask because its
-     * first-build gate already waits for every neighbour column (see
-     * {@code NeighbourReflagFilter}). Remove it with its {@code CHUNK_UNLOAD} caller.
-     */
-    void rtxremix$onNeighbourColumnInvalidated(int cx, int cz);
 }

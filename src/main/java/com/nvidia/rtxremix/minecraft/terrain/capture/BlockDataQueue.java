@@ -51,8 +51,20 @@ public final class BlockDataQueue {
     private static final AtomicReference<QueueState> STATE =
             new AtomicReference<>(new QueueState(allocateQueueGeneration()));
 
-    /** World generation and chunk incarnation latched together at capture start. */
-    public record CaptureToken(long queueGeneration, long chunkToken) {}
+    private static final AtomicLong NEXT_CAPTURE_SEQUENCE = new AtomicLong();
+
+    /**
+     * World generation and chunk incarnation latched together at capture start, plus the
+     * capture's place in snapshot order ({@link #nextCaptureSequence()}). The first two
+     * decide whether a capture is still current; the sequence only orders two current
+     * captures of one section.
+     */
+    public record CaptureToken(long queueGeneration, long chunkToken, long sequence) {
+        /** Whether both tokens name the same world generation and chunk incarnation. */
+        public boolean sameIncarnation(CaptureToken other) {
+            return queueGeneration == other.queueGeneration && chunkToken == other.chunkToken;
+        }
+    }
 
     /** Captured data retains its identity until the render thread applies it. */
     public record QueuedCapture(SectionBlockData data, CaptureToken capture) {}
@@ -114,13 +126,30 @@ public final class BlockDataQueue {
 
     private BlockDataQueue() {}
 
-    /** Returns the current capture identity, creating a live chunk incarnation if needed. */
+    /**
+     * The next value of the global capture sequence, strictly increasing and never 0. Taken
+     * when a section's block snapshot is taken (a render region's construction), so a larger
+     * sequence read newer world state.
+     */
+    public static long nextCaptureSequence() {
+        return NEXT_CAPTURE_SEQUENCE.incrementAndGet();
+    }
+
+    /** Returns the current capture identity with a fresh sequence. */
     public static CaptureToken beginCapture(int cx, int cz) {
+        return beginCapture(cx, cz, nextCaptureSequence());
+    }
+
+    /**
+     * Returns the current capture identity, creating a live chunk incarnation if needed,
+     * for a capture whose snapshot was stamped with {@code sequence}.
+     */
+    public static CaptureToken beginCapture(int cx, int cz, long sequence) {
         QueueState state = STATE.get();
         long key = packChunkKey(cx, cz);
         long chunkToken = state.chunkTokens.computeIfAbsent(
                 key, ignored -> allocateChunkToken());
-        return new CaptureToken(state.generation, chunkToken);
+        return new CaptureToken(state.generation, chunkToken, sequence);
     }
 
     /** Invalidates captures that began before this chunk-unload event. */

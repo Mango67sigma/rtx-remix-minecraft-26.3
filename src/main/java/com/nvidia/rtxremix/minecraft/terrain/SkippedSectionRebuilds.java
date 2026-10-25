@@ -40,12 +40,4 @@ public final class SkippedSectionRebuilds {
     public static int drainLightDataReflags() {
         return LIGHT_DATA_REFLAGS.getAndSet(0);
     }
-
-    /**
-     * Legacy 1.21.1 snapshot-mask drop, kept only for
-     * {@code BuiltChunkStorageMixin.rtxremix$flagLoadedSection}, which nothing calls in 26.3.
-     */
-    public static void recordNeighbourInSnapshot() {
-        recordLightDataReflags(1);
-    }
 }

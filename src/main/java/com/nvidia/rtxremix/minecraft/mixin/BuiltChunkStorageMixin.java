@@ -4,15 +4,10 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
-import com.nvidia.rtxremix.minecraft.terrain.BuiltChunkNeighbourhoodAccess;
-import com.nvidia.rtxremix.minecraft.terrain.visibility.BuiltChunkStorageSectionAccess;
-import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter;
-import com.nvidia.rtxremix.minecraft.terrain.SkippedSectionRebuilds;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import com.nvidia.rtxremix.minecraft.terrain.visibility.ChunkStorageTorus;
 import net.minecraft.client.RotatingSectionStorage;
-import net.minecraft.client.SectionUpdateTracker;
 import net.minecraft.client.renderer.SectionOcclusionGraph;
 import net.minecraft.client.renderer.ViewArea;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
@@ -27,8 +22,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Re-centres vanilla's render-section ring touching only the planes that move, and gives the
- * terrain pipeline section-addressed access to the slots.
+ * Re-centres vanilla's render-section ring touching only the planes that move.
  *
  * <p>Minecraft 26.3's {@code ViewArea} is backed by a {@code RotatingSectionStorage} addressed
  * in section coordinates; {@code repositionCamera(SectionPos)} compares every slot with its
@@ -38,8 +32,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * {@code RenderSection.setSectionNode}, so its reset and the move log hooked there run as before.
  */
 @Mixin(ViewArea.class)
-public abstract class BuiltChunkStorageMixin
-        implements ChunkStorageTorus.StorageAccess, BuiltChunkStorageSectionAccess {
+public abstract class BuiltChunkStorageMixin implements ChunkStorageTorus.StorageAccess {
     @Shadow
     @Final
     private SectionOcclusionGraph sectionOcclusionGraph;
@@ -110,66 +103,5 @@ public abstract class BuiltChunkStorageMixin
     @Override
     public void rtxremix$setSection(int slotIndex, int sectionX, int sectionY, int sectionZ) {
         rtxremix$slots[slotIndex].setSectionNode(SectionPos.asLong(sectionX, sectionY, sectionZ));
-    }
-
-    /** The slot holding the section, or null when the window does not hold it. */
-    @Unique
-    private SectionRenderDispatcher.RenderSection rtxremix$residentSlot(int cx, int sy, int cz) {
-        SectionRenderDispatcher.RenderSection slot = sections.getValue(cx, sy, cz);
-        return slot != null && slot.getSectionNode() == SectionPos.asLong(cx, sy, cz) ? slot : null;
-    }
-
-    @Override
-    public void rtxremix$scheduleRebuildIfResident(SectionUpdateTracker tracker, int cx, int sy, int cz) {
-        if (tracker != null) {
-            tracker.setDirty(cx, sy, cz, false);
-        }
-    }
-
-    @Override
-    public void rtxremix$flagLoadedSection(SectionUpdateTracker tracker, int cx, int sy, int cz) {
-        if (tracker == null || !NeighbourReflagFilter.sectionInRange(sy, sections.minY(), sections.height())) {
-            return;
-        }
-        tracker.setDirty(cx, sy, cz, false);
-        for (int k = 0; k < NeighbourReflagFilter.NEIGHBOUR_COUNT; k++) {
-            int neighbourX = cx + NeighbourReflagFilter.DX[k];
-            int neighbourZ = cz + NeighbourReflagFilter.DZ[k];
-            SectionUpdateTracker.SectionDirtyState state =
-                    tracker.getDirtyState(SectionPos.asLong(neighbourX, sy, neighbourZ));
-            boolean resident = state != null;
-            boolean awaitingBuild = resident && state.isDirty();
-            // The snapshot bits live on the render section; a section the view area does not
-            // hold yet has no snapshot, so nothing can be dropped for it.
-            SectionRenderDispatcher.RenderSection slot = resident ? rtxremix$residentSlot(neighbourX, sy, neighbourZ) : null;
-            int snapshotMask = slot != null ? ((BuiltChunkNeighbourhoodAccess) slot).rtxremix$snapshotMask() : 0;
-            int loaderBit = NeighbourReflagFilter.bit(NeighbourReflagFilter.mirroredIndex(k));
-            switch (NeighbourReflagFilter.decideNeighbour(resident, awaitingBuild, snapshotMask, loaderBit)) {
-                case FLAG -> {
-                    state.setDirty(false);
-                    NeighbourReflagFilter.recordKept();
-                }
-                case DROP_IN_SNAPSHOT -> SkippedSectionRebuilds.recordNeighbourInSnapshot();
-                case SKIP_NOT_RESIDENT, SKIP_AWAITING_BUILD -> {
-                }
-            }
-        }
-    }
-
-    @Override
-    public void rtxremix$clearNeighbourSnapshotBits(int cx, int cz) {
-        int bottomSection = sections.minY();
-        int rows = sections.height();
-        for (int k = 0; k < NeighbourReflagFilter.NEIGHBOUR_COUNT; k++) {
-            int bit = NeighbourReflagFilter.bit(NeighbourReflagFilter.mirroredIndex(k));
-            int neighbourX = cx + NeighbourReflagFilter.DX[k];
-            int neighbourZ = cz + NeighbourReflagFilter.DZ[k];
-            for (int row = 0; row < rows; row++) {
-                SectionRenderDispatcher.RenderSection slot = rtxremix$residentSlot(neighbourX, bottomSection + row, neighbourZ);
-                if (slot != null) {
-                    ((BuiltChunkNeighbourhoodAccess) slot).rtxremix$clearSnapshotBit(bit);
-                }
-            }
-        }
     }
 }

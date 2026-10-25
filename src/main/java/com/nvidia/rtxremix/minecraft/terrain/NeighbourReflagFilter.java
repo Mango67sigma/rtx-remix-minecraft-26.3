@@ -43,10 +43,9 @@ import net.minecraft.core.SectionPos;
  * counts those builds so that Milestone B can decide from measurements whether they need a
  * filter.
  *
- * <p>The legacy members at the end of this class are 1.21.1's snapshot-mask rule. Nothing
- * records a snapshot mask in 26.3; they remain only because
- * {@code BuiltChunkStorageMixin.rtxremix$flagLoadedSection}, which nothing calls, still
- * refers to them.
+ * <p>1.21.1's snapshot-mask rule (a per-slot record of which neighbour columns a build saw)
+ * is gone: nothing records a mask in 26.3, where the first-build gate already waits for every
+ * neighbour column.
  */
 public final class NeighbourReflagFilter {
     public static final String PROPERTY = "rtxremix.chunk.neighbourReflagFilter";
@@ -162,71 +161,5 @@ public final class NeighbourReflagFilter {
                 ? "Light-data neighbour re-flags: dropped while RTX capture is on (" + PROPERTY + "=true); "
                         + "chunk-load re-flags stay vanilla"
                 : "Light-data neighbour re-flags: vanilla (" + PROPERTY + "=false)";
-    }
-
-    // ---- Legacy 1.21.1 snapshot-mask rule ------------------------------------------------
-    // Nothing records a snapshot mask in 26.3, so every mask is 0. These members remain only
-    // for BuiltChunkStorageMixin.rtxremix$flagLoadedSection and
-    // rtxremix$clearNeighbourSnapshotBits, which nothing calls; remove them together.
-
-    /** Horizontal neighbour offsets in chunk columns. Mask bit k stands for neighbour (DX[k], DZ[k]). */
-    public static final int[] DX = {-1, 0, 1, -1, 1, -1, 0, 1};
-    public static final int[] DZ = {-1, -1, -1, 0, 0, 1, 1, 1};
-    public static final int NEIGHBOUR_COUNT = 8;
-    public static final int COMPLETE = 0xFF;
-
-    /** What 1.21.1's chunk load did to one horizontal neighbour slot of the loading column. */
-    public enum Decision {
-        /** The slot's capture never saw this column: flag it as vanilla would. */
-        FLAG,
-        /** The slot holds a different section; vanilla's flag would rebuild an unrelated one. */
-        SKIP_NOT_RESIDENT,
-        /** A rebuild is already pending and will snapshot the world after this load. */
-        SKIP_AWAITING_BUILD,
-        /** The slot's last snapshot already contained this column, so a rebuild would read identical data. */
-        DROP_IN_SNAPSHOT
-    }
-
-    /** Index of the neighbour at horizontal chunk offset (dx, dz), each in -1..1 and not both zero. */
-    public static int neighbourIndex(int dx, int dz) {
-        if (dx < -1 || dx > 1 || dz < -1 || dz > 1 || (dx == 0 && dz == 0)) {
-            throw new IllegalArgumentException("not a horizontal neighbour offset: " + dx + ", " + dz);
-        }
-        int linear = (dz + 1) * 3 + (dx + 1);
-        return linear < 4 ? linear : linear - 1;
-    }
-
-    /** The index under which neighbour k sees the column at the centre. */
-    public static int mirroredIndex(int k) {
-        return neighbourIndex(-DX[k], -DZ[k]);
-    }
-
-    /** Mask bit for neighbour index k. */
-    public static int bit(int k) {
-        return 1 << k;
-    }
-
-    /** Whether a section Y has a row of its own in a storage of {@code sizeY} rows from {@code bottomSection}. */
-    public static boolean sectionInRange(int sy, int bottomSection, int sizeY) {
-        return sy >= bottomSection && sy < bottomSection + sizeY;
-    }
-
-    /** 1.21.1's neighbour rule for one slot when a column loaded. */
-    public static Decision decideNeighbour(boolean resident, boolean needsRebuild, int snapshotMask, int loaderBit) {
-        if (!resident) {
-            return Decision.SKIP_NOT_RESIDENT;
-        }
-        if (needsRebuild) {
-            return Decision.SKIP_AWAITING_BUILD;
-        }
-        if ((snapshotMask & loaderBit) != 0) {
-            return Decision.DROP_IN_SNAPSHOT;
-        }
-        return Decision.FLAG;
-    }
-
-    /** Records one neighbour flag passed through by the legacy rule. */
-    public static void recordKept() {
-        recordKept(1);
     }
 }
