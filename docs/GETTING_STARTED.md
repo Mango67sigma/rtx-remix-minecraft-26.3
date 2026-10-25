@@ -176,10 +176,12 @@ arguments opens the [developer dashboard](../tools/docs/LAUNCHER.md) instead,
 which launches into the pinned demo world.
 
 Each launch writes the enabled resource packs in the game directory's
-`options.txt`: vanilla, then Fabric's `fabric` pack with the built-in baseline,
-then any world packs and the selected art pack. It removes an old generated
-`rtx-remix` baseline pack, which it recognizes by its metadata and texture
-inventory, leaving other packs alone.
+`options.txt`: vanilla, then any world packs and the selected art pack. The
+built-in baseline needs no entry, because Fabric API loads it through the mod's
+own hidden `rtx-remix-renderer` pack, which sits above vanilla and below the
+packs listed after it. It removes an old generated `rtx-remix` baseline pack,
+which it recognizes by its metadata and texture inventory, leaving other packs
+alone.
 
 ### Sign In To Prism
 
@@ -238,9 +240,10 @@ In `logs/latest.log` in the game directory, the exact success message is
 `Failed to initialize RTX Remix` message. The similarly worded mod-entrypoint
 startup message with a capital `Renderer` is not proof of native initialization.
 
-The baseline PBR textures are built into the mod JAR and load through Fabric's
-`fabric` resource pack, below user packs. No separate baseline pack needs
-enabling.
+The baseline PBR textures are built into the mod JAR. Fabric API loads them
+through the mod's own hidden `rtx-remix-renderer` pack, which sits above vanilla
+and below user packs and does not appear in `options.txt`. No separate baseline
+pack needs enabling.
 
 The first launch of a new runtime compiles shaders, so expect a partial or empty
 scene for the first few minutes.
@@ -367,10 +370,10 @@ The command installs the newest non-sources development JAR, the staged runtime
 from `remix-runtime/<arch>/`, the matching bridge from `build/native/<arch>/`,
 `packaging/rtx.conf`, the `packaging/rtx-remix/` gameplay conf payload, and runtime
 textures. Baseline PBR textures are built into the JAR. The command removes its
-former generated `rtx-remix-labpbr` pack and orders vanilla and Fabric below
-existing user packs. Shipped gameplay confs are refreshed while extra
-author-created profiles are preserved. An unchanged runtime is not recopied,
-but the bridge and other payloads are always refreshed.
+former generated `rtx-remix-labpbr` pack, drops a leftover `fabric` entry, and
+orders vanilla below existing user packs. Shipped gameplay confs are refreshed
+while extra author-created profiles are preserved. An unchanged runtime is not
+recopied, but the bridge and other payloads are always refreshed.
 
 Set `REMIX_BUILD` to install a custom runtime directory containing `d3d9.dll`
 instead of the staged runtime. Set `REMIX_FORCE_SDK_COPY=1` to force a full SDK

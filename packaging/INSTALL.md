@@ -157,8 +157,8 @@ are preserved. To install into the other launcher instead, choose Install.
 Install, Upgrade, and Repair remove an old generated `RtxRemix-LabPBR` pack
 identified by its metadata and texture inventory, leaving other packs alone.
 In an existing `options.txt`, they change only `resourcePacks`: vanilla first,
-Fabric next, then user packs in their existing order, without the retired
-baseline entry. Missing options files are not created.
+then user packs in their existing order, without the retired baseline entry or
+a leftover `fabric` entry. Missing options files are not created.
 
 The runtime under `remix-sdk\` and the baseline `rtx.conf` belong to the mod
 and are replaced on the first launch after an upgrade, so edits to either do

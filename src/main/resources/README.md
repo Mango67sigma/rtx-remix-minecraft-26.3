@@ -1,7 +1,8 @@
 # Built-In LabPBR Textures
 
-The mod JAR supplies the baseline LabPBR textures through Fabric's `fabric`
-resource pack, below user packs. No separate baseline pack needs enabling.
+The mod JAR supplies the baseline LabPBR textures through the mod's own hidden
+`rtx-remix-renderer` resource pack, which Fabric API keeps above vanilla and
+below user packs. No separate baseline pack needs enabling.
 
 The assets include the minimum set of LabPBR sidecars this renderer needs:
 `_s` for blocks that are meant to glow and `_sss` for foliage so leaves and

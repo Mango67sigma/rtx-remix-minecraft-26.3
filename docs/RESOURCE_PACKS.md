@@ -16,9 +16,9 @@ with one addition of the mod's own, `_sss`.
 
 ## Quick Start
 
-1. Enable your own pack in Options, Resource Packs above Fabric's `fabric`
-   pack. The mod's built-in baseline fills in textures you have not covered
-   yet; yours wins for anything you replace.
+1. Enable your own pack in Options, Resource Packs. It lands above the mod's
+   built-in baseline, which fills in textures you have not covered yet; yours
+   wins for anything you replace.
 2. Pick one block that should glow, say `glowstone`, and add
    `assets/minecraft/textures/block/glowstone_s.png` beside its base colour
    texture. Paint the alpha channel below 255 wherever it should emit.
@@ -31,12 +31,14 @@ with one addition of the mod's own, `_sss`.
 
 ## The Built-In Baseline
 
-The baseline LabPBR textures ship inside the mod JAR as part of Fabric's
-`fabric` pack, below user packs. No separate pack needs enabling. It carries
-the minimum set of sidecars the renderer needs: `_s` for the blocks that are
-meant to glow, and `_sss` for foliage so leaves and grass scatter light instead
-of looking like painted cardboard. It also includes sky and particle base
-textures. Your own pack wins for any of those you replace in turn.
+The baseline LabPBR textures ship inside the mod JAR, and Fabric API loads them
+through the mod's own hidden `rtx-remix-renderer` pack. That pack sits above
+vanilla and below user packs and does not appear in `options.txt`. No separate
+pack needs enabling. The baseline carries the minimum set of sidecars the
+renderer needs: `_s` for the blocks that are meant to glow, and `_sss` for
+foliage so leaves and grass scatter light instead of looking like painted
+cardboard. It also includes sky and particle base textures. Your own pack wins
+for any of those you replace in turn.
 
 Surface emission comes only from `_s` alpha, and the block atlas deliberately
 passes an emission fallback of zero (`LabPBRConverter.blitEmissive`), so a

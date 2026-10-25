@@ -49,8 +49,8 @@ launcher.
 Install, Upgrade, and Repair migrate the retired generated `RtxRemix-LabPBR`
 pack. They identify it by metadata and texture inventory and leave other packs
 alone. In an existing `options.txt`, only `resourcePacks` changes: vanilla,
-Fabric, then user packs in their existing order, without the retired baseline
-entry. They do not create a missing options file.
+then user packs in their existing order, without the retired baseline entry or
+a leftover `fabric` entry. They do not create a missing options file.
 
 ## Moving An Earlier Release's Install To The Pinned Game
 

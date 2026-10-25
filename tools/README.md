@@ -139,8 +139,9 @@ the second benchmarks a save you imported and recorded a camera for.
   and textures. The baseline materials are built into the mod JAR, not copied
   as a separate pack. It runs `packaging/migrate_resource_packs.ps1` with
   `-LegacyPackName rtx-remix-labpbr` to retire the recognized old baseline,
-  preserve user packs and their order, and place `vanilla` then `fabric` below
-  them in existing `options.txt`. A migration failure makes installation fail.
+  preserve user packs and their order, drop a leftover `fabric` entry, and
+  place `vanilla` below the user packs in existing `options.txt`. A migration
+  failure makes installation fail.
   `REMIX_ARCH` overrides host architecture, `REMIX_BUILD` selects a custom
   runtime, and `REMIX_FORCE_SDK_COPY=1` bypasses the runtime copy marker.
   Relative paths use the repository root. It neither builds nor launches

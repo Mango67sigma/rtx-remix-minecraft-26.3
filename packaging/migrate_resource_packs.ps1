@@ -37,7 +37,11 @@ function Update-ResourcePackOptions {
     $text = [IO.File]::ReadAllText($Path)
     $match = [regex]::Match($text, '(?m)^resourcePacks:[^\r\n]*')
     $packs = if ($match.Success) { @($match.Value.Substring('resourcePacks:'.Length) | ConvertFrom-Json) } else { @() }
-    $ordered = @('vanilla', 'fabric') + @($packs | Where-Object {
+    # 26.3 has no `fabric` pack. Fabric API loads the mod's assets through a hidden pack named for the mod and keeps it
+    # above vanilla and below the packs listed after it. The list is therefore vanilla and then the user's packs in
+    # their order. A `fabric` entry left from 1.21.1 is dropped, since the game removes it with a warning, and so is
+    # the retired baseline's entry once its pack is gone.
+    $ordered = @('vanilla') + @($packs | Where-Object {
         $_ -cne 'vanilla' -and $_ -cne 'fabric' -and
         (-not $RemoveLegacyEntry -or $_ -cne "file/$LegacyPackName")
     })

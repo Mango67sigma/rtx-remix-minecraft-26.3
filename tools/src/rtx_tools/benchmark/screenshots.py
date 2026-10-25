@@ -268,7 +268,8 @@ def resolve_selection(config: dict) -> runner.BenchmarkSelection:
 
 
 def enabled_pack_names(config: dict) -> list[str]:
-    names = ["fabric"]
+    # The built-in baseline is the mod's own hidden pack, which Fabric API names for the mod id.
+    names = ["rtx-remix-renderer"]
     art = runner.configured_resource_pack(config)
     mode = str(art.get("mode") or "none").strip().lower()
     if mode == "pinned":

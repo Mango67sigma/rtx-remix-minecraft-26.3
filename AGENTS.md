@@ -82,9 +82,11 @@ the next launch. A present conf that fails to acquire still prevents renderer
 initialization; the error identifies the file.
 
 Baseline LabPBR textures live in `src/main/resources/assets/` and load through
-Fabric's `fabric` resource pack below user packs. Development setup, `rtx install`,
-and the release installer use `packaging/migrate_resource_packs.ps1` to remove
-their exactly identified legacy baseline copies and migrate existing pack order.
+the mod's own hidden `rtx-remix-renderer` resource pack, which Fabric API keeps
+above vanilla and below user packs and leaves out of `options.txt`. Development
+setup, `rtx install`, and the release installer use
+`packaging/migrate_resource_packs.ps1` to remove their exactly identified legacy
+baseline copies and migrate existing pack order.
 
 ## Architecture
 
