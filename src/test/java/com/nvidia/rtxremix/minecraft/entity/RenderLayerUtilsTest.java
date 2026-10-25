@@ -124,14 +124,14 @@ class RenderLayerUtilsTest {
     }
 
     /**
-     * The glint material adds the glint weighted by itself, the runtime's
-     * {@code BLEND_TYPE_COLOR_EMISSIVE}, the analogue of vanilla's {@code color += glint^2},
-     * emits its own texture, dimmer than eyes, and never takes subsurface scattering.
-     * The eyes' EMISSIVE class is unchanged.
+     * Without the launch knobs, the glint material adds the glint weighted by its alpha,
+     * the eyes' class, because its texture's alpha is now its brightness
+     * ({@code RemixEntitySubmitterGlintAlphaTest}); it emits its own texture, dimmer than
+     * eyes, and never takes subsurface scattering. The eyes' EMISSIVE class is unchanged.
      */
     @Test
-    void theGlintMaterialIsAColourWeightedEmissiveBlendDimmerThanEyes() {
-        assertEquals(MaterialInfoOpaqueEXT.BLEND_TYPE_COLOR_EMISSIVE,
+    void theGlintMaterialIsAnAlphaWeightedEmissiveBlendDimmerThanEyes() {
+        assertEquals(MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE,
                 RemixEntitySubmitter.blendTypeFor(RenderLayerUtils.SurfaceMode.GLINT));
         assertEquals(MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE,
                 RemixEntitySubmitter.blendTypeFor(RenderLayerUtils.SurfaceMode.EMISSIVE));
@@ -140,6 +140,7 @@ class RenderLayerUtilsTest {
         assertFalse(RemixEntitySubmitter.emitsAlbedo(RenderLayerUtils.SurfaceMode.CUTOUT));
         float glint = RemixEntitySubmitter.emissiveIntensityFor(RenderLayerUtils.SurfaceMode.GLINT);
         assertTrue(glint > 0f && glint < RemixEntitySubmitter.EMISSIVE_INTENSITY);
+        assertEquals(RemixEntitySubmitter.GLINT_EMISSIVE_INTENSITY, glint);
         assertEquals(RemixEntitySubmitter.EMISSIVE_INTENSITY,
                 RemixEntitySubmitter.emissiveIntensityFor(RenderLayerUtils.SurfaceMode.EMISSIVE));
         assertFalse(RemixEntitySubmitter.shouldAttachSubsurface(true, RenderLayerUtils.SurfaceMode.GLINT));

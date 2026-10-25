@@ -91,7 +91,8 @@ import net.minecraft.world.phys.Vec3;
  *   pattern stack by its cuboid and every layer's sprite and tint in paint order, anything
  *   else by a hash of its vertices</li>
  *   <li>{@code materialCache}, {@link RemixMaterial} keyed by texture and render-phase behavior</li>
- *   <li>{@code textureSets}, owned albedo and LabPBR channel textures keyed by texture identifier</li>
+ *   <li>{@code textureSets}, owned albedo and LabPBR channel textures keyed by texture identifier,
+ *   and {@code glintTextureSets}, the same for GLINT materials with brightness-derived alpha</li>
  * </ul>
  *
  * <p>The mesh pool is shared across owners and frames. Identical cuboids or item
@@ -125,8 +126,12 @@ public class RemixEntitySubmitter {
             TEXT_QUAD_STEP * (RemixCapturingConsumer.MAX_VERTICES / 4);
     private static final float POM_DISPLACE_IN = 0.25f;
     static final float EMISSIVE_INTENSITY = 100.0f;
-    /** See {@link #emissiveIntensityFor}; the launch-phase tuning knob for the glint's brightness. */
+    /** The glint's default brightness; see {@link #emissiveIntensityFor} and {@link #GLINT_INTENSITY_PROPERTY}. */
     static final float GLINT_EMISSIVE_INTENSITY = EMISSIVE_INTENSITY * 0.25f;
+    /** Overrides {@link #GLINT_EMISSIVE_INTENSITY} per launch; see {@link #glintEmissiveIntensity}. */
+    static final String GLINT_INTENSITY_PROPERTY = "rtxremix.entity.glintIntensity";
+    /** Selects the glint's runtime blend class per launch; see {@link #glintBlendType}. */
+    static final String GLINT_BLEND_PROPERTY = "rtxremix.entity.glintBlend";
     private static final float COPPER_BEACON_LENS_EMISSION_SCALE = 100.0f;
     private static final float THIN_SSS_MEASUREMENT_DISTANCE = 0.75f;
     private static final int DEFAULT_CUTOUT_ALPHA_REFERENCE = 1;
@@ -586,6 +591,8 @@ public class RemixEntitySubmitter {
     private final IdentityHashMap<CopperBeaconBlockEntity, BeaconLensAssets>
             beaconLensAssets = new IdentityHashMap<>();
     private final Map<Identifier, EntityTextureSet> textureSets = new HashMap<>();
+    /** GLINT materials' texture sets, whose albedo alpha is derived by {@link #deriveGlintAlpha}. */
+    private final Map<Identifier, EntityTextureSet> glintTextureSets = new HashMap<>();
     private final Map<Identifier, TextureSize> dynamicTextureSizes = new HashMap<>();
     private final Map<Identifier, Long> dynamicTextureVersions = new HashMap<>();
     private final Set<Identifier> failedTextures = new HashSet<>();
@@ -2143,15 +2150,20 @@ public class RemixEntitySubmitter {
         if (failedTextures.contains(textureId)) return;
 
         try {
-            EntityTextureSet textures = textureSets.get(textureId);
+            // A glint material gets its own copy of the texture whose alpha is the
+            // texel's brightness (deriveGlintAlpha), so it never shares a set with a
+            // non-glint layer that binds the same texture.
+            boolean glintAlpha = usesGlintAlpha(materialKey.surfaceMode(), textureId);
+            Map<Identifier, EntityTextureSet> sets = glintAlpha ? glintTextureSets : textureSets;
+            EntityTextureSet textures = sets.get(textureId);
             if (textures == null) {
                 textures = RenderLayerUtils.UNTEXTURED_LAYER_ID.equals(textureId)
                         ? createUntexturedTextureSet()
                         : isAtlasTexture(textureId)
                         ? tryCreateAtlasTextureSet(textureId)
-                        : tryCreateTextureSet(textureId);
+                        : tryCreateTextureSet(textureId, glintAlpha);
                 if (textures == null) return;
-                textureSets.put(textureId, textures);
+                sets.put(textureId, textures);
             }
 
             RemixMaterial material = createMaterial(materialKey, textures);
@@ -2183,7 +2195,45 @@ public class RemixEntitySubmitter {
         return textures;
     }
 
-    private EntityTextureSet tryCreateTextureSet(Identifier textureId) throws Exception {
+    /**
+     * Whether a material's albedo is rebuilt with {@link #deriveGlintAlpha}: only a GLINT
+     * layer over a plain texture. Atlases and the untextured white texel keep their own paths.
+     */
+    static boolean usesGlintAlpha(RenderLayerUtils.SurfaceMode surfaceMode, Identifier textureId) {
+        return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
+                && !RenderLayerUtils.UNTEXTURED_LAYER_ID.equals(textureId)
+                && !isAtlasTexture(textureId);
+    }
+
+    /**
+     * Makes a glint texture's alpha carry its pattern, in place, once per texture set.
+     *
+     * <p>Vanilla's glint textures are opaque everywhere ({@code enchanted_glint_item.png}
+     * has no alpha channel, {@code enchanted_glint_armor.png} no {@code tRNS}), and vanilla
+     * never reads their alpha: the glint is added as {@code glint^2}. The runtime composites
+     * a blended layer coplanar with its surface by the layer's alpha, so an opaque glint
+     * covers the item with its dark purple. Each texel's alpha becomes its brightest channel,
+     * scaled by any alpha it already had, and its colour is kept. Under an alpha-weighted
+     * add the texel then contributes {@code rgb * max(r, g, b)}: exactly vanilla's
+     * {@code c^2} in the dominant channel and a little more in the others. Luminance would
+     * be the other choice, but the glint is saturated blue-purple, which luminance weighs at
+     * a fraction of its visible strength (the item glint's mean texel, 88/42/143, has
+     * luminance 59 against a maximum of 143), so the pattern would nearly vanish. Dark
+     * texels become transparent and leave the item showing.
+     */
+    static void deriveGlintAlpha(byte[] rgba) {
+        for (int i = 0; i + 3 < rgba.length; i += 4) {
+            int r = rgba[i] & 0xFF;
+            int g = rgba[i + 1] & 0xFF;
+            int b = rgba[i + 2] & 0xFF;
+            int a = rgba[i + 3] & 0xFF;
+            int brightness = Math.max(r, Math.max(g, b));
+            rgba[i + 3] = (byte) ((brightness * a + 127) / 255);
+        }
+    }
+
+    private EntityTextureSet tryCreateTextureSet(Identifier textureId, boolean glintAlpha)
+            throws Exception {
         var client = Minecraft.getInstance();
         if (client == null) return null;
         ResourceManager rm = client.getResourceManager();
@@ -2218,6 +2268,8 @@ public class RemixEntitySubmitter {
             pixels = Arrays.copyOf(cached.data(), cached.data().length);
             cachedPixels = cached;
         }
+        // Both branches hand over a fresh array, so the rewrite touches no shared pixels.
+        if (glintAlpha) deriveGlintAlpha(pixels);
 
         Identifier spriteId = deriveLabPBRSpriteId(textureId);
         NativeImage nImg = loadVariant(rm, spriteId, "_n");
@@ -2461,6 +2513,11 @@ public class RemixEntitySubmitter {
         Long appliedVersion = dynamicTextureVersions.get(textureId);
         if (appliedVersion != null && appliedVersion >= pixels.version()) return;
 
+        if (glintTextureSets.containsKey(textureId)) {
+            // The glint copy's alpha is derived from the pixels; rebuild it from the new ones.
+            invalidateMaterialTexture(textureId);
+            return;
+        }
         EntityTextureSet textures = textureSets.get(textureId);
         if (textures == null || textures.albedo == null || textures.albedo.isDeleted()) return;
 
@@ -2528,6 +2585,8 @@ public class RemixEntitySubmitter {
         }
         EntityTextureSet textures = textureSets.remove(textureId);
         if (textures != null) textures.destroy();
+        EntityTextureSet glintTextures = glintTextureSets.remove(textureId);
+        if (glintTextures != null) glintTextures.destroy();
         dynamicTextureSizes.remove(textureId);
         dynamicTextureVersions.remove(textureId);
         failedTextures.remove(textureId);
@@ -2668,9 +2727,15 @@ public class RemixEntitySubmitter {
         if (textures.normal != null) materialBuilder.normalTexture(textures.normal.getHandle());
         RemixTexture emissive = emitsAlbedo(key.surfaceMode())
                 ? textures.albedo : textures.emissive;
+        float emissiveIntensity = emissiveIntensityFor(key.surfaceMode());
         if (emissive != null) {
             materialBuilder.emissiveTexture(emissive.getHandle())
-                    .emissiveIntensity(emissiveIntensityFor(key.surfaceMode()));
+                    .emissiveIntensity(emissiveIntensity);
+        }
+        if (key.surfaceMode() == RenderLayerUtils.SurfaceMode.GLINT) {
+            LOGGER.info("Glint material {}: blendType={}, emissiveIntensity={}, alphaFromBrightness={}",
+                    key.textureId(), blendTypeFor(key.surfaceMode()), emissiveIntensity,
+                    usesGlintAlpha(key.surfaceMode(), key.textureId()));
         }
 
         MaterialInfo info = materialBuilder.opaqueExt(opaque.build()).build();
@@ -2689,15 +2754,51 @@ public class RemixEntitySubmitter {
     /**
      * The runtime blend class of a blended emissive mode. EMISSIVE layers (eyes, the
      * translucent-emissive and additive pipelines) add their texture weighted by its
-     * alpha. GLINT adds its texture weighted by itself, source colour times source
-     * colour plus the destination, which is vanilla's {@code BlendFunction.GLINT} and
-     * the {@code color += glint^2} of its single-pass glint shaders, so the glint
-     * shimmers over the surface instead of standing as an opaque purple shell.
+     * alpha, and so does GLINT by default: its texture's alpha is its brightness
+     * ({@link #deriveGlintAlpha}), so the add lands where the pattern is bright and the
+     * item shows through elsewhere. {@value #GLINT_BLEND_PROPERTY} picks the glint's class
+     * per launch, read when a glint material is created; see {@link #glintBlendType}.
      */
     static int blendTypeFor(RenderLayerUtils.SurfaceMode surfaceMode) {
         return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
-                ? MaterialInfoOpaqueEXT.BLEND_TYPE_COLOR_EMISSIVE
+                ? glintBlendType(System.getProperty(GLINT_BLEND_PROPERTY))
                 : MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
+    }
+
+    /**
+     * The glint's blend class for a {@value #GLINT_BLEND_PROPERTY} value: {@code alphaEmissive}
+     * (the default, also for an absent or unrecognised value), {@code emissive} or
+     * {@code colorEmissive}. The runtime header documents none of the classes, so this is
+     * a live-trial knob rather than a settled choice.
+     */
+    static int glintBlendType(String value) {
+        if (value == null || value.isBlank()) return MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
+        switch (value.trim()) {
+            case "alphaEmissive": return MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
+            case "emissive": return MaterialInfoOpaqueEXT.BLEND_TYPE_EMISSIVE;
+            case "colorEmissive": return MaterialInfoOpaqueEXT.BLEND_TYPE_COLOR_EMISSIVE;
+            default:
+                LOGGER.warn("Ignoring -D{}={}: expected alphaEmissive, emissive or colorEmissive",
+                        GLINT_BLEND_PROPERTY, value);
+                return MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
+        }
+    }
+
+    /**
+     * The glint's emissive intensity for a {@value #GLINT_INTENSITY_PROPERTY} value: a finite,
+     * non-negative float, else {@link #GLINT_EMISSIVE_INTENSITY}.
+     */
+    static float glintEmissiveIntensity(String value) {
+        if (value == null || value.isBlank()) return GLINT_EMISSIVE_INTENSITY;
+        try {
+            float parsed = Float.parseFloat(value.trim());
+            if (Float.isFinite(parsed) && parsed >= 0f) return parsed;
+        } catch (NumberFormatException ignored) {
+            // Falls through to the warning.
+        }
+        LOGGER.warn("Ignoring -D{}={}: expected a finite non-negative number",
+                GLINT_INTENSITY_PROPERTY, value);
+        return GLINT_EMISSIVE_INTENSITY;
     }
 
     /** Whether the mode's own texture is its emission, rather than a LabPBR emissive map. */
@@ -2709,11 +2810,12 @@ public class RemixEntitySubmitter {
     /**
      * Emission strength of a material. Vanilla adds glint over a lit surface at the
      * glint strength option, a fraction of the full brightness eyes are drawn at, so the
-     * glint emits at a quarter of {@link #EMISSIVE_INTENSITY}.
+     * glint emits at a quarter of {@link #EMISSIVE_INTENSITY} unless
+     * {@value #GLINT_INTENSITY_PROPERTY} says otherwise, read when a glint material is created.
      */
     static float emissiveIntensityFor(RenderLayerUtils.SurfaceMode surfaceMode) {
         return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
-                ? GLINT_EMISSIVE_INTENSITY
+                ? glintEmissiveIntensity(System.getProperty(GLINT_INTENSITY_PROPERTY))
                 : EMISSIVE_INTENSITY;
     }
 
@@ -2880,6 +2982,8 @@ public class RemixEntitySubmitter {
 
         for (EntityTextureSet textures : textureSets.values()) textures.destroy();
         textureSets.clear();
+        for (EntityTextureSet textures : glintTextureSets.values()) textures.destroy();
+        glintTextureSets.clear();
         dynamicTextureSizes.clear();
         dynamicTextureVersions.clear();
         failedTextures.clear();
