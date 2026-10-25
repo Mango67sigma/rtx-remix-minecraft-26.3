@@ -19,6 +19,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.Iterator;
 import java.util.List;
+import java.util.stream.Stream;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.renderer.SpriteCoordinateExpander;
 
@@ -42,12 +43,16 @@ import net.minecraft.client.renderer.SpriteCoordinateExpander;
 public abstract class ModelPartMixin {
 
     /**
-     * The class of the unmodifiable single-element list vanilla bakes a one-cube part's
-     * cubes into ({@code Stream.toList()} and {@code List.of(x)} share it). Only such a
-     * list borrows the iterator: its iteration cannot be observed by anyone else.
+     * The classes of the unmodifiable single-element lists a one-cube part's cubes can
+     * be. Vanilla bakes them with {@code Stream.toList()}, which yields a
+     * {@code ListN} even for one element because it admits nulls, while
+     * {@code List.of(x)} yields a {@code List12}; the two do not share a class. Only
+     * such a list borrows the iterator: its iteration cannot be observed by anyone else.
      */
     @Unique
-    private static final Class<?> rtxremix$SINGLE_IMMUTABLE_LIST = List.of(new Object()).getClass();
+    private static final Class<?> rtxremix$SINGLE_LIST_OF = List.of(new Object()).getClass();
+    @Unique
+    private static final Class<?> rtxremix$SINGLE_STREAM_LIST = Stream.of(new Object()).toList().getClass();
 
     @Shadow public float x;
     @Shadow public float y;
@@ -95,7 +100,7 @@ public abstract class ModelPartMixin {
         // multi-cube parts before the capture check pays for its thread-local lookup.
         if (target instanceof RemixCapturingConsumer consumer
                 && cubes.size() == 1
-                && cubes.getClass() == rtxremix$SINGLE_IMMUTABLE_LIST
+                && rtxremix$isImmutableList(cubes.getClass())
                 && consumer.isRemixCaptureActive()) {
             Iterator<ModelPart.Cube> iterator =
                     consumer.acquireSingletonCuboidIterator(cubes.getFirst());
@@ -104,5 +109,10 @@ public abstract class ModelPartMixin {
             }
         }
         return original.call(cubes);
+    }
+
+    @Unique
+    private static boolean rtxremix$isImmutableList(Class<?> listClass) {
+        return listClass == rtxremix$SINGLE_STREAM_LIST || listClass == rtxremix$SINGLE_LIST_OF;
     }
 }
