@@ -33,6 +33,16 @@ import net.minecraft.resources.Identifier;
 public class RemixVertexConsumerProvider {
 
     /**
+     * {@code -Drtxremix.entity.glint=true} captures enchantment glint as its own layer.
+     * Off by default for now: on 26.3 the additive glint layer renders as an opaque dark
+     * shell over the item (the glint textures carry no alpha and the blend material is
+     * untuned), which is worse than no shimmer. With it off, enchanted items look like
+     * their plain counterparts, as they effectively did in the 1.21.1 build, where the
+     * glint shell sat inside the item.
+     */
+    private static final boolean GLINT_CAPTURE = Boolean.getBoolean("rtxremix.entity.glint");
+
+    /**
      * Consumers created during the current entity's render, keyed by RenderType (and, for
      * a glint layer, the layer it overlays), in request order. Multiple layers per entity
      * are common (body + eyes + glint) but the count is small, so parallel arrays with a
@@ -130,7 +140,7 @@ public class RemixVertexConsumerProvider {
      * {@link #getBuffer} and is a layer of its own, as it is in vanilla.
      */
     public VertexConsumer getGlintBuffer(RenderType overlaid, RenderType glintSource) {
-        if (glintSource == null) {
+        if (glintSource == null || !GLINT_CAPTURE) {
             return null;
         }
         RenderType pass = RenderLayerUtils.glintPass(glintSource);
@@ -160,6 +170,11 @@ public class RemixVertexConsumerProvider {
         } else {
             // Nothing Remix can draw: shadow, debug overlays, lines, depth-only masks,
             // or text drawn over the whole scene regardless of depth.
+            return NoOpVertexConsumer.INSTANCE;
+        }
+        if (!GLINT_CAPTURE && RenderLayerUtils.surfaceMode(layer) == RenderLayerUtils.SurfaceMode.GLINT) {
+            // Vanilla's own glint passes (patterned shields, trimmed armour) are dropped
+            // with the capture's glint layers while glint capture is off.
             return NoOpVertexConsumer.INSTANCE;
         }
 
