@@ -37,6 +37,16 @@ cancels an unsaved recording; cancellation never saves it.
 `/rtx camera time` changes the world's time of day. It has nothing to do with
 the `time` playback clock, which is the argument to `play`.
 
+Time of day here is the overworld's day clock, in ticks of a 24000-tick day:
+Minecraft 26.3 keeps it as a world clock rather than a day-time field.
+Recording and still shots read it, and setting it, by command, by scrubbing,
+or from a waypoint during playback, updates your client's clock at once and,
+in single player, the integrated server's clock on the server thread. On a
+multiplayer server only your client's clock is written, so the server's own
+time updates can override it. The sky and its sun and moon, which read the
+sun angle the clock drives, and the time-of-day lighting profiles all follow
+that clock.
+
 While a recording is running and no screen is open, `=` moves the time of day
 forward and `-` moves it back. Hold `Ctrl` for larger steps. The shifted `+` on
 the main keyboard works through the same `=` key; numpad `+` and `-` are left to
@@ -116,7 +126,8 @@ The rules are:
   `catmull-rom`. That string is the version 1 discriminator and does not change.
 - A path needs at least two waypoints.
 - Every waypoint needs `timeMs`, `x`, `y`, `z`, `yaw`, and `pitch`. `timeOfDay`
-  is the only optional field, and is normalized into 0 through 23999.
+  is the only optional field, and is normalized into 0 through 23999 ticks of
+  the overworld clock.
 - The first `timeMs` is `0`, and later ones are strictly increasing
   non-negative integers.
 - Position, yaw, and pitch must be finite numbers.

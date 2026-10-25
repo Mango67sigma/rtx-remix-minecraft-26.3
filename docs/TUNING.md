@@ -21,6 +21,22 @@ The named owner class defines each property's current default, accepted range,
 and invalid-value behaviour. Sizes are in bytes and durations in nanoseconds
 unless the key name says otherwise.
 
+## Graphics Backend
+
+The GL interop needs Minecraft's OpenGL backend. Minecraft 26.3 can also run
+on Vulkan, chosen by the `--graphicsBackend` launch argument or by Graphics API
+in Video Settings.
+
+| Key | Effect | Owner |
+|---|---|---|
+| `rtxremix.forceOpenGl` | Start the game on OpenGL when the launcher passes no `--graphicsBackend`, overriding the Graphics API option, through the same path the launch argument takes. Set to false to leave the choice to the launcher and the option. On any backend but OpenGL the renderer refuses to initialize, logs `RTX Remix needs the OpenGL graphics backend, but Minecraft is running on ...`, and the game renders through vanilla | `GraphicsBackendPolicy`, `MinecraftClientMixin` |
+
+A launcher that passes `--graphicsBackend` always wins over this property.
+Only `VULKAN` tries Vulkan first; with any choice the game falls back to the
+other backend when the first cannot start, and on Vulkan the renderer refuses
+to initialize. Neither the developer tools nor the installer pass that
+argument.
+
 ## Terrain Capture
 
 Vanilla's chunk workers capture section geometry and hand it to the render
@@ -46,9 +62,9 @@ long a worker may wait.
 | `rtxremix.chunk.neighbourReflagFilter` | Drop the 3x3x3 neighbour rebuild flags a light update packet raises for each section it carries light for, while capture is on: Remix terrain reads no client light, so those rebuilds would recapture identical geometry. Set to false to restore them. Chunk loads, block updates, and biome updates stay vanilla; since Minecraft 26.3 a section's first build already waits until all eight neighbour columns are loaded and lit | `NeighbourReflagFilter` |
 | `rtxremix.light.vanillaSnapshot` | Set to true to make the client light engine clone its section map every pass as vanilla does. With false, while capture is on, the live map is published as the snapshot, which rests on nothing but the render thread reading client light | `ClientLightSnapshotPolicy` |
 | `rtxremix.light.vanillaSurfaceScan` | Set to true to start each column's sky-light surface walk at the top of the chunk as vanilla does. With false the walk is seeded at the packet's `WORLD_SURFACE` height, which skips the air-over-air pairs that were most of the render thread's chunk-apply cost; the remedy for a sender whose heightmaps do not match its blocks | `SkyLightSurfaceScanPolicy` |
-| `rtxremix.vanillaVisibilityWalk` | Set to true to leave the chunk visibility walk to vanilla with RTX on instead of the mod's allocation-free port, which must produce the same visible set | `ChunkRenderingDataPreparerMixin` |
-| `rtxremix.logVisibleSet` | Log the size and a position hash of every full visibility walk's result whenever it changes, to compare the port against vanilla over one camera | `ChunkRenderingDataPreparerMixin` |
-| `rtxremix.joinHold` | Keep vanilla's terrain-download screen up until frame times settle after a world join, with a short bounded hold, so the first-sight mesh, pipeline, and BLAS costs land behind the screen. Set to false to disable the hold | `JoinBurstHold` |
+| `rtxremix.vanillaVisibilityWalk` | Set to true to leave the chunk visibility walk to vanilla with RTX on instead of the mod's allocation-free port, which must produce the same graph. The walk still runs on the mod's low-priority thread either way | `ChunkRenderingDataPreparerMixin` |
+| `rtxremix.logVisibleSet` | After every full and partial walk, log the graph's node count, the number of chunks it waits for, and a hash of every node's section, step, and direction masks, whenever that signature changes. The line reads `Visible set (<port or vanilla> walk): ...`; compare the last line of each walk over one camera | `ChunkRenderingDataPreparerMixin` |
+| `rtxremix.joinHold` | Keep vanilla's level-loading screen up until frame times settle after a world join, with a short bounded hold, so the first-sight mesh, pipeline, and BLAS costs land behind the screen. Set to false to disable the hold | `JoinBurstHold` |
 
 `BlockDataQueue.acquireCapacity` is authoritative for waiting: a worker
 initially waits up to the configured budget (500 ms by default, with a 50 ms
@@ -59,10 +75,21 @@ The initial budget is not a hard upper bound on total waiting. The render
 thread's synchronous builds never wait because it is the sole consumer.
 
 The defaults bound worker captures to 512 items and 128 MiB. An evicted capture
-that still belongs to a resident section is re-flagged through
-`BuiltChunk.scheduleRebuild`, up to 128 per frame, and contributes to
-`Chunk.CaptureEvicted`. The queue and `ChunkManager` own these limits; consult
-their current constants when interpreting a capture.
+that still belongs to a resident section is re-flagged dirty in vanilla's
+`SectionUpdateTracker`, which ignores a section outside its window, up to 128
+per frame, and contributes to `Chunk.CaptureEvicted`. The queue and
+`ChunkManager` own these limits; consult their current constants when
+interpreting a capture.
+
+Two terrain policies have no switch because nothing installs them in 26.3. The
+coarse frustum index (`BuiltChunkFrustumIndex`) is deferred: vanilla's own
+octree now culls the visible sections, and its emit order schedules compiles,
+so the index would have to reproduce that order to come back. The dynamic
+buffer upload policy (`DynamicBufferUpload`) lost its hook with the 1.21.1
+`VertexBuffer` class; 26.3 writes buffers with `glBufferSubData` and allocates
+them once, so the per-upload re-specification it worked around should be gone.
+That has not been measured under the interop yet. Both classes still compile
+and are tested, and neither has any effect.
 
 ## Terrain Assembly And Publication
 
@@ -276,7 +303,7 @@ directory for an installed client. Portable Prism keeps the former at
 | `camera-paths/<world-key>/` | you | Your recordings | Loses them, so keep this one |
 | `benchmark/` | benchmark harness | Trigger file, status heartbeat, results, and screenshots | Safe |
 | `saves/<world>/rtx-remix/confs/` | map author | Read when you join that world | Part of the map, not of the install |
-| `saves/<world>/data/rtx_remix_zones.dat` | mod, per save | Zone definitions for that world | Loses the zones defined in that world |
+| `saves/<world>/data/rtx-remix-renderer/zones.dat` | mod, per save | Zone definitions for that world. A save written by an earlier, 1.21.1-based release holds them in `data/rtx_remix_zones.dat`; that file is imported once when the new one is absent and is left in place | Loses the zones defined in that world |
 | `logs/latest.log` | game | Where the mod reports what it did and why | Safe |
 
 ## Resource Pack Inputs

@@ -133,18 +133,25 @@ You can delete the file to start over.
 The registry is built after `initializeRemix()` because its getters and
 appliers bind to the live renderer managers. A renderer reinitialization path
 must rebuild those bindings. `RtxSettingsFactory` defines controls,
-`RtxOptionFactory` adapts them to vanilla `SimpleOption`, and
+`RtxOptionFactory` adapts them to vanilla `OptionInstance`, and
 `RtxSettingsCategoryScreen` commits pending values on close.
 
 ### Deferred Does Not Mean Apply On Release
 
 `RtxSetting.deferSliderApply()` makes
 `RtxOptionFactory.sliderApplyPolicy` return `applyValueImmediately() == false`.
-In Minecraft 1.21.1, `SimpleOption.OptionSliderWidgetImpl` then rearms
-`timeToApply = now + 600 ms` on each drag step and applies the pending value
-from `renderWidget` after that pause. `SliderWidget.onRelease` does not apply
-it. The category's `close()` also calls
-`OptionListWidget.applyAllPendingValues()`.
+In Minecraft 26.3, `OptionInstance.OptionInstanceSliderButton` then rearms
+`delayedApplyAt = now + 600 ms` on each drag step and applies the pending value
+from `extractWidgetRenderState` once that pause has passed. Its `onRelease`
+does not apply a deferred value. The category's `onClose()` also calls
+`OptionsList.applyUnsavedChanges()`.
+
+After the deferred apply, the button calls `resetValue()`, which moves the
+thumb to the canonical position of the value the option now holds. An
+immediate slider does the same on release. On the exponential sliders a drag
+that ends inside the dead zone that maps to zero therefore snaps to the left
+end. The widget is vanilla's own and final, so this is vanilla behaviour, not a
+mod defect.
 
 An expensive applier can therefore run once per long pause during a drag, not
 only once at its end. `clouds.vanillaEdgeSmoothness` and `clouds.size` accept
@@ -155,8 +162,8 @@ changed; only then does `RtxRemixMod.rebuildTerrainForMaterialSettings()`
 recreate shared materials and recapture terrain. Keep this separate from the
 Block Lights transaction.
 
-Ordinary `SimpleOption` sliders apply live, but their change-consumer runs only
-when the value differs from the option's current value. Returning to a displayed
+Ordinary `OptionInstance` sliders apply live, but their change-consumer runs
+only when the value differs from the option's current value. Returning to a displayed
 default is still a real write when the old value differs. A runtime-backed
 Image & Exposure setting remains a User Settings opinion even after that reset;
 the API has no clear operation.
@@ -182,10 +189,10 @@ still starts.
 
 ### Widget Layout And Labels
 
-`OptionListWidget` normally pairs two 150 px controls per row, or uses one
-310 px control. A `Label: Value` string has a 146 px budget after its margins;
+`OptionsList` normally pairs two 150 px controls per row, or uses one 310 px
+control. A `Label: Value` string has a 146 px budget after its margins;
 the 98 px footer buttons have 94 px. Overflow scrolls as a marquee through
-`ClickableWidget.drawScrollableText`, rather than wrapping. A screenshot then
+`AbstractWidget.extractScrollingStringOverContents`, rather than wrapping. A screenshot then
 catches an arbitrary clipped label or value.
 
 When adding a control, register its widest value in `SettingsRowWidthTest` and
@@ -193,9 +200,10 @@ add its label and tooltip in `assets/rtx-remix-renderer/lang/en_us.json`.
 The test measures real default-font advances. Keep values short and shorten
 labels before values; an overflowing existing label is not a precedent.
 
-Do not refresh a `GameOptionsScreen` with `clearAndInit()`: its persistent
-`ThreePartsLayoutWidget` would acquire another list and dark background.
-Open a fresh screen instance, as the settings reset paths do.
+Do not refresh an `OptionsSubScreen` with `rebuildWidgets()`: `init()` adds
+its contents to the screen's persistent `HeaderAndFooterLayout` again, so the
+layout would acquire another list. Open a fresh screen instance, as the
+settings reset paths do.
 
 ## Going Further
 

@@ -67,9 +67,11 @@ mutation of a retained instance must be followed immediately by a submit, or
 the change never reaches the scene.
 
 **A mixin that cancels vanilla work inherits its side effects.** Preserve the
-net GL, fog, lightmap and framebuffer state the caller expects, not only the
-entry calls. Never cancel `WorldRenderer.render()` itself: that traversal
-hosts Remix's frame. See [Cancelling Vanilla Render Work](#cancelling-vanilla-render-work).
+render-pass bindings, buffer writes, and other state the caller and the rest
+of its pass rely on, not only the entry calls. Never cancel
+`LevelExtractor.extract` or `LevelRenderer.render` themselves: that extraction
+and traversal host Remix's frame. See
+[Cancelling Vanilla Render Work](#cancelling-vanilla-render-work).
 
 **Only mixins live in the mixin package.** Mixin reserves that package, and a
 helper class placed there crashes world load. `MixinPackageBoundaryTest` fails
@@ -188,32 +190,60 @@ for new script text and preserve the BOM on `packaging/installer.ps1`.
 
 ### Cancelling Vanilla Render Work
 
-A `HEAD` cancel, `@Redirect`, or `@WrapOperation` that skips a render method
-must leave the net state its caller expects. Stale GL state can slow
-`Remix.Present` only on another driver, without an obvious visual failure.
-Disassemble both ends of the target with `javap -p -c` before changing it.
+A `HEAD` cancel, `@Redirect`, `@WrapOperation`, or `@WrapWithCondition` that
+skips a render method must leave the net state its caller expects. Disassemble
+both ends of the target with `javap -p -c` before changing it.
 
-At entry, look for callbacks, `RenderSystem` calls,
-`LightmapTextureManager.enable()`, and `Framebuffer.beginWrite`.
-`renderSky` calls its fog-setup `Runnable` immediately. At return, look for
-cleanup: `ParticleManager.renderParticles` enables the lightmap and depth
-test, then ends with `depthMask(true)`, `disableBlend()`, and lightmap disable.
-Replay the net change, not just the entry. `renderLayer` pairs
-`startDrawing()` with `endDrawing()`, so skipping it is state-neutral while
-replaying only its entry would not be.
+Minecraft 26.3 draws through `RenderPass` objects. A draw sets its pipeline
+and its uniforms and samplers on the pass with `setPipeline` and `setUniform`,
+and the GL backend applies that state at each draw, so a skipped draw leaves no
+stray GL state behind. Three things still need checking:
 
-A pure read or early-return guard needs no replay. In Minecraft 1.21.1,
-`renderClouds` returns for a dimension without cloud height, `renderWeather`
-returns without rain, and `renderEntity` starts with position interpolation.
-Check the pinned Minecraft version rather than treating these examples as
-permanent contracts.
+- **Bindings later draws read.** A binding set on a pass stays set for the rest
+  of that pass. `ChunkSectionsToRender.renderGroup` sets `TerrainUniform`, the
+  block atlas, and the lightmap on the main pass before drawing. The solid and
+  translucent features that follow it bind their own textures from their render
+  types, so skipping it is safe; a later draw that relied on those bindings
+  would not be.
+- **Work outside the pass.** `CloudRenderer.prepare` writes the cloud buffers
+  and requests a larger shared quad index buffer, and
+  `WeatherEffectRenderer.prepare` uploads vanilla's weather vertex buffer. Both run before the pass that draws
+  them. Skip a draw, not the preparation another consumer needs: the weather
+  capture reads the buffer `prepare` filled.
+- **Passes a method opens itself.** `ChunkSectionsToRender.renderOit` and
+  `CloudRenderer.renderOit` each open and close their own order-independent
+  transparency pass with try-with-resources, so skipping either is
+  self-contained.
 
-Cancel only draws that Remix replaces, such as terrain layers, particles and
-clouds. Do not bypass the outer vanilla traversal: camera, frustum, matrices,
-framebuffers, tick delta, in-place entity capture, section scheduling, and
-`WorldRenderEvents` all come from it. Judge a cancellation by its injection
-and state correctness, not only a frame-time delta. A GPU-bound run can hide a
-real render-thread saving.
+What the mod cancels in 26.3, each only while Remix renders the world:
+
+| Hook | Vanilla method | Why it needs no replay |
+|---|---|---|
+| `ChunkSectionsToRenderMixin` | `ChunkSectionsToRender.renderGroup` and `renderOit`, at the head | Pure terrain draws; the visibility walk, compiles, and uploads around them still run |
+| `WeatherEffectRendererMixin` | The private `WeatherEffectRenderer.render(WeatherRenderState, RenderPass, RenderPipeline)`, which both `render` and `renderOit` call | It sets its own pipeline and bindings; `prepare` still runs and is captured at its return |
+| `CloudRendererMixin` | `CloudRenderer.prepare`, `render`, and `renderOit`, decided once in `prepare` for the frame | `prepare` touches only the cloud renderer's own buffers, so when vanilla clouds return it rebuilds what changed |
+| `LevelRendererParticleMixin` | `ParticlesRenderState.submit` in `LevelRenderer.submitFeatures` | Skipping a submit queues no nodes and opens no pass; ticking and extraction still run |
+
+Entity, block-entity, first-person, block-damage, and block-outline capture
+divert a submit into the mod's own collector rather than cancel a draw, and a
+submit vanilla never receives costs it no state. The mod's own draws into
+Minecraft's targets, the Remix composite and the weather overlay, go through
+their own `RenderPass` and `RenderPipeline`. Raw GL is reserved for work outside
+any open pass: `AtmosphericSkyGenerator` restores the current program, the
+texture units, and the buffer bindings the GL backend caches.
+
+A pure read or early-return guard needs no replay. In Minecraft 26.3,
+`WeatherEffectRenderer.render` returns when there are no columns or no buffer,
+and `LevelRenderer` skips cloud preparation and drawing when the cloud option is
+Off or the cloud colour is fully transparent. Check the pinned Minecraft version
+rather than treating these examples as permanent contracts.
+
+Cancel only draws that Remix replaces, such as terrain, weather, particles and
+clouds. Do not bypass vanilla's extraction or the frame graph it feeds: camera,
+frustum, matrices, render targets, tick delta, the render states the capture
+reads, section scheduling, and Fabric's `LevelRenderEvents` all come from them.
+Judge a cancellation by its injection and state correctness, not only a
+frame-time delta. A GPU-bound run can hide a real render-thread saving.
 
 ### Reading Vanilla Bytecode
 
@@ -222,6 +252,10 @@ jar are the names the mod targets: no mappings, no refmap. The merged jar Loom
 caches is enough for `javap`; `gradlew genSources` additionally writes a
 decompiled sources jar next to the processed jar under
 `.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-merged-<hash>/26.3/`.
+Those sources are decompiled after the mod's and Fabric's access wideners are
+applied, so a member they show as `public` may be private in the game. Check
+access flags, and whether a member or call exists at all, with `javap -p` on
+the unmodified merged jar before adding or deleting an access-widener line.
 Earlier versions and the Yarn- or Mojang-mapped jars of the 1.21.1 era remain
 in the cache after a version bump; check the version in the path.
 
@@ -239,22 +273,32 @@ the extraction afterwards. Do not leave thousands of class files in the tree.
 
 ### Verifying A Mixin Injection
 
-`Mixing X from ... into net.minecraft...` in `run/logs/debug.log` proves
-registration, not an applied injection or an executed target. The check reads
-Loom's development client, which `runClient`, Fabric's standard
-Gradle task, starts from `run/`. Temporarily add `-Dmixin.debug.export=true` to
-the client `vmArgs` in `build.gradle`, launch `runClient`, and disassemble the
-transformed class under
-`run/.mixin.out/class/<package path>/<Class>.class` with `javap -p -c`.
-Classes are exported at load, so a later shutdown crash does not invalidate
-the export.
+`Mixing X from ... into net.minecraft...` (or `com.mojang...` for the
+`renderpearl` GPU classes such as `FrontendGpuSurface` and `GlBackend`) in
+`run/logs/debug.log` proves registration, not an applied injection or an
+executed target. The check reads Loom's development client, which `runClient`,
+Fabric's standard Gradle task, starts from `run/`. Temporarily add
+`-Dmixin.debug.export=true` to the client `vmArgs` in `build.gradle`, launch
+`runClient`, and disassemble the transformed class under
+`run/.mixin.out/class/<package path>/<Class>.class` with `javap -p -c`, for
+example `run/.mixin.out/class/net/minecraft/client/renderer/chunk/ChunkSectionsToRender.class`.
+A mixin on a nested target, such as `RebuildTaskMixin` on
+`SectionRenderDispatcher$RenderSection$CompileTask`, exports under the nested
+class's binary name. Classes are exported at load, so a later shutdown crash
+does not invalidate the export.
 
 An `@Inject` merges a `handler$<id>$rtx-remix-renderer$<handler name>` method
 and a call at the intended offset: `invokespecial` for a private instance
-handler, `invokestatic` for a static one. If the call is present but does not
-fire, investigate vanilla's frustum, dimension, cloud-mode and weather gates.
-Exports, the classes loaded from `build/classes/`, and the JAR in
-`build/libs/` all use the game's own names; nothing is remapped. Remove the diagnostic flag and export afterwards.
+handler, `invokestatic` for a static one. MixinExtras injectors
+(`@WrapOperation`, `@WrapWithCondition`, `@WrapMethod`,
+`@ModifyExpressionValue`) merge handlers under their own prefixes, such as
+`wrapOperation$` and `wrapWithCondition$`; search the export for the handler
+name. If the call is present but does not fire, investigate vanilla's frustum,
+dimension, cloud-mode, weather and render-state gates, and whether the frame
+reached `LevelExtractor.extract` at all. Minecraft 26.3 ships unobfuscated, so
+the exports, the classes loaded from `build/classes/`, and the JAR in
+`build/libs/` all use the game's own names; nothing is remapped. Remove the
+diagnostic flag and export afterwards.
 
 ## Tests
 
@@ -330,9 +374,10 @@ local runtime. Keep the shipped `packaging/rtx.conf` matched to the runtime too.
 `tools\rtx.bat launch` rebuilds and installs each revision, and refuses to start
 while a client from the checkout is still running.
 
-F1 hides the first-person hand as well as the HUD. Vanilla skips
-`HeldItemRenderer.renderItem` when the HUD is hidden, and Remix captures from
-that call. Do not use F1 for a hand or held-item comparison. To avoid chat text,
+F1 hides the first-person hand as well as the HUD. Vanilla's
+`GameRenderer.renderItemInHand` skips
+`FirstPersonHandsAndItemsRenderer.submitHandsWithItems` when the HUD is hidden,
+and Remix captures the hand from that call. Do not use F1 for a hand or held-item comparison. To avoid chat text,
 wait eleven seconds after the last command, beyond its ten-second fade.
 
 [Remix debug views](docs/GETTING_STARTED.md#viewing-a-remix-debug-view) separate

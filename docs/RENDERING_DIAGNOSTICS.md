@@ -9,9 +9,9 @@ guide explains failure signatures and the ownership boundaries behind them;
 
 Fabric's `ClientPlayConnectionEvents.JOIN` and `DISCONNECT` are not paired.
 `DISCONNECT` fires when the connection closes. A server reconfiguration
-(`EnterReconfigurationS2CPacket`) switches the play handler to a configuration
-handler without closing that connection, clears `client.world`, and fires
-`JOIN` again when play resumes. Modded servers and proxies switching backends
+(`ClientboundStartConfigurationPacket`) switches the play handler to a
+configuration handler without closing that connection, clears `client.level`
+through `Minecraft.clearClientLevel`, and fires `JOIN` again when play resumes. Modded servers and proxies switching backends
 can do this; the integrated server does not reconfigure.
 
 The `RtxRemixMod` disconnect cleanup therefore does not run on that path:
@@ -22,8 +22,9 @@ must release the previous session before acquiring the next one, as the zone
 registry clear and `ConfLayerDriver.onWorldJoin` do.
 
 Schedule transition work through the client executor and re-check the session
-when it runs. A flag drained from `WorldRenderEvents` or the submit hook will
-not drain while the world is null. It can instead clear native resources in
+when it runs. A flag drained from a level-render hook (Fabric's
+`LevelRenderEvents`, the `LevelExtractor` and `LevelRenderer` mixins) or the
+submit hook will not drain while the level is null. It can instead clear native resources in
 the first frame of the next world, during their reinitialization.
 
 ## Terrain Recapture
@@ -31,9 +32,22 @@ the first frame of the next world, during their reinitialization.
 `RtxRemixMod.rebuildLoadedTerrain()` owns the full recapture sequence:
 
 1. Clear the Remix terrain through `ChunkManager.clear()`.
-2. Snapshot `builtSections(client)` before `WorldRenderer.reload()` forgets
-   the old section slots, then reload vanilla terrain.
+2. Snapshot `builtSections(client)` before `LevelExtractor.allChanged()`
+   invalidates the compiled geometry, then call it to reload vanilla terrain.
 3. Call `recaptureTerrainForRemix(client, built)` to explicitly queue that set.
+
+In 26.3 the reload itself is deferred: `allChanged()` makes a fresh
+`SectionUpdateTracker` and asks for the old view area to be replaced, and the
+next `LevelExtractor.extract` does that through
+`LevelRenderer.invalidateCompiledGeometry`. The queued set waits for that point
+(`LevelExtractorTerrainMixin`), is filtered against the new slots and the
+loaded world, and compiles nearest first. Its sections are marked clean in the
+tracker so the same frame's section updates do not queue them a second time.
+The scene therefore repopulates one frame after the request, and the log line
+`Queued N of M previously built sections for Remix recapture` reports the
+request-time filter. 26.3 also leaves a never-compiled section dirty until its
+eight neighbour columns are loaded and lit, so such a section in the set
+compiles once its neighbours arrive.
 
 The RTX toggle and material/texture reload paths preserve the same contract.
 A clear alone leaves an empty path-traced world until vanilla happens to
@@ -72,7 +86,18 @@ build the registry-bootstrapped catalog.
 
 Capture uses vanilla's `EntityRenderDispatcher` only on the render thread.
 The dispatcher owns one renderer and mutable model per entity type, so a
-parallel gather would race on model part angles.
+parallel gather would race on model part angles. `RemixSubmitNodeCollector`
+runs each model's `setupAnim` itself when it executes the submit, so the pose
+it captures is the one vanilla would have drawn this frame.
+
+Some geometry is absent from the traced scene by construction, not by a
+capture failure: enchantment glint, which 26.3 draws as a second sampler of
+the item's own pipeline; the block-entity crumbling overlay; shadow and
+outline copies; anything a mod renders through Fabric's `submitCustom` nodes;
+and particles on the item atlas or a mod atlas, such as the crumbs of a
+breaking tool or eaten food, which have no Remix material route yet. Text on
+grayscale glyph pages, which 26.3 draws with the `TEXT_GRAYSCALE` pipelines, is
+captured but has not yet been checked in game.
 
 Minecraft's model parts are rigid: their pivot belongs in the instance
 transform, not a skinning stream. Skinning would add CPU mesh work in the

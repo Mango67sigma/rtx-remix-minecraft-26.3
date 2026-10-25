@@ -180,8 +180,8 @@ checked for instrumentation failures. Java spans mirrored into Tracy must nest:
 a transition-style phase can be a Tracy zone only when every scope opened inside
 it closes before the phase does (the `MinecraftClient.render.*` phases and the
 vanilla profiler mirrors qualify). Spans that cross existing zones, such as the
-Fabric `WorldRender.vanilla.*` events, stay JFR-only and still show up in Tracy
-as plot lanes through `ProfileScope.plotOnClose(...)`. The enclosing
+`WorldRender.vanilla.*` phases marked from Fabric's `LevelRenderEvents` and the
+level-render mixins, stay JFR-only and still show up in Tracy as plot lanes through `ProfileScope.plotOnClose(...)`. The enclosing
 `MinecraftClient.render` and `WorldRenderer.render` spans also stay JFR-only:
 each enclosing zone pushes every Java zone one level deeper against
 `tracyJavaMaxDepth`, and the runtime's frame mark at Present already delimits the frame.
@@ -209,7 +209,7 @@ Java phase enablement unless `-Drtxremix.profile.clientTasks=false` disables it.
 Task names identify runnable classes. A task event commits after execution, so
 its stack identifies the drain site, not the task body. Inspect `taskName`,
 then use `jfr_phase_hotspots --phase "MinecraftClient.render.runTasks"` for
-CPU/allocation composition. A `NetworkThreadUtils` lambda can be a packet
+CPU/allocation composition. A `PacketUtils` lambda can be a packet
 handler forwarded from the network thread; a long packet-heavy drain can
 precede section rebuild and capture work rather than coincide with it.
 
@@ -309,8 +309,8 @@ GPU or architecture does not apply to a JFR-only run.
 paid at that API call rather than sky computation. Check surrounding
 `Interop.VKToGL`, `Interop.GLToVK`, `Remix.Present`, and
 `MinecraftClient.render.swapBuffers` spans; moving a sync point can relabel
-the same wait without removing it. `RenderSystemMixin` defines the current
-swap/present redirection. Turning the sky off also removes its dome light and
+the same wait without removing it. `FrontendGpuSurfaceMixin` defines the current
+present redirection. Turning the sky off also removes its dome light and
 changes GPU lighting work, so it is not a CPU-only control.
 
 Tracy's CPU-usage lane is machine-wide. For process contamination, inspect

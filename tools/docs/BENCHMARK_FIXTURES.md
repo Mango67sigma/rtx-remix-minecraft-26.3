@@ -221,7 +221,9 @@ not accidental authoring state.
 
 A successful flythrough does not prove zone or world-conf behavior was exercised.
 Check for marker command blocks whose text begins `rtx zone define`,
-`world/data/rtx_remix_zones.dat`, and `world/rtx-remix/confs/`. The sources
+`world/data/rtx-remix-renderer/zones.dat` (or, in a save from a 1.21.1-based
+release, `world/data/rtx_remix_zones.dat`, which is imported on first load), and
+`world/rtx-remix/confs/`. The sources
 `MarkerBlockScanner`, `ZonePersistentState`, `ZoneRegistry`, and
 `ConfLayerDriver` define their separate roles. With none of these inputs, a
 fixture can exercise only empty zone/world-layer paths.
