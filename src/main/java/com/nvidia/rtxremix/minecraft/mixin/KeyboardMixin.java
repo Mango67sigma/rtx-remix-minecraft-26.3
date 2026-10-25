@@ -22,7 +22,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
  * Routes keyboard input through the Remix overlay gate and intercepts the mod's raw shortcuts:
- * Alt+X without Control toggles the overlay, and while its capture session is open every key,
+ * Left Alt+X without Control toggles the overlay (Right Alt is AltGr on many layouts, see
+ * {@link RemixInputGate#onKey}), and while its capture session is open every key,
  * committed text and IME composition update is withheld from Minecraft. Plain R toggles camera
  * recording once an in-game command has armed it, and = and - scrub time of day while recording.
  *
@@ -56,17 +57,14 @@ public class KeyboardMixin implements RemixKeyboardAccess {
     private void rtxremix$onKey(long handle, int action, KeyEvent event, CallbackInfo ci) {
         int key = event.key();
         int mods = event.modifiers();
+        // The keyboard-state polls are SDL calls, so they run only for an X press.
         boolean xPress = action == InputConstants.PRESS && key == InputConstants.KEY_X;
-        boolean altDown = xPress
-                && ((mods & InputConstants.MOD_ALT) != 0
-                        || InputConstants.isKeyDown(InputConstants.KEY_LALT)
-                        || InputConstants.isKeyDown(InputConstants.KEY_RALT));
+        boolean leftAltDown = xPress && InputConstants.isKeyDown(InputConstants.KEY_LALT);
         boolean controlDown = xPress
-                && ((mods & InputConstants.MOD_CONTROL) != 0
-                        || InputConstants.isKeyDown(InputConstants.KEY_LCONTROL)
+                && (InputConstants.isKeyDown(InputConstants.KEY_LCONTROL)
                         || InputConstants.isKeyDown(InputConstants.KEY_RCONTROL));
         RemixInputGate.KeyDecision decision = RtxRemixMod.getRemixInputGate().onKey(
-                key, action, altDown, controlDown);
+                key, action, mods, leftAltDown, controlDown);
 
         if (decision == RemixInputGate.KeyDecision.BLOCK) {
             rtxremix$cancelKey(handle, ci);

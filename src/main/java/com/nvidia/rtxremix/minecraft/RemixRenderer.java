@@ -53,6 +53,7 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.PreferredGraphicsApi;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.FirstPersonHandsAndItemsRenderer;
 import net.minecraft.client.renderer.SubmitNodeCollector;
@@ -241,6 +242,13 @@ public class RemixRenderer {
             LOGGER.info("Graphics backend: {} ({})", deviceInfo.backendName(), deviceInfo.driverInfo());
 
             Minecraft client = Minecraft.getInstance();
+            PreferredGraphicsApi preferredApi = client.options.preferredGraphicsBackend().get();
+            if (preferredApi == PreferredGraphicsApi.VULKAN) {
+                // Only a Vulkan preference would have tried Vulkan first; the OpenGL force
+                // (MinecraftClientMixin, or the launcher's --graphicsBackend) overrode it.
+                LOGGER.info("Video Settings > Graphics API is set to {}; it is ignored while RTX Remix runs on OpenGL",
+                        preferredApi.getSerializedName());
+            }
             long sdlWindow = client.getWindow().handle();
 
             windowHandle = getHwndFromSdl(sdlWindow);
@@ -805,7 +813,12 @@ public class RemixRenderer {
 
             Camera camera = client.gameRenderer.mainCamera();
             float tickDelta = client.getDeltaTracker().getGameTimeDeltaPartialTick(true);
-            particleFuture = startParticleRenderTask(tickDelta, ProfileScope.currentFrameIndex());
+            // Particles take the level's partial tick, as vanilla extracts them
+            // (GameRenderer.extract: worldPartialTicks = getGameTimeDeltaPartialTick(false)),
+            // which is 1.0 while /tick freeze holds the game, so a frozen particle stays at
+            // its current position instead of jittering between its previous and current one.
+            float particlePartialTick = client.getDeltaTracker().getGameTimeDeltaPartialTick(false);
+            particleFuture = startParticleRenderTask(particlePartialTick, ProfileScope.currentFrameIndex());
 
             perfTimer.begin(perfCamera);
             try (ProfileScope cameraScope = ProfileScope.begin("Camera")) {

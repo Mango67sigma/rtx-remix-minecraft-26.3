@@ -87,19 +87,36 @@ public final class RemixInputGate {
     private final byte[] resolvedVisibility = new byte[RESOLVED_HIDDEN_MENU.length];
 
     /**
+     * {@code SDL_KMOD_LALT}: Left Alt alone, where {@link InputConstants#MOD_ALT} is either Alt.
+     * InputConstants has no name for the one-sided masks; lwjgl-sdl's {@code SDL_KMOD_LALT} is the
+     * same value.
+     */
+    public static final int MOD_LEFT_ALT = 0x0100;
+
+    /**
      * Decides whether Minecraft may handle a key event.
      *
-     * @param key         the SDL scancode, {@code KeyEvent.key()}
-     * @param action      {@link InputConstants#PRESS}, {@link InputConstants#REPEAT} or
-     *                    {@link InputConstants#RELEASE}
-     * @param altDown     whether either Alt key is held
-     * @param controlDown whether either Control key is held, which AltGr also reports on Windows
+     * <p>The menu chord is Left Alt+X without Control. It is positional on Left Alt because AltGr
+     * is Right Alt on the layouts that have one: Windows sends AltGr as LCtrl+RAlt, but SDL's
+     * Windows backend drops that synthetic LCtrl, so an AltGr+X event carries only
+     * {@code SDL_KMOD_RALT} and a "Control not held" test alone would let AltGr+X, which types a
+     * character on some layouts, toggle the menu. Right Alt therefore never counts as Alt here.
+     *
+     * @param key              the SDL scancode, {@code KeyEvent.key()}
+     * @param action           {@link InputConstants#PRESS}, {@link InputConstants#REPEAT} or
+     *                         {@link InputConstants#RELEASE}
+     * @param modifiers        the SDL modifier mask captured with the event,
+     *                         {@code KeyEvent.modifiers()}
+     * @param leftAltKeyDown   whether SDL's keyboard state reports Left Alt held, a fallback for a
+     *                         mask that missed it
+     * @param controlKeyDown   whether SDL's keyboard state reports either Control key held
      */
-    public KeyDecision onKey(int key, int action, boolean altDown, boolean controlDown) {
+    public KeyDecision onKey(int key, int action, int modifiers, boolean leftAltKeyDown, boolean controlKeyDown) {
         boolean altX = action == InputConstants.PRESS
                 && key == InputConstants.KEY_X
-                && altDown
-                && !controlDown;
+                && ((modifiers & MOD_LEFT_ALT) != 0 || leftAltKeyDown)
+                && (modifiers & InputConstants.MOD_CONTROL) == 0
+                && !controlKeyDown;
         if (captureSessionOpen) {
             return altX ? KeyDecision.TOGGLE_MENU : KeyDecision.BLOCK;
         }

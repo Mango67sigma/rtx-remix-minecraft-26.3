@@ -9,12 +9,21 @@ package com.nvidia.rtxremix.minecraft;
  *
  * <p>Remix reaches the screen through the GL-to-Vulkan interop ({@code
  * EXT_memory_object}, {@code EXT_semaphore}), so the renderer only works on the
- * OpenGL backend. Minecraft 26.3 picks Vulkan by default where it is available
- * and lets a launch argument ({@code --graphicsBackend OPENGL}) force a backend.
- * The mod supplies that force itself from {@code MinecraftClientMixin} when the
- * launcher did not, so an install started from any launcher comes up on OpenGL;
- * {@code -Drtxremix.forceOpenGl=false} leaves the choice to the launcher and the
- * in-game setting, in which case the renderer refuses to initialize on Vulkan.
+ * OpenGL backend. Minecraft 26.3 takes the backend from a launch argument
+ * ({@code --graphicsBackend}) when one is given, otherwise from the in-game
+ * Options &gt; Video Settings &gt; Graphics API preference. Only that preference's
+ * Vulkan value tries Vulkan first ({@code PreferredGraphicsApi.getBackendsToTry}
+ * returns {vulkan, gl} for {@code VULKAN} and {gl, vulkan} for {@code DEFAULT} and
+ * {@code OPENGL}); with either of the other two OpenGL comes up unless it fails.
+ *
+ * <p>When the launcher passed no backend, {@code MinecraftClientMixin} supplies
+ * {@code OPENGL} as if it had, so the force changes the outcome only for a player
+ * who chose Vulkan in-game. Vanilla then logs that the backend was forced by
+ * launch argument and the in-game setting is ignored; the setting itself stays
+ * selectable in Video Settings and keeps its stored value, but has no effect while
+ * the force applies. The renderer logs the preference it overrode. {@code
+ * -Drtxremix.forceOpenGl=false} leaves the choice to the launcher and the in-game
+ * setting, in which case the renderer refuses to initialize on Vulkan.
  */
 public final class GraphicsBackendPolicy {
 

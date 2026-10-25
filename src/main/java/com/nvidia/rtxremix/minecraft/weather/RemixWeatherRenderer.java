@@ -6,8 +6,10 @@ package com.nvidia.rtxremix.minecraft.weather;
 
 import com.mojang.blaze3d.ProjectionType;
 import com.mojang.blaze3d.pipeline.RenderTarget;
+import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
+import com.mojang.renderpearl.api.GpuFormat;
 import com.mojang.renderpearl.api.buffers.GpuBuffer;
 import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
 import com.mojang.renderpearl.api.commands.RenderPass;
@@ -51,6 +53,12 @@ import java.util.OptionalDouble;
  * is drawn with the refraction pipeline over the Remix image and snow with
  * vanilla's weather pipeline. Render thread only.
  *
+ * <p>The seed and the weather test use a scratch depth target of the main
+ * target's size and format, never the main depth: {@code render3dHud} cleared
+ * the main depth to 0 before the hand, and the screen effects and the 3D debug
+ * crosshair drawn after this pass depth-test against it, so leaving Remix world
+ * depth there would let the world occlude them.
+ *
  * <p>Minecraft 26.x is reverse-Z. The seed writes {@code 1 - remixDepth} and the
  * weather projection is a vanilla {@link Projection} (planes swapped), which maps
  * a conventional depth {@code d} to exactly {@code 1 - d}, so the
@@ -59,7 +67,22 @@ import java.util.OptionalDouble;
 public final class RemixWeatherRenderer {
     private static final float NEAR_PLANE = 0.05f;
     private static final float FAR_PLANE = 1000.0f;
-    private static final int INDICES_PER_COLUMN = 6;
+    /**
+     * Each column is one quad: {@code WeatherEffectRenderer.prepare} builds the
+     * buffer with {@code new BufferBuilder(..., PrimitiveTopology.QUADS,
+     * DefaultVertexFormat.PARTICLE)}, sized {@code columnCount * vertexSize * 4},
+     * and {@code prepareInstances} adds exactly four vertices per column. Vanilla's
+     * own private {@code render} relies on the same layout: it binds {@code
+     * getSequentialBuffer(primitiveTopology)} and draws {@code columnCount * 6}
+     * indices from {@code startColumn * 6} (26.3, WeatherEffectRenderer.java
+     * 105-107, 123-135, 198-232). {@code WeatherEffectRendererMixin} therefore
+     * forwards only the column counts, not the recorded topology or index count;
+     * if vanilla ever builds weather differently, {@link #RAIN}'s QUADS topology,
+     * the sequential QUADS index buffer below and these constants must follow.
+     */
+    public static final int VERTICES_PER_COLUMN = 4;
+    static final int INDICES_PER_COLUMN = 6;
+    private static final GpuFormat DEPTH_FORMAT = GpuFormat.D32_FLOAT;
 
     /** Writes the Remix depth into the attached depth buffer; depth-only pass, always passes. */
     private static final RenderPipeline DEPTH_SEED = RenderPipeline.builder()
@@ -103,6 +126,8 @@ public final class RemixWeatherRenderer {
     private final Projection projection = new Projection();
     private ProjectionMatrixBuffer projectionBuffer;
     private boolean cameraReady;
+    /** Scratch depth for the seed and the weather test; created on the first rainy frame. */
+    private TextureTarget depthTarget;
     private int lastDrawCount;
     private int lastQuadCount;
 
@@ -119,8 +144,8 @@ public final class RemixWeatherRenderer {
 
     /**
      * Records the geometry vanilla prepared this frame. Rain columns come first in
-     * the buffer, snow columns after, four vertices each, as {@code
-     * WeatherEffectRenderer.prepareInstances} wrote them.
+     * the buffer, snow columns after, {@link #VERTICES_PER_COLUMN} vertices each,
+     * as {@code WeatherEffectRenderer.prepareInstances} wrote them.
      */
     public void capture(GpuBuffer vanillaVertexBuffer,
                         AbstractTexture rain,
@@ -142,30 +167,35 @@ public final class RemixWeatherRenderer {
     }
 
     /**
-     * Draws the captured weather onto {@code target}.
+     * Compiles the weather pipelines now, so a shader error is reported on the
+     * first composited frame rather than on the first rainy one.
+     *
+     * @throws IllegalStateException when a pipeline fails to compile
+     */
+    public void precompile() {
+        RenderSystem.getCompiledPipeline(DEPTH_SEED);
+        RenderSystem.getCompiledPipeline(RAIN);
+        RenderSystem.getCompiledPipeline(SNOW);
+    }
+
+    /**
+     * Draws the captured weather onto {@code target}. Missing inputs skip the
+     * pass for this frame; a pipeline or GPU failure propagates to the caller.
      *
      * @param remixColor the composited Remix image, sampled by the rain refraction
      * @param remixDepth the Remix primary depth that seeds the depth test
      */
     public void render(GpuTextureView remixColor, GpuTextureView remixDepth, RenderTarget target) {
         int columns = rainColumns + snowColumns;
-        if (columns == 0 || vertexBuffer == null) {
+        if (columns == 0 || vertexBuffer == null
+                || remixDepth == null || remixColor == null || !cameraReady) {
             return;
-        }
-        if (remixDepth == null) {
-            throw new IllegalStateException("Remix depth texture is unavailable");
-        }
-        if (remixColor == null) {
-            throw new IllegalStateException("Remix final-color texture is unavailable");
-        }
-        if (!cameraReady) {
-            throw new IllegalStateException("Weather camera state was not initialized");
         }
         GpuTextureView colorView = target.getColorTextureView();
-        GpuTextureView depthView = target.getDepthTextureView();
-        if (colorView == null || depthView == null) {
+        if (colorView == null || target.width <= 0 || target.height <= 0) {
             return;
         }
+        GpuTextureView depthView = scratchDepth(target.width, target.height);
 
         seedDepth(remixDepth, depthView);
         lastDrawCount = (rainColumns > 0 ? 1 : 0) + (snowColumns > 0 ? 1 : 0);
@@ -173,6 +203,17 @@ public final class RemixWeatherRenderer {
         drawWeather(remixColor, colorView, depthView);
     }
 
+    /** The scratch depth view at {@code width} x {@code height}, resized only when the target's size changed. */
+    private GpuTextureView scratchDepth(int width, int height) {
+        if (depthTarget == null) {
+            depthTarget = new TextureTarget("remix_weather_depth", width, height, null, DEPTH_FORMAT);
+        } else if (depthTarget.width != width || depthTarget.height != height) {
+            depthTarget.resize(width, height);
+        }
+        return depthTarget.getDepthTextureView();
+    }
+
+    /** Fills every pixel of {@code depthView} from the Remix depth; the full-screen triangle always passes. */
     private void seedDepth(GpuTextureView remixDepth, GpuTextureView depthView) {
         RenderPassDescriptor descriptor = RenderPassDescriptor.builder(() -> "Remix depth seed")
                 .withDepthAttachment(depthView)
@@ -231,13 +272,17 @@ public final class RemixWeatherRenderer {
         return lastQuadCount;
     }
 
-    /** Drops the borrowed geometry and the projection buffer; render thread. */
+    /** Drops the borrowed geometry, the projection buffer and the scratch depth; render thread. */
     public void cleanup() {
         beginFrame();
         cameraReady = false;
         if (projectionBuffer != null) {
             projectionBuffer.close();
             projectionBuffer = null;
+        }
+        if (depthTarget != null) {
+            depthTarget.destroyBuffers();
+            depthTarget = null;
         }
     }
 }

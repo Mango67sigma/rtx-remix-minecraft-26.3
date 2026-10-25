@@ -24,11 +24,23 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * so; vanilla retries every tick, so the screen closes on the first tick after the
  * hold ends. Cancelling at the head also skips the "ready to play" narration until
  * the screen really closes.
+ *
+ * <p>The hold begins on each load's first close attempt. A screen that is still
+ * open when the next load starts is reused rather than replaced: {@code
+ * ClientPacketListener.startWaitingForNewLevel} calls {@code update(tracker,
+ * reason)} on it (a respawn or dimension change arriving while the previous load
+ * is held, for example). {@code update} therefore re-arms the hold, so the new
+ * load gets its own bounded wait instead of inheriting the old one's clock.
  */
 @Mixin(LevelLoadingScreen.class)
 public abstract class LevelLoadingScreenMixin {
 
     private boolean rtxremix$holdBegun;
+
+    @Inject(method = "update", at = @At("HEAD"))
+    private void rtxremix$rearmHoldForNextLoad(CallbackInfo ci) {
+        rtxremix$holdBegun = false;
+    }
 
     @Inject(method = "onClose", at = @At("HEAD"), cancellable = true)
     private void rtxremix$holdUntilSettled(CallbackInfo ci) {

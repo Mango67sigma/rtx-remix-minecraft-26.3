@@ -27,6 +27,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RemixInputGateTest {
+    /** SDL3's one-sided modifier bits, as {@code SDL_keycode.h} defines them. */
+    private static final int SDL_KMOD_LCTRL = 0x0040;
+    private static final int SDL_KMOD_RCTRL = 0x0080;
+    private static final int SDL_KMOD_LALT = 0x0100;
+    private static final int SDL_KMOD_RALT = 0x0200;
 
     @Test
     void altXOpensWheneverCaptureIsClosed() {
@@ -61,6 +66,55 @@ class RemixInputGateTest {
         assertSame(BLOCK, key(gate, InputConstants.KEY_X, InputConstants.REPEAT, true));
         assertSame(BLOCK, key(gate, InputConstants.KEY_X, InputConstants.RELEASE, true));
         assertSame(BLOCK, key(gate, InputConstants.KEY_X, InputConstants.PRESS, false));
+    }
+
+    @Test
+    void leftAltMaskMatchesSdl() {
+        assertEquals(SDL_KMOD_LALT, RemixInputGate.MOD_LEFT_ALT);
+        assertEquals(InputConstants.MOD_ALT, SDL_KMOD_LALT | SDL_KMOD_RALT);
+        assertEquals(InputConstants.MOD_CONTROL, SDL_KMOD_LCTRL | SDL_KMOD_RCTRL);
+    }
+
+    @Test
+    void rightAltOnlyNoControlDoesNotToggle() {
+        // AltGr+X under SDL3 on Windows: the synthetic LCtrl is dropped, only RALT is set.
+        RemixInputGate gate = new RemixInputGate();
+
+        assertSame(PASS, gate.onKey(InputConstants.KEY_X, InputConstants.PRESS, SDL_KMOD_RALT, false, false));
+
+        open(gate);
+
+        assertSame(BLOCK, gate.onKey(InputConstants.KEY_X, InputConstants.PRESS, SDL_KMOD_RALT, false, false));
+        assertTrue(gate.isCaptureSessionOpen());
+    }
+
+    @Test
+    void altGrAsControlPlusRightAltDoesNotToggle() {
+        RemixInputGate gate = new RemixInputGate();
+
+        assertSame(PASS, gate.onKey(
+                InputConstants.KEY_X, InputConstants.PRESS, SDL_KMOD_LCTRL | SDL_KMOD_RALT, false, false));
+    }
+
+    @Test
+    void leftAltTogglesWithOrWithoutRightAlt() {
+        RemixInputGate gate = new RemixInputGate();
+
+        assertSame(TOGGLE_MENU, gate.onKey(
+                InputConstants.KEY_X, InputConstants.PRESS, InputConstants.MOD_ALT, false, false));
+        assertSame(TOGGLE_MENU, gate.onKey(
+                InputConstants.KEY_X, InputConstants.PRESS, SDL_KMOD_LALT, false, false));
+    }
+
+    @Test
+    void keyboardStateFallbackDecidesWhenTheMaskMissesAModifier() {
+        RemixInputGate gate = new RemixInputGate();
+
+        assertSame(TOGGLE_MENU, gate.onKey(InputConstants.KEY_X, InputConstants.PRESS, 0, true, false));
+        assertSame(PASS, gate.onKey(InputConstants.KEY_X, InputConstants.PRESS, SDL_KMOD_LALT, false, true));
+        assertSame(PASS, gate.onKey(InputConstants.KEY_X, InputConstants.PRESS, 0, true, true));
+        assertSame(PASS, gate.onKey(
+                InputConstants.KEY_X, InputConstants.PRESS, SDL_KMOD_LALT | SDL_KMOD_RCTRL, false, false));
     }
 
     @Test
@@ -357,8 +411,9 @@ class RemixInputGateTest {
             RemixInputGate gate,
             int key,
             int action,
-            boolean altDown,
+            boolean leftAltDown,
             boolean controlDown) {
-        return gate.onKey(key, action, altDown, controlDown);
+        int modifiers = (leftAltDown ? SDL_KMOD_LALT : 0) | (controlDown ? SDL_KMOD_LCTRL : 0);
+        return gate.onKey(key, action, modifiers, false, false);
     }
 }

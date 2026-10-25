@@ -182,6 +182,13 @@ public class RtxRemixMod implements ClientModInitializer {
     private boolean remixFrameReadyToSubmit;
     /** Latches the frame-failure log so a persistent failure reports once, not every frame. */
     private boolean frameFailureLogged;
+    /**
+     * Set once the weather pass has failed; the pass stays off for the rest of the
+     * session, so a broken weather shader costs the weather, not the client.
+     */
+    private boolean weatherFailed;
+    /** Whether the weather pipelines have been compiled ahead of the first rain. */
+    private boolean weatherPipelinesCompiled;
 
     private static final RemixInputGate REMIX_INPUT_GATE = new RemixInputGate();
     /** Reads into the gate's own buffer. Held in a field so the per-frame read allocates nothing. */
@@ -740,15 +747,36 @@ public class RtxRemixMod implements ClientModInitializer {
                 RenderTarget target = Minecraft.getInstance().gameRenderer.mainRenderTarget();
                 mod.textureOverlay.render(remixColor, target);
                 RemixWeatherRenderer weather = renderer.getWeatherRenderer();
-                if (weather != null) {
-                    try (ProfileScope weatherScope = ProfileScope.begin("Weather")) {
-                        weather.render(remixColor, renderer.getInteropDepthView(), target);
-                        weatherScope
-                                .drawCalls(weather.getLastDrawCount())
-                                .vertexCount(weather.getLastQuadCount() * 4);
-                    }
+                if (weather != null && !mod.weatherFailed) {
+                    mod.renderWeather(weather, remixColor, target);
                 }
             }
+        }
+    }
+
+    /**
+     * Draws the frame's weather over the composited Remix image. The pass runs
+     * inside {@code GameRenderer.render3dHud}, so anything it throws (a weather
+     * pipeline that fails its on-demand compile, a frontend validation error)
+     * would otherwise crash the client on the first rainy frame. The first failure
+     * is logged and turns the pass off for the session; vanilla's weather draw stays
+     * cancelled, so the world shows no weather rather than a broken frame.
+     */
+    private void renderWeather(RemixWeatherRenderer weather, GpuTextureView remixColor, RenderTarget target) {
+        try (ProfileScope weatherScope = ProfileScope.begin("Weather")) {
+            if (!weatherPipelinesCompiled) {
+                // Compiled once on the first composited frame, so a shader error is
+                // in the log at startup rather than at the first rain.
+                weatherPipelinesCompiled = true;
+                weather.precompile();
+            }
+            weather.render(remixColor, renderer.getInteropDepthView(), target);
+            weatherScope
+                    .drawCalls(weather.getLastDrawCount())
+                    .vertexCount(weather.getLastQuadCount() * RemixWeatherRenderer.VERTICES_PER_COLUMN);
+        } catch (RuntimeException e) {
+            weatherFailed = true;
+            LOGGER.error("Remix weather pass failed; rain and snow are disabled until the game restarts", e);
         }
     }
 

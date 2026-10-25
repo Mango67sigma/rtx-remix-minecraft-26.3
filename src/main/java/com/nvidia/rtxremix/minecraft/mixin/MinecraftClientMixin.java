@@ -62,10 +62,14 @@ public abstract class MinecraftClientMixin {
     /**
      * Makes the game start on the OpenGL backend when no launch argument chose
      * one. Minecraft reads {@code GameConfig.GameData.forcedGraphicsApi} once in
-     * its constructor; a null there lets the in-game preference pick Vulkan where
-     * it is available, which the Remix GL interop cannot work on. Supplying the
-     * force here is the same path {@code --graphicsBackend OPENGL} takes, so the
-     * log and the Video Settings screen report the backend as forced.
+     * its constructor; a null there leaves the backend to the in-game Graphics API
+     * preference. Its Default and OpenGL values already try OpenGL first, so the
+     * force only overrides an explicit Vulkan preference, which the Remix GL interop
+     * cannot work on. Supplying it here is the same path {@code --graphicsBackend
+     * OPENGL} takes: vanilla logs the backend as forced by launch argument and skips
+     * its unclean-shutdown preference reset. The Video Settings option stays editable
+     * but is ignored while the force applies; {@code RemixRenderer.initialize} logs
+     * the preference that was overridden.
      */
     @ModifyExpressionValue(
             method = "<init>",
