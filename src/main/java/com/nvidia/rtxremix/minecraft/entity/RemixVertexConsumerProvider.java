@@ -33,12 +33,18 @@ import net.minecraft.resources.Identifier;
 public class RemixVertexConsumerProvider {
 
     /**
-     * Consumers created during the current entity's render, keyed by RenderType, in
-     * request order. Multiple layers per entity are common (body + eyes + glint) but the
-     * count is small, so parallel arrays with a linear scan replace a map: a map entry per
-     * layer per entity was a steady allocation on the render thread.
+     * Consumers created during the current entity's render, keyed by RenderType (and, for
+     * a glint layer, the layer it overlays), in request order. Multiple layers per entity
+     * are common (body + eyes + glint) but the count is small, so parallel arrays with a
+     * linear scan replace a map: a map entry per layer per entity was a steady allocation
+     * on the render thread.
      */
     private RenderType[] activeLayers = new RenderType[8];
+    /**
+     * For a glint layer the capture adds over a surface, the layer it overlays; null for
+     * every layer vanilla names itself. See {@link #getGlintBuffer}.
+     */
+    private RenderType[] activeOverlaid = new RenderType[8];
     private RemixCapturingConsumer[] activeConsumers = new RemixCapturingConsumer[8];
     private int activeCount;
 
@@ -60,6 +66,7 @@ public class RemixVertexConsumerProvider {
             consumerPool.add(consumer);
             activeConsumers[i] = null;
             activeLayers[i] = null;
+            activeOverlaid[i] = null;
         }
         activeCount = 0;
     }
@@ -96,11 +103,51 @@ public class RemixVertexConsumerProvider {
      */
     public VertexConsumer getBuffer(RenderType layer) {
         for (int i = 0; i < activeCount; i++) {
-            if (activeLayers[i].equals(layer)) {
+            if (activeOverlaid[i] == null && activeLayers[i].equals(layer)) {
                 return activeConsumers[i];
             }
         }
+        return open(layer, null);
+    }
 
+    /**
+     * The consumer that captures the glint drawn over {@code overlaid}, or null when
+     * {@code glintSource} binds no glint texture.
+     *
+     * <p>A single-pass glint render type draws a surface and its glint at once; the
+     * capture records them as the two layers 1.21.1 drew, the surface under
+     * {@code overlaid} and the glint under the pass {@link RenderLayerUtils#glintPass}
+     * names for {@code glintSource}. For a model the two render types are one and the
+     * same; for an item quad the surface is its plain item render type and the glint
+     * source the glinted variant of it. The caller requests {@code overlaid} first.
+     *
+     * <p>A glint consumer is keyed by the layer it overlays as well as by its pass, so
+     * every glinted surface of an owner has a glint layer of its own, opened after that
+     * surface's. Its ordinal, which scales the shell offset, is then always above its
+     * surface's, and the glint stands one shell or more over the surface it is painted
+     * over, whatever else the owner drew in between. A glint pass vanilla submits by
+     * itself, the patterned shield's or the trimmed armour's, arrives through
+     * {@link #getBuffer} and is a layer of its own, as it is in vanilla.
+     */
+    public VertexConsumer getGlintBuffer(RenderType overlaid, RenderType glintSource) {
+        if (glintSource == null) {
+            return null;
+        }
+        RenderType pass = RenderLayerUtils.glintPass(glintSource);
+        if (pass == null) {
+            return null;
+        }
+        for (int i = 0; i < activeCount; i++) {
+            if (activeOverlaid[i] == overlaid && activeLayers[i] == pass) {
+                return activeConsumers[i];
+            }
+        }
+        VertexConsumer consumer = open(pass, overlaid);
+        return consumer instanceof RemixCapturingConsumer ? consumer : null;
+    }
+
+    /** Opens a consumer for {@code layer}, or the sink for a layer Remix cannot draw. */
+    private VertexConsumer open(RenderType layer, RenderType overlaid) {
         Optional<Identifier> texOpt = RenderLayerUtils.capturableTexture(layer);
         Identifier textureId;
         if (texOpt.isPresent()) {
@@ -129,9 +176,11 @@ public class RemixVertexConsumerProvider {
         consumer.setLayerIndex(activeCount);
         if (activeCount == activeLayers.length) {
             activeLayers = Arrays.copyOf(activeLayers, activeCount * 2);
+            activeOverlaid = Arrays.copyOf(activeOverlaid, activeCount * 2);
             activeConsumers = Arrays.copyOf(activeConsumers, activeCount * 2);
         }
         activeLayers[activeCount] = layer;
+        activeOverlaid[activeCount] = overlaid;
         activeConsumers[activeCount] = consumer;
         activeCount++;
         return consumer;

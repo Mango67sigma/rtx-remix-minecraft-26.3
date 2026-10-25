@@ -18,6 +18,7 @@ import java.util.WeakHashMap;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.resources.Identifier;
 
 /**
@@ -70,8 +71,24 @@ final class RenderLayerUtils {
 
     /** The sampler every single-texture render type binds its texture to. */
     private static final String PRIMARY_SAMPLER = "Sampler0";
+    /**
+     * The sampler a single-pass glint render type binds the glint texture to, beside its
+     * surface texture on {@link #PRIMARY_SAMPLER} ({@code RenderTypes.itemCutoutGlint},
+     * {@code entitySolidGlint}, {@code armorCutoutNoCullGlint} and their variants).
+     */
+    private static final String GLINT_SAMPLER = "GlintSampler";
     /** The vertex attribute a layer must carry to be shaded by vertex colour alone. */
     private static final String COLOR_ATTRIBUTE = "Color";
+
+    /**
+     * Vanilla's item and armour glint textures, {@code ItemFeatureRenderer.ENCHANTED_GLINT_ITEM}
+     * and {@code ENCHANTED_GLINT_ARMOR}. Spelled out rather than read from the renderer so
+     * that the pure helpers below load no renderer class.
+     */
+    static final Identifier ITEM_GLINT_TEXTURE =
+            Identifier.withDefaultNamespace("textures/misc/enchanted_glint_item.png");
+    static final Identifier ARMOR_GLINT_TEXTURE =
+            Identifier.withDefaultNamespace("textures/misc/enchanted_glint_armor.png");
 
     private RenderLayerUtils() {}
 
@@ -84,6 +101,10 @@ final class RenderLayerUtils {
 
     /** Cache of RenderType -> streamed-per-frame verdict, weak-keyed like {@link #capturableTextureCache}. */
     private static final Map<RenderType, Boolean> streamedPerFrameCache =
+            Collections.synchronizedMap(new WeakHashMap<>());
+
+    /** Cache of RenderType -> the glint pass its glint sampler stands for, weak-keyed like {@link #capturableTextureCache}. */
+    private static final Map<RenderType, Optional<RenderType>> glintPassCache =
             Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
@@ -116,13 +137,63 @@ final class RenderLayerUtils {
     }
 
     /**
-     * The texture bound to the layer's primary sampler. Glint layers bind the glint
-     * texture to a second sampler, which is left out: the glint is a screen-space
-     * shimmer with no place on a traced surface, and the item underneath keeps its own.
+     * The texture bound to the layer's primary sampler. A single-pass glint layer binds
+     * the glint texture to a second sampler as well, which is not this layer's texture:
+     * the capture gives it a layer of its own, see {@link #glintPass}.
      */
     private static Optional<Identifier> extractTexture(RenderType layer) {
-        RenderSetup.TextureBinding binding = setup(layer).textures.get(PRIMARY_SAMPLER);
+        return boundTexture(layer, PRIMARY_SAMPLER);
+    }
+
+    private static Optional<Identifier> boundTexture(RenderType layer, String sampler) {
+        RenderSetup.TextureBinding binding = setup(layer).textures.get(sampler);
         return binding == null ? Optional.empty() : Optional.of(binding.location());
+    }
+
+    /**
+     * The separate glint pass that stands for the glint {@code layer} draws in its own
+     * pipeline, or null when the layer binds no glint texture.
+     *
+     * <p>Up to 1.21.1 a glinted surface was drawn twice: once under its own layer and
+     * once more, vertex for vertex, under a glint layer whose only texture was the glint
+     * (vanilla's {@code VertexMultiConsumer} for items, tridents and shields, a second
+     * {@code renderToBuffer} for armour), and the capture recorded that second draw as a
+     * layer of its own. Since 26.2 the glint is a second sampler in the surface's
+     * pipeline, so there is no second draw to record; the capture makes it, into the
+     * layer this returns. Vanilla still draws two glints as a separate pass, the
+     * patterned shield's and the trimmed armour's, and their render types are exactly
+     * that layer: their primary sampler is the glint texture, and their pipeline,
+     * {@code RenderPipelines.GLINT}, blends with neither the additive nor the
+     * translucent function, so {@link #surfaceMode} gives them the cutout verdict the
+     * 1.21.1 glint layers had. A glint captured here and one vanilla submits as such a
+     * pass therefore land on one material.
+     *
+     * <p>The pass is chosen by the glint texture, see {@link #glintPassTexture}.
+     */
+    static RenderType glintPass(RenderType layer) {
+        return glintPassCache.computeIfAbsent(layer, RenderLayerUtils::glintPassUncached).orElse(null);
+    }
+
+    private static Optional<RenderType> glintPassUncached(RenderType layer) {
+        if (layer.isOutline()) {
+            return Optional.empty();
+        }
+        return boundTexture(layer, GLINT_SAMPLER).map(texture ->
+                ARMOR_GLINT_TEXTURE.equals(glintPassTexture(texture))
+                        ? RenderTypes.trimmedArmorGlint()
+                        : RenderTypes.patternedShieldGlint());
+    }
+
+    /**
+     * The texture of the separate glint pass a glint sampler's texture is captured
+     * under. Vanilla has a pass for each of its two glint textures; a glint texture of
+     * a mod's own, which vanilla has no pass for, takes the item glint's. The capture
+     * makes no render type of its own for it: {@code RenderType.create} is
+     * package-private in vanilla and public only through Fabric's transitive access
+     * widener, and a mod glint is rare enough not to lean on that.
+     */
+    static Identifier glintPassTexture(Identifier glintSamplerTexture) {
+        return ARMOR_GLINT_TEXTURE.equals(glintSamplerTexture) ? ARMOR_GLINT_TEXTURE : ITEM_GLINT_TEXTURE;
     }
 
     private static RenderSetup setup(RenderType layer) {
@@ -248,8 +319,9 @@ final class RenderLayerUtils {
 
     /**
      * The solid entity pipelines: the one every opaque model draws with, its forward
-     * z-offset variant, and the glinted one, whose item used to reach the solid layer
-     * underneath the glint pass.
+     * z-offset variant, and the glinted one, whose surface is the solid layer the glint
+     * pass used to be drawn over; the glint itself is captured as that pass, see
+     * {@link #glintPass}.
      */
     static boolean isSolidPipeline(RenderPipeline pipeline) {
         return pipeline == RenderPipelines.ENTITY_SOLID

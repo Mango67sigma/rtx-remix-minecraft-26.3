@@ -71,6 +71,21 @@ class RemixEntitySubmitterAtlasSurfaceModeTest {
                         RenderLayerUtils.SurfaceMode.CUTOUT, BlockTextureManager.L_GLASS));
     }
 
+    /**
+     * The glint layer over a held block records that block's terrain layer like any part
+     * of the item, but it is the glint texture, not the atlas, so it keeps the cutout
+     * 1.21.1 gave it over glass and ice too.
+     */
+    @Test
+    void theGlintOverAHeldBlockIsNeverNarrowed() {
+        for (int blockItemLayer : new int[] {
+                BlockTextureManager.L_GLASS, BlockTextureManager.L_TRANS, EntityRenderContext.NO_BLOCK_ITEM}) {
+            assertEquals(RenderLayerUtils.SurfaceMode.CUTOUT,
+                    RemixEntitySubmitter.atlasSurfaceMode(RenderLayerUtils.ITEM_GLINT_TEXTURE,
+                            RenderLayerUtils.SurfaceMode.CUTOUT, blockItemLayer));
+        }
+    }
+
     @Test
     void aHeldBlockBorrowsTheAtlasMaterialItsPlacedCounterpartUses() {
         assertEquals(BlockTextureManager.L_TRANS,
