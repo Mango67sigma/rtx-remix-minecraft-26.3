@@ -117,6 +117,27 @@ per-frame budgets.
 | `rtxremix.chunk.meshRetireSoftBytes` | Byte equivalent of the soft count | `TerrainAssetRetirementQueue` |
 | `rtxremix.chunk.meshRetireHardBytes` | Byte equivalent of the hard count | `TerrainAssetRetirementQueue` |
 
+A column the terrain holds waits in `ChunkManager`'s unload queue, oldest first,
+from the moment its unload arrives until the removal budget reaches it: the
+configured column unloads per frame, plus one for every 64 columns waiting, at
+most 32 more. `Chunk.UnloadQueue` is the queue's length after each frame's
+drain. A chunk the client's chunk ring leaves behind when the view centre moves
+is queued at that moment (`ClientChunkRing`), because the client ignores the
+server's later unload for it; a teleport therefore shows as one spike that
+drains over the following frames.
+
+Every 600 frames the zombie audit removes columns the client no longer holds
+although no unload reached the terrain, at most two per frame. A finished pass
+that removed any logs a warning:
+
+```text
+Zombie audit: removed N orphaned columns (A outside the client ring while the slot still holds the chunk, B unexplained); C with a pending unload left to the unload queue
+```
+
+A nonzero A is a view-centre move that went unreported, and B a column that
+left the client some other way. C counts columns already in the unload queue,
+which the audit leaves to it; a pass that found only those logs at debug level.
+
 Retirement has two different gates in `TerrainAssetRetirementQueue`.
 `retirementBackpressured()` is a hysteretic count-or-bytes limit for teardown
 (column unloads, section removals, and zombie audits).

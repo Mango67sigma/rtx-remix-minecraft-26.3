@@ -40,6 +40,8 @@ import com.nvidia.rtxremix.Transform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import it.unimi.dsi.fastutil.longs.LongIterator;
+import it.unimi.dsi.fastutil.longs.LongLinkedOpenHashSet;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -47,7 +49,6 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -57,7 +58,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.IntPredicate;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientChunkCache;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -464,7 +467,7 @@ public class ChunkManager {
             cntCaptureQueueMB, cntCaptureBackpressure, cntCaptureEvicted, cntLightRebuildsSkipped,
             cntNeighbourReflagsDropped, cntNeighbourReflagsKept, cntBuildsAheadOfChunkLight, cntPacedChunks,
             cntPacedBacklog, cntChunkApplyUs, cntPacedUnloads, cntPacedUnloadBacklog, cntChunkUnloadUs,
-            cntSurfaceScansSeeded, cntReadyMeshes, cntMeshRetireQueue,
+            cntUnloadQueue, cntSurfaceScansSeeded, cntReadyMeshes, cntMeshRetireQueue,
             cntMeshRetireMB, cntLightOpsPending, cntLightTasks,
             cntKnownSections, cntColumns, cntPublishedColumns, cntGeometryColumns,
             cntMissingColumns, cntMissingSections, cntRetainedPages,
@@ -477,7 +480,11 @@ public class ChunkManager {
     // Chunk-unload callbacks can arrive in a border-sized burst. Ingest all
     // keys immediately, then perform the destructive column work gradually.
     private final ConcurrentLinkedQueue<Long> chunkUnloadEvents = new ConcurrentLinkedQueue<>();
-    private final LinkedHashSet<Long> pendingColumnUnloads = new LinkedHashSet<>();
+    /**
+     * Columns the terrain holds whose unload has arrived, oldest first, each waiting for the
+     * per-frame removal budget. The zombie audit leaves them to this queue.
+     */
+    private final LongLinkedOpenHashSet pendingColumnUnloads = new LongLinkedOpenHashSet();
     private static final int MAX_COLUMN_UNLOADS_PER_FRAME = Math.max(1,
             Integer.getInteger("rtxremix.chunk.maxColumnUnloadsPerFrame", 4));
     private static final int MAX_COLUMN_UNLOAD_VALIDATIONS_PER_FRAME = 64;
@@ -494,7 +501,12 @@ public class ChunkManager {
     private int appliedLightCullChunks = -1;
     private long[] zombieAuditColumns;
     private int zombieAuditCursor;
-    private int zombieAuditRemoved;
+    /** Columns this audit pass found waiting in the unload queue, which it leaves to the queue. */
+    private int zombieAuditPendingUnload;
+    /** Columns this pass removed that the client ring left behind in slots still holding them. */
+    private int zombieAuditOutsideRing;
+    /** Columns this pass removed with no queued unload and no slot holding their chunk. */
+    private int zombieAuditUnexplained;
 
     // --- construction ---
 
@@ -660,6 +672,7 @@ public class ChunkManager {
                 cntPacedUnloads = timer.registerCounter("Chunk.PacedUnloads");
                 cntPacedUnloadBacklog = timer.registerCounter("Chunk.PacedUnloadBacklog");
                 cntChunkUnloadUs = timer.registerCounter("Chunk.UnloadUsPerChunk");
+                cntUnloadQueue = timer.registerCounter("Chunk.UnloadQueue");
                 cntSurfaceScansSeeded = timer.registerCounter("Chunk.SurfaceScansSeeded");
                 cntPagesInstalled = timer.registerCounter("Chunk.PagesInstalled");
                 cntInstallBytes = timer.registerCounter("Chunk.InstallBytes");
@@ -718,6 +731,7 @@ public class ChunkManager {
                 timer.count(cntPacedUnloads, LocalChunkBatchPacing.drainPacedUnloads());
                 timer.count(cntPacedUnloadBacklog, LocalChunkBatchPacing.pacedUnloadBacklog());
                 timer.count(cntChunkUnloadUs, LocalChunkBatchPacing.unloadMicrosPerChunk());
+                timer.count(cntUnloadQueue, pendingColumnUnloads.size());
                 timer.count(cntSurfaceScansSeeded, SkyLightSurfaceScanPolicy.drainSeeded());
 
                 advanceZombieAudit(maintenanceDeadline);
@@ -759,8 +773,16 @@ public class ChunkManager {
     // --- event draining ---
 
     private void drainColumnUnloads(long deadline) {
-        Long key;
-        while ((key = chunkUnloadEvents.poll()) != null) {
+        Long event;
+        while ((event = chunkUnloadEvents.poll()) != null) {
+            long key = event;
+            int cx = (int) (key >> 32);
+            int cz = (int) key;
+            if (!holdsColumn(key, cx, cz)) {
+                // Nothing to retire: never captured, or already removed. A chunk the
+                // client ring left behind is reported again when its slot is reused.
+                continue;
+            }
             // Cancel light tasks at ingestion, not when the entry reaches the
             // per-frame validation window: under flight-scale unload backlogs
             // an entry can wait minutes, and its retained light ops would latch
@@ -771,16 +793,17 @@ public class ChunkManager {
             // one. Columns that vanish without an event are the zombie
             // audit's to cancel.
             if (pendingColumnUnloads.add(key)) {
-                cancelLightTasksForColumn((int) (key >> 32), (int) (long) key);
+                cancelLightTasksForColumn(cx, cz);
             }
         }
+        if (pendingColumnUnloads.isEmpty()) return;
         int removed = 0;
         int examined = 0;
         int unloadBudget = columnUnloadBudget();
-        Iterator<Long> iterator = pendingColumnUnloads.iterator();
+        LongIterator iterator = pendingColumnUnloads.iterator();
         while (iterator.hasNext() && examined < MAX_COLUMN_UNLOAD_VALIDATIONS_PER_FRAME) {
             if (examined > 0 && System.nanoTime() >= deadline) return;
-            long chunkKey = iterator.next();
+            long chunkKey = iterator.nextLong();
             examined++;
 
             int cx = (int) (chunkKey >> 32);
@@ -790,6 +813,7 @@ public class ChunkManager {
                     : currentWorld.getChunkSource().getChunk(cx, cz, false);
             if (liveChunk != null) {
                 iterator.remove();
+                queueSectionsEmptiedSinceUnload(liveChunk, cx, cz);
                 continue;
             }
             if (retirementQueue.retirementBackpressured()
@@ -813,6 +837,39 @@ public class ChunkManager {
     private int columnUnloadBudget() {
         return MAX_COLUMN_UNLOADS_PER_FRAME + Math.min(
                 MAX_COLUMN_UNLOAD_VALIDATIONS_PER_FRAME / 2, pendingColumnUnloads.size() / 64);
+    }
+
+    /** Whether the column still has terrain entries or published pages to retire. */
+    private boolean holdsColumn(long key, int cx, int cz) {
+        return terrain.findColumn(cx, cz) != null || renderColumns.get(key) != null;
+    }
+
+    /**
+     * Reconciles a column whose unload was cancelled with the chunk live there now. The
+     * cancellation keeps the column's terrain. When the live chunk is a copy the server
+     * re-sent, vanilla never compiles its all-air sections, because its occlusion graph
+     * leaves the cache's empty sections out, so nothing else would retire what the dropped
+     * copy showed there.
+     */
+    private void queueSectionsEmptiedSinceUnload(LevelChunk liveChunk, int cx, int cz) {
+        TerrainState.ChunkColumn column = terrain.findColumn(cx, cz);
+        if (column != null) {
+            queueEmptiedSections(column, sy -> isSectionEmpty(liveChunk, sy));
+        }
+    }
+
+    /**
+     * Queues each section of {@code column} that {@code liveSectionEmpty} reports all air as a
+     * removal candidate. The removal path checks the live section again before it acts.
+     */
+    static void queueEmptiedSections(TerrainState.ChunkColumn column, IntPredicate liveSectionEmpty) {
+        List<TerrainState.SectionEntry> entries = column.sectionEntries();
+        for (int i = 0, count = entries.size(); i < count; i++) {
+            int sy = entries.get(i).sy;
+            if (liveSectionEmpty.test(sy)) {
+                SectionLeftRenderSetQueue.enqueueEmptyCandidate(column.cx, sy, column.cz);
+            }
+        }
     }
 
     /**
@@ -933,6 +990,7 @@ public class ChunkManager {
                 // A live capture supersedes an unload event that was deferred
                 // while native mesh retirement was backpressured.
                 LOGGER.debug("Cancelled deferred unload for reloaded chunk ({},{})", cx, cz);
+                queueSectionsEmptiedSinceUnload(liveChunk, cx, cz);
             }
 
             // 26.3 removes a section that turns to air as soon as onSectionEmptinessChanged
@@ -1852,7 +1910,12 @@ public class ChunkManager {
         }
     }
 
-    /** Spreads the safety audit across frames so its cost does not scale with view distance in one frame. */
+    /**
+     * Removes columns whose chunk the client no longer holds although no unload has reached
+     * the terrain for them. A column waiting in the unload queue is not one: the queue removes
+     * it when the per-frame budget reaches it. Spread across frames so its cost does not scale
+     * with view distance in one frame.
+     */
     private void advanceZombieAudit(long deadline) {
         if (currentWorld == null) return;
         if (retirementQueue.retirementBackpressured() || lightWorkBackpressured()) return;
@@ -1862,9 +1925,12 @@ public class ChunkManager {
             framesSinceAudit = 0;
             zombieAuditColumns = terrain.columnKeysSnapshot();
             zombieAuditCursor = 0;
-            zombieAuditRemoved = 0;
+            zombieAuditPendingUnload = 0;
+            zombieAuditOutsideRing = 0;
+            zombieAuditUnexplained = 0;
         }
 
+        ClientChunkCache chunkCache = currentWorld.getChunkSource();
         int end = Math.min(zombieAuditColumns.length,
                 zombieAuditCursor + ZOMBIE_AUDIT_COLUMNS_PER_FRAME);
         int examined = 0;
@@ -1875,22 +1941,46 @@ public class ChunkManager {
             examined++;
             int cx = (int) (key >> 32);
             int cz = (int) key;
-            LevelChunk chunk = currentWorld.getChunkSource().getChunk(cx, cz, false);
-            if (chunk == null && terrain.findColumn(cx, cz) != null) {
-                // The column left without an unload event, so nothing has
-                // cancelled its light tasks yet.
-                cancelLightTasksForColumn(cx, cz);
-                removeColumnDeferred(cx, cz);
-                zombieAuditRemoved++;
-                if (++removedThisFrame >= ZOMBIE_AUDIT_REMOVALS_PER_FRAME) return;
+            if (chunkCache.getChunk(cx, cz, false) != null || terrain.findColumn(cx, cz) == null) {
+                continue;
             }
+            if (pendingColumnUnloads.contains(key)) {
+                zombieAuditPendingUnload++;
+                continue;
+            }
+            if (ClientChunkRing.holdsChunkOutsideRing(chunkCache, cx, cz)) {
+                zombieAuditOutsideRing++;
+            } else {
+                zombieAuditUnexplained++;
+            }
+            // The column left without an unload event, so nothing has
+            // cancelled its light tasks yet.
+            cancelLightTasksForColumn(cx, cz);
+            removeColumnDeferred(cx, cz);
+            if (++removedThisFrame >= ZOMBIE_AUDIT_REMOVALS_PER_FRAME) return;
         }
 
         if (zombieAuditCursor == zombieAuditColumns.length) {
-            if (zombieAuditRemoved > 0) {
-                LOGGER.warn("Zombie audit: removed {} orphaned columns", zombieAuditRemoved);
-            }
+            logZombieAudit();
             zombieAuditColumns = null;
+        }
+    }
+
+    /**
+     * Logs a finished audit pass. Columns waiting in the unload queue are expected while a
+     * crossing's unloads drain, so a pass that removed nothing logs only at debug level.
+     */
+    private void logZombieAudit() {
+        int removed = zombieAuditOutsideRing + zombieAuditUnexplained;
+        if (removed > 0) {
+            LOGGER.warn("Zombie audit: removed {} orphaned columns ({} outside the client ring while"
+                            + " the slot still holds the chunk, {} unexplained); {} with a pending unload"
+                            + " left to the unload queue",
+                    removed, zombieAuditOutsideRing, zombieAuditUnexplained, zombieAuditPendingUnload);
+        } else if (zombieAuditPendingUnload > 0) {
+            LOGGER.debug("Zombie audit: removed no orphaned columns; {} with a pending unload left to"
+                            + " the unload queue",
+                    zombieAuditPendingUnload);
         }
     }
 
@@ -1945,7 +2035,9 @@ public class ChunkManager {
         terrainFrame = 0;
         zombieAuditColumns = null;
         zombieAuditCursor = 0;
-        zombieAuditRemoved = 0;
+        zombieAuditPendingUnload = 0;
+        zombieAuditOutsideRing = 0;
+        zombieAuditUnexplained = 0;
         lastTerrainDiagnostics = TerrainDiagnostics.EMPTY;
         // Recompute on the next frame rather than holding the cleared gauges.
         diagnosticsRefreshCountdown = 0;

@@ -238,7 +238,11 @@ light queue is behind are only measured: `Chunk.BuildsAheadOfChunkLight` counts
 a build whose 3x3 column neighbourhood holds a column that is loaded but not yet
 lit. 26.3 also keeps sections that turned to all air out of the visible graph,
 so `ClientChunkManagerMixin` reports such sections for removal from the Remix
-scene.
+scene, and `ChunkManager` queues them when an unload is cancelled because the
+server re-sent the column. Moving the view centre only moves the client cache's
+ring of chunk slots, and the cache ignores the server's unloads for chunks the
+ring has already left behind, so the same mixin reports those chunks as unloaded
+at the head of `ClientChunkCache.updateViewCenter` (`ClientChunkRing`).
 
 **Visibility.** The occlusion walk is the mod's allocation-free port of
 vanilla's `SectionOcclusionGraph.runUpdates`. It runs by default with RTX on, on

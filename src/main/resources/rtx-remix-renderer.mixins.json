@@ -24,6 +24,8 @@
         "ChunkRenderingDataPreparerMixin",
         "ChunkSectionsToRenderMixin",
         "ChunkSkyLightMixin",
+        "ClientChunkCacheAccessor",
+        "ClientChunkCacheStorageAccessor",
         "ClientChunkManagerMixin",
         "ClientWorldColorMixin",
         "ClientWorldMixin",

@@ -4,6 +4,7 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
+import com.nvidia.rtxremix.minecraft.terrain.ClientChunkRing;
 import com.nvidia.rtxremix.minecraft.terrain.SectionLeftRenderSetQueue;
 import com.nvidia.rtxremix.minecraft.terrain.SkippedSectionRebuilds;
 import com.nvidia.rtxremix.minecraft.terrain.LocalChunkBatchPacing;
@@ -24,7 +25,8 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.status.ChunkStatus;
 
 /**
- * Section rebuild bookkeeping raised by the client chunk manager while RTX capture is on.
+ * Section rebuild bookkeeping raised by the client chunk manager while RTX capture is on,
+ * and the chunk unloads its ring leaves unreported.
  */
 @Mixin(ClientChunkCache.class)
 public abstract class ClientChunkManagerMixin {
@@ -190,5 +192,17 @@ public abstract class ClientChunkManagerMixin {
         if (LocalChunkBatchPacing.UNLOAD_ENABLED && rtxremix$unloadIsReal) {
             LocalChunkBatchPacing.recordUnloadNanos(System.nanoTime() - rtxremix$unloadStartNanos);
         }
+    }
+
+    /**
+     * Moving the view centre only moves the ring's window: the chunks it leaves behind stay
+     * in their slots, and the unloads the server sends after the centre are ignored for them,
+     * so nothing would report them until their slot is reused ({@link ClientChunkRing}). At
+     * the head the cache still answers for the old centre, so the chunks still live there
+     * are the ones to report.
+     */
+    @Inject(method = "updateViewCenter", at = @At("HEAD"))
+    private void rtxremix$reportRingDepartures(int x, int z, CallbackInfo ci) {
+        ClientChunkRing.reportDepartures((ClientChunkCache) (Object) this, x, z);
     }
 }
