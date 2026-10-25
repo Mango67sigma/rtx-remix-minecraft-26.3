@@ -7,6 +7,7 @@
         "WallBlockMixin"
     ],
     "client": [
+        "BackupConfirmScreenAccessor",
         "BakedQuadMixin",
         "BillboardParticleAccessor",
         "BiomeMixin",
@@ -27,6 +28,7 @@
         "ClientWorldColorMixin",
         "ClientWorldMixin",
         "CloudRendererMixin",
+        "ConfirmScreenAccessor",
         "CuboidMixin",
         "EntityRenderDispatcherMixin",
         "EntityRenderStateMixin",

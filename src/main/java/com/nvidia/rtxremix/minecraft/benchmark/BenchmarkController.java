@@ -26,6 +26,9 @@ import jdk.jfr.Recording;
 import jdk.jfr.RecordingState;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Screenshot;
+import net.minecraft.client.gui.screens.BackupConfirmScreen;
+import net.minecraft.client.gui.screens.ConfirmScreen;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.worldselection.WorldOpenFlows;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
@@ -85,6 +88,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * Can be triggered manually via /rtx benchmark or automatically via an
  * auto_benchmark.json trigger file (used by the benchmark CLI for scripted runs).
+ * A trigger's world opens through vanilla QuickPlay, or through the trigger's own
+ * load once QuickPlay has done nothing; {@link WorldOpenWait} decides how the
+ * trigger follows either while the world opens.
  */
 public class BenchmarkController {
 
@@ -101,7 +107,6 @@ public class BenchmarkController {
     private static final int BENCHMARK_CAMERA_HZ = 60;
     static final long MAX_BENCHMARK_CAMERA_DURATION_MS =
             CameraController.fixed60TimeMs(Integer.MAX_VALUE - 1L);
-    private static final int QUICKPLAY_FALLBACK_TICKS = 20 * 45;
     private static final String STATUS_FILE_NAME = "benchmark_status.json";
     private static final long STATUS_HEARTBEAT_INTERVAL_MS = 1_000L;
     /** Weather set for a still shot lasts this long, so it cannot change while the shot settles. */
@@ -111,7 +116,11 @@ public class BenchmarkController {
     private boolean worldJoinRequested = false;
     private boolean autoTriggerPending = false;
     private boolean quickPlayWorldLoad = false;
-    private int quickPlayWaitTicks = 0;
+    private final WorldOpenWait worldOpenWait = new WorldOpenWait();
+    // A prompt this trigger answered can stay up until its answer runs; it is not answered twice.
+    private Screen answeredPrompt = null;
+    // The screen QuickPlay had left up when the trigger loaded its world itself.
+    private String quickPlayStopScreen = null;
     private boolean jfrFlushed = false;
     private boolean disableWorldSaving = false;
     private boolean worldSavingDisabled = false;
@@ -149,7 +158,9 @@ public class BenchmarkController {
     private int stillShotColumns = -1;
     private boolean captureStillShotAtFrameEnd = false;
     private boolean hudHiddenBeforeStills = false;
-    private final AtomicInteger pendingStillShotWrites = new AtomicInteger();
+    // Screenshot writes not yet on disk, from the recording or the still shots; a pass
+    // finishes, and may exit, only once none is pending.
+    private final AtomicInteger pendingScreenshotWrites = new AtomicInteger();
     private final AtomicBoolean stillShotWriteFailed = new AtomicBoolean();
     private int screenshotFrameCount = 5;
     private int screenshotInterval = 0; // optional legacy capture every N recording frames (0 = disabled)
@@ -209,7 +220,7 @@ public class BenchmarkController {
     public void onClientTick(Minecraft client) {
         if (state != State.IDLE) return;
         if (autoTriggerPending) {
-            maybeFallbackFromQuickPlay(client);
+            watchWorldOpen(client);
             return;
         }
         if (worldJoinRequested) return;
@@ -228,7 +239,7 @@ public class BenchmarkController {
             configureCameraTarget();
             cameraController.stop();
             autoTriggerPending = true;
-            quickPlayWaitTicks = 0;
+            forgetWorldOpen();
         } catch (Exception e) {
             LOGGER.error("Failed to read auto_benchmark.json", e);
             resetAutoTriggerFields();
@@ -336,7 +347,7 @@ public class BenchmarkController {
         LOGGER.info("Auto-benchmark trigger detected, loading world '{}' via {}...", BENCHMARK_WORLD_NAME, reason);
         worldJoinRequested = true;
         quickPlayWorldLoad = false;
-        quickPlayWaitTicks = 0;
+        worldOpenWait.reset();
 
         try {
             WorldOpenFlows loader = client.createWorldOpenFlows();
@@ -359,7 +370,7 @@ public class BenchmarkController {
         worldJoinRequested = false;
         autoTriggerPending = false;
         quickPlayWorldLoad = false;
-        quickPlayWaitTicks = 0;
+        forgetWorldOpen();
         disableWorldSaving = false;
         benchmarkWorldName = "";
         benchmarkWorldVersion = "";
@@ -378,7 +389,7 @@ public class BenchmarkController {
     }
 
     private String describeCurrentScreen(Minecraft client) {
-        return client.gui.screen() == null ? "none" : client.gui.screen().getClass().getName();
+        return WorldOpenScreens.describe(client.gui.screen());
     }
 
     static boolean isWorldLoadScreenName(String screenSimpleName) {
@@ -390,14 +401,68 @@ public class BenchmarkController {
         return isWorldLoadScreenName(client.gui.screen().getClass().getSimpleName());
     }
 
-    private void maybeFallbackFromQuickPlay(Minecraft client) {
-        if (!quickPlayWorldLoad || worldJoinRequested || client.level != null) return;
-        quickPlayWaitTicks++;
-        if (quickPlayWaitTicks < QUICKPLAY_FALLBACK_TICKS || isWorldLoadScreen(client)) return;
+    /**
+     * Follows a pending trigger's world while it opens, until the world is loaded: answers the
+     * prompts an unattended run answers, loads the world itself once QuickPlay has done nothing,
+     * and fails the run at a screen that needs a decision the benchmark does not make.
+     */
+    private void watchWorldOpen(Minecraft client) {
+        if (client.level != null || !(quickPlayWorldLoad || worldJoinRequested)) return;
+        Screen screen = client.gui.screen();
+        WorldOpenWait.Stage stage = screen != null && screen == answeredPrompt
+                ? WorldOpenWait.Stage.LOADING
+                : WorldOpenScreens.stage(screen);
+        switch (worldOpenWait.onTick(stage, worldJoinRequested)) {
+            case WAIT -> { }
+            case PROCEED_WITHOUT_BACKUP -> proceedWithoutBackup((BackupConfirmScreen) screen);
+            case JOIN -> joinUpgradedWorld((ConfirmScreen) screen);
+            case LOAD_DIRECTLY -> fallBackFromQuickPlay(client, stage);
+            case FAIL -> failWorldOpen(client, stage);
+        }
+    }
 
-        LOGGER.warn("QuickPlay did not load benchmark world '{}' after {} ticks; current screen is {}; falling back to direct world load.",
-                BENCHMARK_WORLD_NAME, quickPlayWaitTicks, describeCurrentScreen(client));
+    private void proceedWithoutBackup(BackupConfirmScreen screen) {
+        answeredPrompt = screen;
+        LOGGER.info("Benchmark world '{}' asks for a backup at {}; proceeding without a backup and without erasing caches",
+                BENCHMARK_WORLD_NAME, WorldOpenScreens.describe(screen));
+        WorldOpenScreens.proceedWithoutBackup(screen);
+    }
+
+    private void joinUpgradedWorld(ConfirmScreen screen) {
+        answeredPrompt = screen;
+        LOGGER.info("Benchmark world '{}' was upgraded by the file fixer; joining it from {}",
+                BENCHMARK_WORLD_NAME, WorldOpenScreens.describe(screen));
+        WorldOpenScreens.joinUpgradedWorld(screen);
+    }
+
+    private void fallBackFromQuickPlay(Minecraft client, WorldOpenWait.Stage stage) {
+        quickPlayStopScreen = describeCurrentScreen(client);
+        if (stage == WorldOpenWait.Stage.QUICKPLAY_FAILED) {
+            LOGGER.warn("QuickPlay found no world '{}' to open ({}); falling back to direct world load.",
+                    BENCHMARK_WORLD_NAME, quickPlayStopScreen);
+        } else {
+            LOGGER.warn("QuickPlay did not load benchmark world '{}': no world-open screen for {} ticks, current screen is {}; falling back to direct world load.",
+                    BENCHMARK_WORLD_NAME, worldOpenWait.idleTicks(), quickPlayStopScreen);
+        }
         requestBenchmarkWorldLoad(client, "QuickPlay fallback");
+    }
+
+    private void failWorldOpen(Minecraft client, WorldOpenWait.Stage stage) {
+        String screen = describeCurrentScreen(client);
+        String stop = stage == WorldOpenWait.Stage.IDLE
+                ? "nothing has opened it for " + worldOpenWait.idleTicks() + " ticks, and the screen is " + screen
+                : "it stopped at " + screen + ", which the benchmark does not answer";
+        String fallback = quickPlayStopScreen == null
+                ? ""
+                : "; QuickPlay had left " + quickPlayStopScreen + " up when the benchmark loaded the world itself";
+        LOGGER.error("Cannot start benchmark: world '{}' did not open: {}{}", BENCHMARK_WORLD_NAME, stop, fallback);
+        clearPendingAutoBenchmark();
+    }
+
+    private void forgetWorldOpen() {
+        worldOpenWait.reset();
+        answeredPrompt = null;
+        quickPlayStopScreen = null;
     }
 
     /**
@@ -412,7 +477,7 @@ public class BenchmarkController {
                 autoTriggerPending = false;
                 worldJoinRequested = false;
                 quickPlayWorldLoad = false;
-                quickPlayWaitTicks = 0;
+                forgetWorldOpen();
 
                 if (TRIGGER_MODE_PLAY.equals(autoTriggerMode)) {
                     notifyPlayer(client, "Benchmark world loaded: " + benchmarkWorldName
@@ -505,9 +570,10 @@ public class BenchmarkController {
         }
 
         // Benchmarks use a deterministic virtual 60 Hz camera clock. The path
-        // itself is time-based; only the benchmark clock is frame-stepped.
+        // itself is time-based; only the benchmark clock is frame-stepped. The
+        // last recorded pose holds while the recording's screenshots land.
         if (state == State.RECORDING) {
-            cameraController.applyBenchmarkTime(benchmarkCameraTimeMs(currentFrame));
+            cameraController.applyBenchmarkTime(benchmarkCameraTimeMs(Math.min(currentFrame, recordFrames - 1)));
         }
     }
 
@@ -550,7 +616,8 @@ public class BenchmarkController {
             return;
         }
 
-        if (state == State.RECORDING) {
+        // Frames rendered after the last recorded one, while its screenshots land, are not recorded.
+        if (state == State.RECORDING && !finishAfterPendingFrameTime) {
             captureFrame(perfTimer);
             pendingFrameTimeIndex = currentFrame;
             currentFrame++;
@@ -978,7 +1045,10 @@ public class BenchmarkController {
             return;
         }
 
-        if (finishAfterPendingFrameTime) {
+        // Minecraft reads a screenshot back once the GPU has finished its frame, a
+        // frame or more after the grab, and writes it on the IO worker, so the
+        // recording finishes only once every screenshot it took is on disk.
+        if (finishAfterPendingFrameTime && pendingScreenshotWrites.get() == 0) {
             finishAfterPendingFrameTime = false;
             finishBenchmark(perfTimer);
         }
@@ -1023,7 +1093,6 @@ public class BenchmarkController {
             shots.removeIf(shot -> !shotFilter.contains(shot.name()));
         }
         stillShots = new StillShotSession(shots, shotSettle);
-        pendingStillShotWrites.set(0);
         stillShotWriteFailed.set(false);
         disableWorldSavingForBenchmark(client);
         resetBenchmarkStatus();
@@ -1123,7 +1192,7 @@ public class BenchmarkController {
                 stillShots.advance();
             }
         }
-        if (stillShots.isDone() && pendingStillShotWrites.get() == 0) {
+        if (stillShots.isDone() && pendingScreenshotWrites.get() == 0) {
             finishStillShots(client);
         }
     }
@@ -1169,7 +1238,7 @@ public class BenchmarkController {
                 describeCurrentScreen(client),
                 client.gameMode == null ? "unknown" : client.gameMode.getPlayerMode());
         Path written = benchmarkDir.resolve("screenshots").resolve(shot.name() + ".png");
-        pendingStillShotWrites.incrementAndGet();
+        pendingScreenshotWrites.incrementAndGet();
         Screenshot.grab(
                 benchmarkDir.toFile(),
                 shot.name() + ".png",
@@ -1182,7 +1251,7 @@ public class BenchmarkController {
                     if (!Files.isRegularFile(written)) {
                         stillShotWriteFailed.set(true);
                     }
-                    pendingStillShotWrites.decrementAndGet();
+                    pendingScreenshotWrites.decrementAndGet();
                 }
         );
     }
@@ -1345,12 +1414,16 @@ public class BenchmarkController {
         }
 
         String filename = String.format("frame_%04d.png", frame);
+        pendingScreenshotWrites.incrementAndGet();
         Screenshot.grab(
                 benchmarkDir.toFile(),
                 filename,
                 client.gameRenderer.mainRenderTarget(),
                 1,
-                text -> LOGGER.info("Screenshot: {}", text.getString())
+                text -> {
+                    LOGGER.info("Screenshot: {}", text.getString());
+                    pendingScreenshotWrites.decrementAndGet();
+                }
         );
     }
 

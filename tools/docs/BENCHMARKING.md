@@ -74,7 +74,19 @@ One measured run, repeated `runs` times:
 4. **Trigger.** In game, `BenchmarkController` sees the armed trigger from its
    tick loop and waits for vanilla QuickPlay to finish loading the world. This
    is why a client left open from an earlier `world launch` breaks the next run:
-   it consumes the trigger first.
+   it consumes the trigger first. Minecraft 26.3 asks twice before it opens a
+   save that predates its file fixer, such as a fixture saved by 1.21.1: a
+   backup prompt, then, once the file fixer has upgraded the save, a prompt to
+   join it. The controller answers both on the tick they appear, the first
+   without a backup or a cache erase because the run plays a staged copy, and
+   answers the backup prompt for an experimental world the same way. The
+   world-open flow holds the save's session lock while any of its screens is
+   up, so the controller loads the world itself only once QuickPlay has done
+   nothing: QuickPlay found no world, or no world-open screen has been up for
+   45 seconds in a row. Any other stop of the flow, such as the data pack
+   safe-mode prompt, and a direct load that shows no world-open screen for 45
+   seconds, log `Cannot start benchmark:` with the screen, which the runner
+   classifies as `BenchmarkStartupRejected`. `WorldOpenWait` owns these rules.
 5. **Warm up.** On world load the controller enters `WARMUP` and writes its
    first status. It holds the frame counter at 0 while the world-load screen is
    still up, so recording cannot begin on a loading screen, then counts
@@ -87,8 +99,9 @@ One measured run, repeated `runs` times:
    the whole `MinecraftClient.render()` span, recorded as
    `metadata.frameTimeSource`; see
    [Reading frame metrics, sections and zones](#reading-frame-metrics-sections-and-zones).
-7. **Report.** It writes `benchmark.json` into `<gameDir>/benchmark/results/`, then
-   exits after `postResultExitDelaySeconds` so profilers can drain.
+7. **Report.** Once every scheduled screenshot is on disk, it writes
+   `benchmark.json` into `<gameDir>/benchmark/results/`, then exits after
+   `postResultExitDelaySeconds` so profilers can drain.
 8. **Collect.** The runner has been polling for that file throughout. It copies
    the result, logs, profiles and screenshots into
    `tools/results/<timestamp>/run_N/`, generates
@@ -300,9 +313,12 @@ SDK auto-restage commands also write only to that file, never tracked defaults.
 the measured traversal. The benchmark package config currently selects five
 (start, end, three interior); the config, not this example, owns the default.
 `screenshots.frames` adds explicit zero-based measured frame indices, which are
-not camera waypoint durations. Captures go through Minecraft's
-`ScreenshotRecorder` after the render frame completes, so they are the real
-client framebuffer rather than a desktop grab.
+not camera waypoint durations. Captures go through Minecraft's `Screenshot`
+after the render frame completes, so they are the real client framebuffer
+rather than a desktop grab. Minecraft 26.3 reads a capture back once the GPU
+has finished that frame and writes it on the IO worker, so after the last
+measured frame the controller holds that frame's pose, unrecorded, until every
+capture is on disk, and only then writes the result.
 
 ### Documentation Screenshots
 
