@@ -282,6 +282,22 @@ final class AtmosphericSkyGenerator {
         }
     }
 
+    /**
+     * Declares tightly packed rows for a read-back into this generator's buffers.
+     *
+     * <p>Vanilla's texture read-back ({@code GlCommandEncoder.copyTextureToBuffer}, used
+     * by screenshots) leaves {@code GL_PACK_ROW_LENGTH} at the width of whatever it last
+     * read and {@code GL_PACK_ALIGNMENT} at that format's alignment, and GlStateManager
+     * caches both. With a 2560-pixel row length left behind, a {@code glGetTexImage} into
+     * the sky read-back PBO needs more bytes than the PBO holds and fails with
+     * GL_INVALID_OPERATION on every frame. Going through GlStateManager keeps vanilla's
+     * cache truthful for its own next read-back.
+     */
+    private static void packTightly() {
+        GlStateManager._pixelStore(GL11.GL_PACK_ROW_LENGTH, 0);
+        GlStateManager._pixelStore(GL11.GL_PACK_ALIGNMENT, 4);
+    }
+
     void readTransmittanceLut(ByteBuffer destination) {
         int requiredBytes =
                 LUT_WIDTH * LUT_HEIGHT * 4 * Float.BYTES;
@@ -297,6 +313,7 @@ final class AtmosphericSkyGenerator {
             GL11.glBindTexture(
                     GL11.GL_TEXTURE_2D,
                     transmittanceLut);
+            packTightly();
             GL11.glGetTexImage(
                     GL11.GL_TEXTURE_2D,
                     0,
@@ -428,6 +445,7 @@ final class AtmosphericSkyGenerator {
         GL11.glBindTexture(
                 GL11.GL_TEXTURE_2D,
                 finalSkyTexture);
+        packTightly();
         GL11.glGetTexImage(
                 GL11.GL_TEXTURE_2D,
                 0,

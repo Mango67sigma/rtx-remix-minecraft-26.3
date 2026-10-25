@@ -125,8 +125,7 @@ public abstract class ChunkRenderingDataPreparerMixin {
      * Seeds and partially walked sections carried across frames. Its entries belong to the
      * visibility state that produced them, so a publish or a storage swap empties it.
      */
-    private final TimeSlicedWorkQueue<Object> rtxremix$propagationQueue = new TimeSlicedWorkQueue<>(
-            rtxremix$PROPAGATION_BUDGET_NANOS, rtxremix$PROPAGATION_MINIMUM_POLLS, System::nanoTime);
+    private TimeSlicedWorkQueue<Object> rtxremix$propagationQueue;
     /** Seed queue of the state whose entries {@link #rtxremix$propagationQueue} holds. */
     private BlockingQueue<?> rtxremix$propagationSeeds;
 
@@ -136,6 +135,18 @@ public abstract class ChunkRenderingDataPreparerMixin {
     private static final ThreadLocal<ArrayDeque<ProfileScope>> rtxremix$graphScope = new ThreadLocal<>();
     private static final ThreadLocal<ArrayDeque<ProfileScope>> rtxremix$seedScope = new ThreadLocal<>();
     private static final ThreadLocal<ArrayDeque<ProfileScope>> rtxremix$walkScope = new ThreadLocal<>();
+
+    /**
+     * Created here rather than by a field initialiser: on 26.3 the initialiser, whose
+     * {@code System::nanoTime} method reference compiles to an {@code invokedynamic}, was not
+     * carried into the target constructor and left the field null at the first
+     * {@code waitAndReset}. A constructor hook runs for the single constructor unconditionally.
+     */
+    @Inject(method = "<init>", at = @At("RETURN"))
+    private void rtxremix$createPropagationQueue(CallbackInfo ci) {
+        rtxremix$propagationQueue = new TimeSlicedWorkQueue<>(
+                rtxremix$PROPAGATION_BUDGET_NANOS, rtxremix$PROPAGATION_MINIMUM_POLLS, System::nanoTime);
+    }
 
     @Inject(method = "waitAndReset", at = @At("HEAD"))
     private void rtxremix$storageHead(ViewArea storage, CallbackInfo ci) {
