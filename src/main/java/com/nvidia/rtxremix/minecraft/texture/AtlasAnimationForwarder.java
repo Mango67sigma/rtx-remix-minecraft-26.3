@@ -63,6 +63,9 @@ public final class AtlasAnimationForwarder {
     // no garbage.
     private static final int kInitialScratchBytes = 64 * 64 * 4;
     private static byte[] scratch = new byte[kInitialScratchBytes];
+    // The content patch in scratch widened by the sprite's padding ring; grown the
+    // same way. A 64x64 sprite with a 16-texel ring is 96x96.
+    private static byte[] paddedScratch = new byte[96 * 96 * 4];
 
     private static final class PatchRecord {
         final Identifier id;
@@ -91,10 +94,16 @@ public final class AtlasAnimationForwarder {
          */
         final long pixelPtr;
         final int rowPitch;
+        /**
+         * The sprite's stitcher padding. {@code dstX/dstY} and {@code width/height} are
+         * the content rectangle; the patch sent to Remix covers the content plus this
+         * ring of replicated edge texels, which is what vanilla's draw leaves in the slot.
+         */
+        final int padding;
 
         PatchRecord(Identifier id, int dstX, int dstY, int srcX, int srcY,
                     int width, int height, int srcImageWidth, int srcImageHeight,
-                    long pixelPtr, int rowPitch) {
+                    long pixelPtr, int rowPitch, int padding) {
             this.id = id;
             this.dstX = dstX;
             this.dstY = dstY;
@@ -106,6 +115,7 @@ public final class AtlasAnimationForwarder {
             this.srcImageHeight = srcImageHeight;
             this.pixelPtr = pixelPtr;
             this.rowPitch = rowPitch;
+            this.padding = padding;
         }
 
         boolean isInterpolatedUpload() {
@@ -157,10 +167,16 @@ public final class AtlasAnimationForwarder {
                     labPBR.size(), blockAtlasSpriteIds.size());
     }
 
+    /**
+     * @param dstX    atlas column of the sprite's first content texel
+     * @param dstY    atlas row of the sprite's first content texel
+     * @param padding the sprite's stitcher padding; the flushed patch also rewrites this
+     *                ring around the content with replicated edges (0 for none)
+     */
     public static void addPatch(Identifier spriteId, int dstX, int dstY,
                                 int srcX, int srcY, int width, int height,
                                 int srcImageWidth, int srcImageHeight,
-                                long pixelPtr, int rowPitch) {
+                                long pixelPtr, int rowPitch, int padding) {
         // Drop patches when the forwarder is not active (SDK missing, RTX
         // disabled, or post-shutdown/reload). Prevents an unbounded queue
         // when the animation tick hook still fires but we'll never flush.
@@ -188,9 +204,11 @@ public final class AtlasAnimationForwarder {
             return;
         }
 
+        // The ring starts at the slot corner, dst - padding, which is never negative.
+        int ring = Math.max(0, Math.min(padding, Math.min(dstX, dstY)));
         pendingPatches.add(new PatchRecord(spriteId, dstX, dstY, srcX, srcY,
                                            width, height, srcImageWidth, srcImageHeight,
-                                           pixelPtr, rowPitch));
+                                           pixelPtr, rowPitch, ring));
     }
 
     /**
@@ -209,11 +227,12 @@ public final class AtlasAnimationForwarder {
      * Queues frame {@code frameIndex} of a flipbook sheet, read in place: what 1.21.1's
      * {@code SpriteContents.AnimatedTexture.uploadFrame} handed to {@code upload}.
      *
+     * @param padding      the sprite's stitcher padding, refreshed with the frame's edges
      * @param sheet        the sprite's full RGBA sheet, frame 0 at its origin
      * @param frameRowSize frames per sheet row
      */
     public static void addFramePatch(Identifier spriteId, int dstX, int dstY, int width, int height,
-                                     NativeImage sheet, int frameRowSize, int frameIndex) {
+                                     int padding, NativeImage sheet, int frameRowSize, int frameIndex) {
         if (sheet == null || sheet.isClosed() || sheet.format() != NativeImage.Format.RGBA || frameRowSize <= 0) {
             return;
         }
@@ -226,7 +245,7 @@ public final class AtlasAnimationForwarder {
         }
         long pixelPtr = sheet.getPointer() + ((long) srcY * sheetWidth + srcX) * 4;
         addPatch(spriteId, dstX, dstY, srcX, srcY, width, height,
-                 sheetWidth, sheetHeight, pixelPtr, sheetWidth * 4);
+                 sheetWidth, sheetHeight, pixelPtr, sheetWidth * 4, padding);
     }
 
     /**
@@ -235,11 +254,12 @@ public final class AtlasAnimationForwarder {
      * patch is sprite-sized with its source at the origin, which is how
      * {@link PatchRecord#isInterpolatedUpload} recognises it.
      *
+     * @param padding       the sprite's stitcher padding, refreshed with the blend's edges
      * @param currentWeight weight of the current frame: {@code 1 - subFrame / frameTime}
      * @param blendTarget   {@code width * height * 4} writable bytes, alive until {@link #flush}
      */
     public static void addBlendedPatch(Identifier spriteId, int dstX, int dstY, int width, int height,
-                                       NativeImage sheet, int frameRowSize, int currentIndex, int nextIndex,
+                                       int padding, NativeImage sheet, int frameRowSize, int currentIndex, int nextIndex,
                                        double currentWeight, long blendTarget) {
         if (sheet == null || sheet.isClosed() || sheet.format() != NativeImage.Format.RGBA
                 || frameRowSize <= 0 || blendTarget == 0L) {
@@ -257,7 +277,7 @@ public final class AtlasAnimationForwarder {
         }
         blendFrames(sheet.getPointer(), sheetWidth, currentX, currentY, nextX, nextY,
                     width, height, currentWeight, blendTarget);
-        addPatch(spriteId, dstX, dstY, 0, 0, width, height, width, height, blendTarget, width * 4);
+        addPatch(spriteId, dstX, dstY, 0, 0, width, height, width, height, blendTarget, width * 4, padding);
     }
 
     /**
@@ -404,12 +424,10 @@ public final class AtlasAnimationForwarder {
                         srcBuf, p.rowPitch,
                         p.width, p.height);
                 }
-                ByteBuffer albedoDst = DirectBufferPool.acquire(patchBytes);
-                albedoDst.put(scratch, 0, patchBytes);
-                albedoDst.flip();
+                ByteBuffer albedoDst = stagePatch(p, 4);
                 ownedBuffers.add(albedoDst);
 
-                albedoPatches[i] = createPatch(p, albedoDst, patchRowBytes, TextureFormat.RGBA8_UNORM);
+                albedoPatches[i] = createPatch(p, albedoDst, 4, TextureFormat.RGBA8_UNORM);
 
                 // --- _s RGB material channels ---
                 // LabPBR packs roughness/metallic/SSS into _s.rgb. These
@@ -425,11 +443,9 @@ public final class AtlasAnimationForwarder {
                         labPbrSampling.next.x, labPbrSampling.next.y,
                         labPbrSampling.nextBlend,
                         p.width, p.height);
-                    ByteBuffer roughnessDst = DirectBufferPool.acquire(patchR8Bytes);
-                    roughnessDst.put(scratch, 0, patchR8Bytes);
-                    roughnessDst.flip();
+                    ByteBuffer roughnessDst = stagePatch(p, 1);
                     ownedBuffers.add(roughnessDst);
-                    roughnessPatches.add(createPatch(p, roughnessDst, p.width, TextureFormat.R8_UNORM));
+                    roughnessPatches.add(createPatch(p, roughnessDst, 1, TextureFormat.R8_UNORM));
                 }
 
                 if (pbr != null && pbr.sMetallicTable != null && metallicHandle != 0) {
@@ -442,11 +458,9 @@ public final class AtlasAnimationForwarder {
                         labPbrSampling.next.x, labPbrSampling.next.y,
                         labPbrSampling.nextBlend,
                         p.width, p.height);
-                    ByteBuffer metallicDst = DirectBufferPool.acquire(patchR8Bytes);
-                    metallicDst.put(scratch, 0, patchR8Bytes);
-                    metallicDst.flip();
+                    ByteBuffer metallicDst = stagePatch(p, 1);
                     ownedBuffers.add(metallicDst);
-                    metallicPatches.add(createPatch(p, metallicDst, p.width, TextureFormat.R8_UNORM));
+                    metallicPatches.add(createPatch(p, metallicDst, 1, TextureFormat.R8_UNORM));
                 }
 
                 if (pbr != null && pbr.hasSss && pbr.sSssTable != null && sssHandle != 0) {
@@ -457,11 +471,9 @@ public final class AtlasAnimationForwarder {
                         labPbrSampling.next.x, labPbrSampling.next.y,
                         labPbrSampling.nextBlend,
                         p.width, p.height);
-                    ByteBuffer sssDst = DirectBufferPool.acquire(patchBytes);
-                    sssDst.put(scratch, 0, patchBytes);
-                    sssDst.flip();
+                    ByteBuffer sssDst = stagePatch(p, 4);
                     ownedBuffers.add(sssDst);
-                    sssPatches.add(createPatch(p, sssDst, patchRowBytes, TextureFormat.RGBA8_UNORM));
+                    sssPatches.add(createPatch(p, sssDst, 4, TextureFormat.RGBA8_UNORM));
                 }
 
                 // --- Emissive patch (authored _s alpha, else a built-in mask) ---
@@ -491,12 +503,10 @@ public final class AtlasAnimationForwarder {
                         p.width, p.height, builtinMask);
                 }
 
-                ByteBuffer emissiveDst = DirectBufferPool.acquire(patchBytes);
-                emissiveDst.put(scratch, 0, patchBytes);
-                emissiveDst.flip();
+                ByteBuffer emissiveDst = stagePatch(p, 4);
                 ownedBuffers.add(emissiveDst);
 
-                emissivePatches.add(createPatch(p, emissiveDst, patchRowBytes, TextureFormat.RGBA8_UNORM));
+                emissivePatches.add(createPatch(p, emissiveDst, 4, TextureFormat.RGBA8_UNORM));
             }
 
             // One batch per frame: the runtime handles each entry's texture
@@ -528,14 +538,59 @@ public final class AtlasAnimationForwarder {
         }
     }
 
-    private static TexturePatch createPatch(PatchRecord p, ByteBuffer data, int rowPitch, int format) {
+    /**
+     * Copies the content patch just composed in {@link #scratch} ({@code width x height}
+     * texels, tightly packed) into a pooled direct buffer. With a padding ring the buffer
+     * holds the padded rectangle, the content at ({@code padding}, {@code padding}) and the
+     * ring filled with its replicated edges, so an animated sprite's ring follows its frame
+     * the way vanilla's draw over the whole slot does.
+     */
+    private static ByteBuffer stagePatch(PatchRecord p, int bytesPerTexel) {
+        byte[] source = scratch;
+        int bytes = p.width * p.height * bytesPerTexel;
+        if (p.padding > 0) {
+            int paddedW = p.width + 2 * p.padding;
+            int paddedH = p.height + 2 * p.padding;
+            bytes = paddedW * paddedH * bytesPerTexel;
+            if (paddedScratch.length < bytes) {
+                paddedScratch = new byte[bytes];
+            }
+            padPatch(scratch, p.width, p.height, bytesPerTexel, p.padding, paddedScratch);
+            source = paddedScratch;
+        }
+        ByteBuffer dst = DirectBufferPool.acquire(bytes);
+        dst.put(source, 0, bytes);
+        dst.flip();
+        return dst;
+    }
+
+    /**
+     * Writes a tightly packed {@code w x h} patch into {@code out} as a
+     * {@code (w + 2 * padding) x (h + 2 * padding)} patch whose ring replicates the edges
+     * ({@link LabPBRConverter#fillPaddingRing}). {@code out} must hold the padded patch.
+     */
+    static void padPatch(byte[] content, int w, int h, int bytesPerTexel, int padding, byte[] out) {
+        int paddedW = w + 2 * padding;
+        int paddedH = h + 2 * padding;
+        int rowBytes = w * bytesPerTexel;
+        int paddedRowBytes = paddedW * bytesPerTexel;
+        for (int y = 0; y < h; y++) {
+            System.arraycopy(content, y * rowBytes, out,
+                    (y + padding) * paddedRowBytes + padding * bytesPerTexel, rowBytes);
+        }
+        LabPBRConverter.fillPaddingRing(out, paddedW, paddedH, bytesPerTexel,
+                padding, padding, w, h, padding);
+    }
+
+    /** The Remix patch for {@code p}'s content plus its padding ring, from the slot corner. */
+    static TexturePatch createPatch(PatchRecord p, ByteBuffer data, int bytesPerTexel, int format) {
         TexturePatch patch = new TexturePatch();
-        patch.dstX = p.dstX;
-        patch.dstY = p.dstY;
-        patch.width = p.width;
-        patch.height = p.height;
+        patch.dstX = p.dstX - p.padding;
+        patch.dstY = p.dstY - p.padding;
+        patch.width = p.width + 2 * p.padding;
+        patch.height = p.height + 2 * p.padding;
         patch.pixelData = data;
-        patch.rowPitch = rowPitch;
+        patch.rowPitch = patch.width * bytesPerTexel;
         patch.format = format;
         return patch;
     }

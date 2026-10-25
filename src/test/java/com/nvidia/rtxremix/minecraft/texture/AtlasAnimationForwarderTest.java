@@ -8,16 +8,20 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import com.mojang.blaze3d.platform.NativeImage;
+import com.nvidia.rtxremix.TexturePatch;
 import net.minecraft.client.renderer.texture.SpriteContents;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.resources.metadata.animation.FrameSize;
 import net.minecraft.resources.Identifier;
 import org.lwjgl.system.MemoryUtil;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -38,10 +42,10 @@ class AtlasAnimationForwarderTest {
         AtlasAnimationForwarder.beginAtlasUpload(BlockTextureManager.BLOCK_ATLAS_ID);
 
         try {
-            AtlasAnimationForwarder.addPatch(guiSprite, 1, 2, 0, 0, 4, 4, 4, 4, 0L, 16);
+            AtlasAnimationForwarder.addPatch(guiSprite, 1, 2, 0, 0, 4, 4, 4, 4, 0L, 16, 0);
             assertEquals(0, pendingPatchCount());
 
-            AtlasAnimationForwarder.addPatch(blockSprite, 1, 2, 0, 0, 4, 4, 4, 4, 0L, 16);
+            AtlasAnimationForwarder.addPatch(blockSprite, 1, 2, 0, 0, 4, 4, 4, 4, 0L, 16, 0);
             assertEquals(1, pendingPatchCount());
         } finally {
             AtlasAnimationForwarder.endAtlasUpload();
@@ -57,7 +61,7 @@ class AtlasAnimationForwarderTest {
         AtlasAnimationForwarder.beginAtlasUpload(particleAtlas);
 
         try {
-            AtlasAnimationForwarder.addPatch(blockSprite, 1, 2, 0, 0, 4, 4, 4, 4, 0L, 16);
+            AtlasAnimationForwarder.addPatch(blockSprite, 1, 2, 0, 0, 4, 4, 4, 4, 0L, 16, 0);
             assertEquals(0, pendingPatchCount());
         } finally {
             AtlasAnimationForwarder.endAtlasUpload();
@@ -140,7 +144,7 @@ class AtlasAnimationForwarderTest {
         AtlasAnimationForwarder.init(Map.of(), Set.of(blockSprite));
         AtlasAnimationForwarder.beginAtlasUpload(atlasId);
         try (NativeImage sheet = new NativeImage(4, 8, false)) {
-            AtlasAnimationForwarder.addFramePatch(blockSprite, contentX, contentY, 4, 4, sheet, 1, 1);
+            AtlasAnimationForwarder.addFramePatch(blockSprite, contentX, contentY, 4, 4, padding, sheet, 1, 1);
             List<?> patches = pendingPatches();
             assertEquals(1, patches.size());
             Object patch = patches.get(0);
@@ -148,9 +152,84 @@ class AtlasAnimationForwarderTest {
             assertEquals(48, intField(patch, "dstY"));
             assertEquals(0, intField(patch, "srcX"));
             assertEquals(4, intField(patch, "srcY"));
+            assertEquals(padding, intField(patch, "padding"));
         } finally {
             AtlasAnimationForwarder.endAtlasUpload();
             contents.close();
+        }
+    }
+
+    /**
+     * Vanilla's animation draw covers the whole padded slot, so the ring of replicated
+     * edges follows each frame. The patch sent to Remix must start at the slot corner and
+     * span the content plus the ring on every side, for RGBA and R8 layers alike.
+     */
+    @Test
+    void flushedPatchCoversTheContentAndItsPaddingRing() throws Exception {
+        Identifier blockSprite = Identifier.fromNamespaceAndPath("minecraft", "block/lava_still");
+        AtlasAnimationForwarder.init(Map.of(), Set.of(blockSprite));
+        AtlasAnimationForwarder.beginAtlasUpload(BlockTextureManager.BLOCK_ATLAS_ID);
+        try {
+            // Content at (66, 50), 16x16, padding 2: the slot corner is (64, 48).
+            AtlasAnimationForwarder.addPatch(blockSprite, 66, 50, 0, 16, 16, 16, 16, 32, 0L, 64, 2);
+            Object record = pendingPatches().get(0);
+            Method createPatch = AtlasAnimationForwarder.class.getDeclaredMethod(
+                    "createPatch", record.getClass(), ByteBuffer.class, int.class, int.class);
+            createPatch.setAccessible(true);
+
+            TexturePatch rgba = (TexturePatch) createPatch.invoke(null, record, null, 4, 0);
+            assertEquals(64, rgba.dstX);
+            assertEquals(48, rgba.dstY);
+            assertEquals(20, rgba.width);
+            assertEquals(20, rgba.height);
+            assertEquals(20 * 4, rgba.rowPitch);
+
+            TexturePatch r8 = (TexturePatch) createPatch.invoke(null, record, null, 1, 0);
+            assertEquals(20, r8.width);
+            assertEquals(20, r8.rowPitch);
+        } finally {
+            AtlasAnimationForwarder.endAtlasUpload();
+        }
+    }
+
+    @Test
+    void paddingIsClampedSoTheRingNeverStartsOutsideTheAtlas() throws Exception {
+        Identifier blockSprite = Identifier.fromNamespaceAndPath("minecraft", "block/lava_still");
+        AtlasAnimationForwarder.init(Map.of(), Set.of(blockSprite));
+        AtlasAnimationForwarder.beginAtlasUpload(BlockTextureManager.BLOCK_ATLAS_ID);
+        try {
+            AtlasAnimationForwarder.addPatch(blockSprite, 1, 3, 0, 0, 4, 4, 4, 4, 0L, 16, 2);
+            assertEquals(1, intField(pendingPatches().get(0), "padding"));
+        } finally {
+            AtlasAnimationForwarder.endAtlasUpload();
+        }
+    }
+
+    /** The staged patch holds the frame at (p, p) and its replicated edges around it. */
+    @Test
+    void padPatchReplicatesTheFramesEdgesIntoTheRing() {
+        // A 2x2 R8 frame with padding 1 becomes 4x4.
+        byte[] frame = {1, 2, 3, 4};
+        byte[] out = new byte[16];
+        AtlasAnimationForwarder.padPatch(frame, 2, 2, 1, 1, out);
+        assertArrayEquals(new byte[] {
+            1, 1, 2, 2,
+            1, 1, 2, 2,
+            3, 3, 4, 4,
+            3, 3, 4, 4,
+        }, out);
+
+        // A 1x2 RGBA frame with padding 2 becomes 5x6; every texel is the clamped frame texel.
+        byte[] rgba = {10, 11, 12, 13, 20, 21, 22, 23};
+        byte[] padded = new byte[5 * 6 * 4];
+        AtlasAnimationForwarder.padPatch(rgba, 1, 2, 4, 2, padded);
+        for (int y = 0; y < 6; y++) {
+            for (int x = 0; x < 5; x++) {
+                int src = y < 3 ? 0 : 4;
+                for (int c = 0; c < 4; c++) {
+                    assertEquals(rgba[src + c], padded[(y * 5 + x) * 4 + c], "(" + x + ", " + y + ")");
+                }
+            }
         }
     }
 

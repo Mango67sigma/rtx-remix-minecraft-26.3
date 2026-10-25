@@ -53,14 +53,17 @@ public abstract class SpriteAnimationStateMixin implements AnimatedSpriteBinding
     /** Atlas texel of the sprite's first content texel (past the stitcher padding). */
     @Unique private int rtxremix$contentX;
     @Unique private int rtxremix$contentY;
+    /** Stitcher padding ring around the content, refreshed with every forwarded frame. */
+    @Unique private int rtxremix$padding;
     /** Sprite-sized RGBA buffer for blended frames, allocated on first use and freed on close. */
     @Unique private long rtxremix$blend;
 
     @Override
-    public void rtxremix$bindSprite(TextureAtlasSprite sprite, int contentX, int contentY) {
+    public void rtxremix$bindSprite(TextureAtlasSprite sprite, int contentX, int contentY, int padding) {
         rtxremix$sprite = sprite;
         rtxremix$contentX = contentX;
         rtxremix$contentY = contentY;
+        rtxremix$padding = padding;
     }
 
     @Inject(method = "tick", at = @At("RETURN"))
@@ -83,7 +86,7 @@ public abstract class SpriteAnimationStateMixin implements AnimatedSpriteBinding
             // The tick moved to the next frame; isDirty says its index changed.
             if (isDirty) {
                 AtlasAnimationForwarder.addFramePatch(id, rtxremix$contentX, rtxremix$contentY, width, height,
-                        sheet, layout.rtxremix$frameRowSize(), frames.get(frame).index());
+                        rtxremix$padding, sheet, layout.rtxremix$frameRowSize(), frames.get(frame).index());
             }
             return;
         }
@@ -103,7 +106,7 @@ public abstract class SpriteAnimationStateMixin implements AnimatedSpriteBinding
         }
         double currentWeight = 1.0 - (double) subFrame / current.time();
         AtlasAnimationForwarder.addBlendedPatch(id, rtxremix$contentX, rtxremix$contentY, width, height,
-                sheet, layout.rtxremix$frameRowSize(), current.index(), nextIndex, currentWeight,
+                rtxremix$padding, sheet, layout.rtxremix$frameRowSize(), current.index(), nextIndex, currentWeight,
                 rtxremix$blend);
     }
 

@@ -558,6 +558,72 @@ public final class LabPBRConverter {
         return false;
     }
 
+    // --- Sprite padding ---
+
+    /**
+     * Fills the padding ring around one sprite's content with its replicated edge
+     * texels, which is what vanilla's GPU stitch leaves there.
+     *
+     * <p>Since 1.21.11 {@code Stitcher} gives every sprite a slot of
+     * {@code (w + 2p) x (h + 2p)} with {@code p = 1 << mipLevel << clamp(anisotropyBit - 1, 0, 4)},
+     * and {@code TextureAtlasSprite.uploadSpriteUbo} draws the sprite over that whole
+     * rectangle with UVs running {@code p / w} past each edge through a clamp-to-edge
+     * sampler ({@code animate_sprite.vsh}), so the ring holds the first and last content
+     * row above and below, the first and last content column left and right, and the
+     * corner texel in each corner. Remix builds its own mip chain from the mod's atlas
+     * copies; with the ring left zero every mip above 0 averages sprite edges with
+     * transparent black and shows dark seams at every block edge.
+     *
+     * <p>The ring is written only inside the slot and clipped to the buffer, so it never
+     * touches a neighbouring slot. The content rectangle is read, never written.
+     *
+     * @param dst           an atlas-sized buffer, {@code dstW * dstH * bytesPerTexel} bytes
+     * @param bytesPerTexel 4 for RGBA8 layers, 1 for R8 layers
+     * @param cx            atlas column of the first content texel
+     * @param cy            atlas row of the first content texel
+     * @param cw            content width in texels
+     * @param ch            content height in texels
+     * @param padding       ring width in texels; 0 does nothing
+     */
+    public static void fillPaddingRing(byte[] dst, int dstW, int dstH, int bytesPerTexel,
+                                       int cx, int cy, int cw, int ch, int padding) {
+        if (padding <= 0 || cw <= 0 || ch <= 0 || bytesPerTexel <= 0) return;
+        if (cx < 0 || cy < 0 || cx + cw > dstW || cy + ch > dstH) return;
+        if ((long) dstW * dstH * bytesPerTexel > dst.length) return;
+        int left = Math.min(padding, cx);
+        int top = Math.min(padding, cy);
+        int right = Math.min(padding, dstW - (cx + cw));
+        int bottom = Math.min(padding, dstH - (cy + ch));
+        int bpp = bytesPerTexel;
+        int rowBytes = dstW * bpp;
+
+        // Columns left and right of every content row.
+        for (int y = cy; y < cy + ch; y++) {
+            int row = y * rowBytes;
+            int first = row + cx * bpp;
+            int last = row + (cx + cw - 1) * bpp;
+            for (int i = 1; i <= left; i++) {
+                System.arraycopy(dst, first, dst, first - i * bpp, bpp);
+            }
+            for (int i = 1; i <= right; i++) {
+                System.arraycopy(dst, last, dst, last + i * bpp, bpp);
+            }
+        }
+
+        // Rows above and below, copied whole from the widened first and last rows, so the
+        // corners take the corner texels.
+        int spanStart = (cx - left) * bpp;
+        int spanBytes = (left + cw + right) * bpp;
+        int firstRow = cy * rowBytes + spanStart;
+        for (int y = cy - top; y < cy; y++) {
+            System.arraycopy(dst, firstRow, dst, y * rowBytes + spanStart, spanBytes);
+        }
+        int lastRow = (cy + ch - 1) * rowBytes + spanStart;
+        for (int y = cy + ch; y < cy + ch + bottom; y++) {
+            System.arraycopy(dst, lastRow, dst, y * rowBytes + spanStart, spanBytes);
+        }
+    }
+
     // --- Helpers ---
 
     private static void blitR8(byte[] dst, int atlasW, NativeImage img,

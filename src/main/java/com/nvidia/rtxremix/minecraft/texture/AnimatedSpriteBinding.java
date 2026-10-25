@@ -15,7 +15,9 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
  * slot any more. {@code TextureAtlasSpriteMixin} binds the sprite when the atlas creates
  * the state, which gives the forwarder the destination rectangle 1.21.1 passed to
  * {@code SpriteContents.upload}. That rectangle starts at the sprite's content, not at
- * its padded slot ({@code getX()/getY()}), so the binding carries the content origin.
+ * its padded slot ({@code getX()/getY()}), so the binding carries the content origin, and
+ * the stitcher padding, because vanilla's draw also refreshes the ring of replicated edge
+ * texels around the content and Remix's copy must follow it.
  */
 public interface AnimatedSpriteBinding {
 
@@ -23,6 +25,7 @@ public interface AnimatedSpriteBinding {
      * @param contentX atlas texel column of the sprite's first content texel, i.e. the
      *                 padded slot's {@code getX()} plus its stitcher padding
      * @param contentY the row counterpart of {@code contentX}
+     * @param padding  the stitcher padding around the content, {@code contentX - getX()}
      */
-    void rtxremix$bindSprite(TextureAtlasSprite sprite, int contentX, int contentY);
+    void rtxremix$bindSprite(TextureAtlasSprite sprite, int contentX, int contentY, int padding);
 }

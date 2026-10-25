@@ -43,7 +43,8 @@ import net.minecraft.server.packs.resources.ResourceManager;
  * <p>Mirrors {@link BlockTextureManager#buildAtlasMaterials} but operates on
  * the particle atlas ({@code TextureAtlas.LOCATION_PARTICLES}). Sidecars sit at
  * the sprite's content origin ({@link BlockTextureManager#spriteContentX}), where
- * the stitched albedo and the particle UVs put it.
+ * the stitched albedo and the particle UVs put it, and every layer's padding ring holds
+ * the sprite's replicated edges ({@link BlockTextureManager#fillPaddingRings}).
  *
  * <p>Particles whose layer samples the block or the item atlas reuse
  * {@link BlockTextureManager}'s cutout materials rather than creating new ones here.
@@ -149,6 +150,15 @@ public class ParticleAtlasManager {
                     if (sImg != null) sImg.close();
                 }
             }
+
+            // Replicate each sprite's edges into its stitcher padding ring in every layer,
+            // as vanilla's stitch does, so Remix's mips never average a sprite with black.
+            BlockTextureManager.fillPaddingRings(atlas, albedoRGBA, 4);
+            BlockTextureManager.fillPaddingRings(atlas, normalAtlas, 4);
+            BlockTextureManager.fillPaddingRings(atlas, heightAtlas, 1);
+            BlockTextureManager.fillPaddingRings(atlas, roughnessAtlas, 1);
+            BlockTextureManager.fillPaddingRings(atlas, metallicAtlas, 1);
+            BlockTextureManager.fillPaddingRings(atlas, emissiveAtlas, 4);
 
             RemixTexture albedoTex = uploadTexture("particle_atlas_albedo",
                     albedoRGBA, atlasW, atlasH, TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);

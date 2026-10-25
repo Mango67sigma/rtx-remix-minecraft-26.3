@@ -2383,6 +2383,17 @@ public class RemixEntitySubmitter {
                 }
             }
 
+            // Replicate each sprite's edges into its stitcher padding ring in every layer,
+            // as vanilla's stitch does, so Remix's mips never average a sprite with black.
+            BlockTextureManager.fillPaddingRings(atlas, pixels, 4);
+            BlockTextureManager.fillPaddingRings(atlas, normalData, 4);
+            BlockTextureManager.fillPaddingRings(atlas, heightData, 1);
+            BlockTextureManager.fillPaddingRings(atlas, roughData, 1);
+            BlockTextureManager.fillPaddingRings(atlas, metalData, 1);
+            BlockTextureManager.fillPaddingRings(atlas, emissiveData, 4);
+            BlockTextureManager.fillPaddingRings(atlas, sssData, 4);
+            BlockTextureManager.fillPaddingRings(atlas, sssAlbedoData, 4);
+
             EntityTextureSet textures = new EntityTextureSet();
             String name = "atlas_" + textureId;
             textures.albedo = uploadAndOwn(textures, name + "_a", pixels, w, h,

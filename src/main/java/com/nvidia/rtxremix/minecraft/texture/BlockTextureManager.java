@@ -179,6 +179,8 @@ public class BlockTextureManager {
         public final float u0, v0, u1, v1;
         public final boolean hasTransparency;
         final int pixW, pixH, pixX, pixY;
+        /** Stitcher padding ring around the content, see {@link #spritePadding}. */
+        final int pad;
         private final BitSet transparentPixels;
         RemixTexture albedo, normal, roughness, metallic, height, emissive, sss, sssAlbedo;
         public boolean hasPBR, hasSSS;
@@ -188,6 +190,7 @@ public class BlockTextureManager {
             this.index = i; this.id = id;
             u0 = s.getU0(); v0 = s.getV0(); u1 = s.getU1(); v1 = s.getV1();
             pixX = spriteContentX(s, atlasW); pixY = spriteContentY(s, atlasH);
+            pad = spritePadding(s, pixX, pixY);
             SpriteContents contents = s.contents();
             pixW = contents.width(); pixH = contents.height();
             transparentPixels = scanTransparency(contents, pixW, pixH);
@@ -493,6 +496,17 @@ public class BlockTextureManager {
             }
         }
 
+        // Every layer's content is final; replicate its edges into the padding rings the
+        // way vanilla's stitch does, so Remix's mips never average a sprite with black.
+        fillSpriteRings(albedoRGBA, 4);
+        fillSpriteRings(normalAtlas, 4);
+        fillSpriteRings(heightAtlas, 1);
+        fillSpriteRings(roughnessAtlas, 1);
+        fillSpriteRings(metallicAtlas, 1);
+        fillSpriteRings(emissiveAtlas, 4);
+        fillSpriteRings(sssThicknessAtlas, 4);
+        fillSpriteRings(sssAlbedoAtlas, 4);
+
         atlasAlbedo = upload(api, "atlas_albedo", albedoRGBA, atlasW, atlasH,
                 TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
 
@@ -632,6 +646,13 @@ public class BlockTextureManager {
                     if (sI != null) sI.close();
                 }
             }
+
+            fillPaddingRings(atlas, albedo, 4);
+            fillPaddingRings(atlas, normalAtlas, 4);
+            fillPaddingRings(atlas, heightAtlas, 1);
+            fillPaddingRings(atlas, roughnessAtlas, 1);
+            fillPaddingRings(atlas, metallicAtlas, 1);
+            fillPaddingRings(atlas, emissiveAtlas, 4);
 
             RemixTexture albedoTex = upload(api, "item_atlas_albedo", albedo, w, h,
                     TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
@@ -1174,9 +1195,10 @@ public class BlockTextureManager {
 
     /**
      * Reads per-sprite NativeImages and stitches into an RGBA byte[] atlas buffer.
-     * Each sprite lands at its content origin, where its UVs sample it. The padding
-     * vanilla's GPU stitch fills around a sprite stays transparent here; no quad's
-     * UVs reach it.
+     * Each sprite lands at its content origin, where its UVs sample it, and its padding
+     * ring holds its replicated edge texels as vanilla's GPU stitch leaves it
+     * ({@link LabPBRConverter#fillPaddingRing}). A caller that changes a sprite's
+     * content afterwards (LabPBR AO) refreshes the ring with {@link #fillPaddingRings}.
      */
     public static byte[] stitchAtlasRGBA(TextureAtlas atlas) {
         SpriteAtlasAccessor acc = (SpriteAtlasAccessor) atlas;
@@ -1201,8 +1223,51 @@ public class BlockTextureManager {
                     buf[idx + 2] = (byte) ((abgr >> 16) & 0xFF);
                     buf[idx + 3] = (byte) ((abgr >> 24) & 0xFF);
                 }
+            LabPBRConverter.fillPaddingRing(buf, w, h, 4, sx, sy, sw, sh, spritePadding(sprite, sx, sy));
         }
         return buf;
+    }
+
+    /**
+     * Fills every sprite's padding ring in an atlas-sized layer buffer with the sprite's
+     * replicated edge texels ({@link LabPBRConverter#fillPaddingRing}). Call it once a
+     * layer's content is final, before uploading it.
+     *
+     * @param bytesPerTexel 4 for RGBA8 layers, 1 for R8 layers
+     */
+    public static void fillPaddingRings(TextureAtlas atlas, byte[] buffer, int bytesPerTexel) {
+        SpriteAtlasAccessor acc = (SpriteAtlasAccessor) atlas;
+        int w = acc.getWidth(), h = acc.getHeight();
+        Map<Identifier, TextureAtlasSprite> map = acc.getSprites();
+        if (buffer == null || map == null || w == 0 || h == 0) return;
+        for (TextureAtlasSprite sprite : map.values()) {
+            int sx = spriteContentX(sprite, w), sy = spriteContentY(sprite, h);
+            int sw = sprite.contents().width(), sh = sprite.contents().height();
+            if (!contentFits(sx, sy, sw, sh, w, h)) continue;
+            LabPBRConverter.fillPaddingRing(buffer, w, h, bytesPerTexel, sx, sy, sw, sh,
+                    spritePadding(sprite, sx, sy));
+        }
+    }
+
+    /** {@link #fillPaddingRings} over the indexed block-atlas sprites. */
+    private void fillSpriteRings(byte[] buffer, int bytesPerTexel) {
+        for (SpriteEntry se : sprites) {
+            if (!contentFits(se.pixX, se.pixY, se.pixW, se.pixH, atlasW, atlasH)) continue;
+            LabPBRConverter.fillPaddingRing(buffer, atlasW, atlasH, bytesPerTexel,
+                    se.pixX, se.pixY, se.pixW, se.pixH, se.pad);
+        }
+    }
+
+    /**
+     * The stitcher padding around a sprite's content: the content origin minus the
+     * padded slot's corner ({@code getX()/getY()}). {@code Stitcher} pads both axes
+     * alike; should the two ever differ, the smaller is used so the ring stays inside
+     * the slot on both axes. Never negative.
+     */
+    public static int spritePadding(TextureAtlasSprite sprite, int contentX, int contentY) {
+        int padX = contentX - sprite.getX();
+        int padY = contentY - sprite.getY();
+        return Math.max(0, Math.min(padX, padY));
     }
 
     /**

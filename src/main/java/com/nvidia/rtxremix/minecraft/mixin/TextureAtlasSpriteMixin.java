@@ -22,7 +22,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  * through {@code TextureAtlasSprite.createAnimationState}, the last point where the
  * sprite, and with it the atlas slot, is in hand. The slot origin {@code x/y} is the corner
  * of the stitcher's padded slot; the content, which the sprite's UVs sample and which Remix's
- * atlas copy holds, starts {@code padding} texels further in, so that is what is bound. See {@link AnimatedSpriteBinding}.
+ * atlas copy holds, starts {@code padding} texels further in, so that is what is bound, with the
+ * padding itself for the ring of replicated edges vanilla's draw refreshes. See {@link AnimatedSpriteBinding}.
  */
 @Mixin(TextureAtlasSprite.class)
 public abstract class TextureAtlasSpriteMixin {
@@ -37,7 +38,7 @@ public abstract class TextureAtlasSpriteMixin {
         SpriteContents.AnimationState state = cir.getReturnValue();
         if (state != null) {
             ((AnimatedSpriteBinding) (Object) state).rtxremix$bindSprite(
-                    (TextureAtlasSprite) (Object) this, x + padding, y + padding);
+                    (TextureAtlasSprite) (Object) this, x + padding, y + padding, padding);
         }
     }
 }

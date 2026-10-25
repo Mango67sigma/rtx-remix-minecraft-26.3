@@ -42,6 +42,25 @@ class BlockTextureManagerSpriteOriginTest {
     }
 
     @Test
+    void spritePaddingIsTheContentOriginMinusTheSlotCorner() {
+        TextureAtlasSprite padded = sprite(48, 96, 16, 1024, 512, 2);
+        assertEquals(2, BlockTextureManager.spritePadding(padded,
+                BlockTextureManager.spriteContentX(padded, 1024),
+                BlockTextureManager.spriteContentY(padded, 512)));
+        TextureAtlasSprite unpadded = sprite(32, 48, 16, 256, 256, 0);
+        assertEquals(0, BlockTextureManager.spritePadding(unpadded,
+                BlockTextureManager.spriteContentX(unpadded, 256),
+                BlockTextureManager.spriteContentY(unpadded, 256)));
+    }
+
+    @Test
+    void spritePaddingFallsBackToTheSmallerAxisAndIsNeverNegative() {
+        TextureAtlasSprite sprite = sprite(48, 96, 16, 1024, 512, 0);
+        assertEquals(1, BlockTextureManager.spritePadding(sprite, 51, 97));
+        assertEquals(0, BlockTextureManager.spritePadding(sprite, 47, 98));
+    }
+
+    @Test
     void contentOriginIsTheSlotOriginWithoutPadding() {
         TextureAtlasSprite sprite = sprite(32, 48, 16, 256, 256, 0);
         assertEquals(sprite.getX(), BlockTextureManager.spriteContentX(sprite, 256));
