@@ -210,8 +210,10 @@ of a world. Delete them by hand if you want the folder clean:
 - `benchmark\`, results from `/rtx benchmark`
 - `remix-sdk.old-*\`, a previous runtime that was still locked when it was
   replaced. The mod deletes these itself on a later launch
-- `saves\<world>\rtx-remix\` and `saves\<world>\data\rtx_remix_zones.dat`,
-  which are lighting content belonging to that world
+- `saves\<world>\rtx-remix\` and `saves\<world>\data\rtx-remix-renderer\zones.dat`,
+  which are lighting content belonging to that world. A world saved by an
+  earlier release may also hold `data\rtx_remix_zones.dat`, which the mod
+  imports once and leaves in place
 
 The optional Prism instance or portable cleanup deletes everything inside
 those directories, including worlds and the files listed above.

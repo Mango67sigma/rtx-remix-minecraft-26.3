@@ -332,13 +332,15 @@ replaces the active entry.
 
 | Defined by | Single-player | On a server |
 |---|---|---|
-| `/rtx zone define` | Saved into `<world>/data/rtx_remix_zones.dat` and restored on join | Local to your client for that session, not saved and not shared |
+| `/rtx zone define` | Saved into `<world>/data/rtx-remix-renderer/zones.dat` and restored on join | Local to your client for that session, not saved and not shared |
 | A marker command block | Read as chunks load, and on `/rtx zone rescan`. Stays in the block, not in the saved file | Unavailable |
 | A map profile under `<world>/rtx-remix/confs/` | Loaded on join, dropped on leave | Unavailable |
 
-`rtx_remix_zones.dat` is optional. A map whose zones are all command blocks
-never creates one. `/rtx zone remove` deletes the saved definition in
-single-player, but a marker block can register the same name again on a later
+`zones.dat` is optional. A map whose zones are all command blocks
+never creates one. A world saved by an earlier release keeps its zones in
+`<world>/data/rtx_remix_zones.dat`; the mod imports that file once, when
+`zones.dat` does not exist yet, and leaves it in place. `/rtx zone remove`
+deletes the saved definition in single-player, but a marker block can register the same name again on a later
 chunk load or rescan, so remove the block as well. Zone coordinates are not
 scoped to a dimension: the same coordinates in another dimension are inside the
 zone too. Opening a world to LAN does not send zones to guests.

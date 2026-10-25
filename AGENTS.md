@@ -218,19 +218,31 @@ view instead of vanilla's whole-map clone (`ServerLightSnapshot`); and the
 client's sky-light surface walk is seeded at the packet's `WORLD_SURFACE`
 height (`SeededSurfaceScan`, `SkyLightSurfaceScanPolicy`). `VanillaSectionBuilds`
 keeps real copies until every build that latched capture off has finished.
-Each policy has a `rtxremix.*` kill switch listed in `docs/TUNING.md`. The
-chunk-load neighbour re-flag filter (`NeighbourReflagFilter`) is not ported:
-26.3 dirties a loaded chunk's neighbours through `setSectionRangeDirty` rather
-than per section, its property has no effect, and chunk loads re-flag as
-vanilla does. 26.3 also never compiles an uncompiled section until its eight
-neighbour columns are loaded and lit, and it keeps sections that turned to all
-air out of the visible graph, so `ClientChunkManagerMixin` reports such
-sections for removal from the Remix scene.
+Each policy has a `rtxremix.*` kill switch listed in `docs/TUNING.md`. 26.3
+never compiles an uncompiled section until its eight neighbour columns are
+loaded and lit (`SectionUpdateTracker.hasAllNeighbors`), and a column's light
+comes on in the same render-thread task that re-flags its neighbourhood with
+`setSectionRangeDirty`, so the 1.21.1 chunk-load rebuild storm is gone and chunk
+loads stay vanilla. `NeighbourReflagFilter` instead drops the light-data
+re-flags: while RTX is enabled, `LevelExtractorTerrainMixin` cancels
+`LevelExtractor.setSectionDirtyWithNeighbors` at its head, which a light update
+packet calls for the 3x3x3 neighbourhood of every section it carries light for.
+Remix terrain reads no client light, so those rebuilds would recapture identical
+geometry. The switch is `rtxremix.chunk.neighbourReflagFilter`; the rebuilds it
+drops are counted as `Chunk.NeighbourReflagsDropped` and, with the switch off,
+the ones vanilla then runs as `Chunk.NeighbourReflagsKept`. Block updates and
+biome updates stay vanilla. The repeats a chunk load can still cause while the
+light queue is behind are only measured: `Chunk.BuildsAheadOfChunkLight` counts
+a build whose 3x3 column neighbourhood holds a column that is loaded but not yet
+lit. 26.3 also keeps sections that turned to all air out of the visible graph,
+so `ClientChunkManagerMixin` reports such sections for removal from the Remix
+scene.
 
 **Visibility.** The occlusion walk is the mod's allocation-free port of
-vanilla's `SectionOcclusionGraph.runUpdates` and runs on a low-priority
-executor of its own (`ChunkRenderingDataPreparerMixin`, `terrain/visibility/`).
-Frustum application is vanilla's: since 1.21.2 the graph keeps reached sections
+vanilla's `SectionOcclusionGraph.runUpdates`. It runs by default with RTX on, on
+a low-priority executor of its own (`ChunkRenderingDataPreparerMixin`,
+`terrain/visibility/`); `-Drtxremix.vanillaVisibilityWalk=true` switches to
+vanilla's walk instead. Only the frustum cull is left to vanilla: since 1.21.2 the graph keeps reached sections
 in an `Octree` that culls whole octants. The mod's coarse frustum index
 (`BuiltChunkFrustumIndex`) and its replay of the render-thread slot move log
 (`ChunkSlotMoveLog`, still recorded) are therefore not installed. Bringing the
@@ -311,7 +323,8 @@ frame is swept at any distance so its light never arrives without its housing.
 Rigid occurrences retain instances keyed by owner, category, layer, and part;
 `CuboidMixin` keys a cube by its sprite at `ModelPart.Cube.compile`; strips and
 beams stream transient meshes per frame. Enchantment glint is a second sampler
-of one pipeline in 26.3 and is not captured. `RemixBlockDamagePass` submits
+of one pipeline in 26.3, so its capture is decided in
+`RemixSubmitNodeCollector` and `RenderLayerUtils`. `RemixBlockDamagePass` submits
 static terrain damage decals from `LevelRenderer.submitBlockDestroyAnimation`
 (`LevelRendererBlockDamageMixin`), and the block outline is captured at
 `LevelRenderer.submitBlockOutline` (`LevelRendererBlockOutlineMixin`).

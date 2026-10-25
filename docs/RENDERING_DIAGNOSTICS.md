@@ -91,13 +91,15 @@ runs each model's `setupAnim` itself when it executes the submit, so the pose
 it captures is the one vanilla would have drawn this frame.
 
 Some geometry is absent from the traced scene by construction, not by a
-capture failure: enchantment glint, which 26.3 draws as a second sampler of
-the item's own pipeline; the block-entity crumbling overlay; shadow and
-outline copies; anything a mod renders through Fabric's `submitCustom` nodes;
-and particles on the item atlas or a mod atlas, such as the crumbs of a
-breaking tool or eaten food, which have no Remix material route yet. Text on
-grayscale glyph pages, which 26.3 draws with the `TEXT_GRAYSCALE` pipelines, is
-captured but has not yet been checked in game.
+capture failure: the block-entity crumbling overlay; shadow and outline
+copies; anything a mod renders through Fabric's `submitCustom` nodes; and
+particles on the item atlas or a mod atlas, such as the crumbs of a breaking
+tool or eaten food, which have no Remix material route yet. Text on grayscale
+glyph pages, which 26.3 draws with the `TEXT_GRAYSCALE` pipelines, is captured
+but has not yet been checked in game. Enchantment glint is drawn by 26.3 as a
+second sampler of the item's own pipeline; how it reaches the scene is decided
+in `RemixSubmitNodeCollector`, so check there before treating a missing glint as
+a capture failure.
 
 Minecraft's model parts are rigid: their pivot belongs in the instance
 transform, not a skinning stream. Skinning would add CPU mesh work in the
