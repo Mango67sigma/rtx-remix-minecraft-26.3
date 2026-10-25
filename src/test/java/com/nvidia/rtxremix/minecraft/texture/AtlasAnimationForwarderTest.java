@@ -11,6 +11,10 @@ import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.client.renderer.texture.SpriteContents;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.client.resources.metadata.animation.FrameSize;
 import net.minecraft.resources.Identifier;
 import org.lwjgl.system.MemoryUtil;
 
@@ -114,6 +118,52 @@ class AtlasAnimationForwarderTest {
             MemoryUtil.nmemFree(sheet);
             MemoryUtil.nmemFree(out);
         }
+    }
+
+    /**
+     * The animation hook binds {@code getX() + padding} (the slot's content origin, which
+     * is where the sprite's UVs and Remix's atlas copy put the content) and the forwarder
+     * must queue the patch there, not at the padded slot's corner.
+     */
+    @Test
+    void framePatchOfAPaddedSpriteLandsAtTheContentOrigin() throws Exception {
+        Identifier blockSprite = Identifier.fromNamespaceAndPath("minecraft", "block/lava_still");
+        int padding = 16;
+        Identifier atlasId = BlockTextureManager.BLOCK_ATLAS_ID;
+        SpriteContents contents = new SpriteContents(blockSprite, new FrameSize(4, 4), new NativeImage(4, 8, false));
+        TextureAtlasSprite sprite = new TextureAtlasSprite(atlasId, contents, 256, 128, 48, 32, padding) {};
+        int contentX = sprite.getX() + padding;
+        int contentY = sprite.getY() + padding;
+        assertEquals(contentX, BlockTextureManager.spriteContentX(sprite, 256));
+        assertEquals(contentY, BlockTextureManager.spriteContentY(sprite, 128));
+
+        AtlasAnimationForwarder.init(Map.of(), Set.of(blockSprite));
+        AtlasAnimationForwarder.beginAtlasUpload(atlasId);
+        try (NativeImage sheet = new NativeImage(4, 8, false)) {
+            AtlasAnimationForwarder.addFramePatch(blockSprite, contentX, contentY, 4, 4, sheet, 1, 1);
+            List<?> patches = pendingPatches();
+            assertEquals(1, patches.size());
+            Object patch = patches.get(0);
+            assertEquals(64, intField(patch, "dstX"));
+            assertEquals(48, intField(patch, "dstY"));
+            assertEquals(0, intField(patch, "srcX"));
+            assertEquals(4, intField(patch, "srcY"));
+        } finally {
+            AtlasAnimationForwarder.endAtlasUpload();
+            contents.close();
+        }
+    }
+
+    private static List<?> pendingPatches() throws Exception {
+        Field pendingPatches = AtlasAnimationForwarder.class.getDeclaredField("pendingPatches");
+        pendingPatches.setAccessible(true);
+        return (List<?>) pendingPatches.get(null);
+    }
+
+    private static int intField(Object patch, String name) throws Exception {
+        Field f = patch.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.getInt(patch);
     }
 
     private static int pendingPatchCount() throws Exception {

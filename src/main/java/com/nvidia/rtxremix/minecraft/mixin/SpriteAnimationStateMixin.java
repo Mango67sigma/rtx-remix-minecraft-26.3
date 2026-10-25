@@ -50,12 +50,17 @@ public abstract class SpriteAnimationStateMixin implements AnimatedSpriteBinding
     @Shadow private boolean isDirty;
 
     @Unique private TextureAtlasSprite rtxremix$sprite;
+    /** Atlas texel of the sprite's first content texel (past the stitcher padding). */
+    @Unique private int rtxremix$contentX;
+    @Unique private int rtxremix$contentY;
     /** Sprite-sized RGBA buffer for blended frames, allocated on first use and freed on close. */
     @Unique private long rtxremix$blend;
 
     @Override
-    public void rtxremix$bindSprite(TextureAtlasSprite sprite) {
+    public void rtxremix$bindSprite(TextureAtlasSprite sprite, int contentX, int contentY) {
         rtxremix$sprite = sprite;
+        rtxremix$contentX = contentX;
+        rtxremix$contentY = contentY;
     }
 
     @Inject(method = "tick", at = @At("RETURN"))
@@ -77,7 +82,7 @@ public abstract class SpriteAnimationStateMixin implements AnimatedSpriteBinding
         if (subFrame == 0) {
             // The tick moved to the next frame; isDirty says its index changed.
             if (isDirty) {
-                AtlasAnimationForwarder.addFramePatch(id, sprite.getX(), sprite.getY(), width, height,
+                AtlasAnimationForwarder.addFramePatch(id, rtxremix$contentX, rtxremix$contentY, width, height,
                         sheet, layout.rtxremix$frameRowSize(), frames.get(frame).index());
             }
             return;
@@ -97,7 +102,7 @@ public abstract class SpriteAnimationStateMixin implements AnimatedSpriteBinding
             }
         }
         double currentWeight = 1.0 - (double) subFrame / current.time();
-        AtlasAnimationForwarder.addBlendedPatch(id, sprite.getX(), sprite.getY(), width, height,
+        AtlasAnimationForwarder.addBlendedPatch(id, rtxremix$contentX, rtxremix$contentY, width, height,
                 sheet, layout.rtxremix$frameRowSize(), current.index(), nextIndex, currentWeight,
                 rtxremix$blend);
     }

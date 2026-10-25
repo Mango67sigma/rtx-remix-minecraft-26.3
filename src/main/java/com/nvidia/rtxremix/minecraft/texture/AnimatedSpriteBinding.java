@@ -14,9 +14,15 @@ import net.minecraft.client.renderer.texture.TextureAtlasSprite;
  * frame into the atlas from per-frame textures, and nothing on the CPU names the atlas
  * slot any more. {@code TextureAtlasSpriteMixin} binds the sprite when the atlas creates
  * the state, which gives the forwarder the destination rectangle 1.21.1 passed to
- * {@code SpriteContents.upload}.
+ * {@code SpriteContents.upload}. That rectangle starts at the sprite's content, not at
+ * its padded slot ({@code getX()/getY()}), so the binding carries the content origin.
  */
 public interface AnimatedSpriteBinding {
 
-    void rtxremix$bindSprite(TextureAtlasSprite sprite);
+    /**
+     * @param contentX atlas texel column of the sprite's first content texel, i.e. the
+     *                 padded slot's {@code getX()} plus its stitcher padding
+     * @param contentY the row counterpart of {@code contentX}
+     */
+    void rtxremix$bindSprite(TextureAtlasSprite sprite, int contentX, int contentY);
 }
