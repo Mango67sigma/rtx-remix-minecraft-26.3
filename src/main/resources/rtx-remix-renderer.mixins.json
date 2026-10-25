@@ -53,6 +53,7 @@
         "LevelRendererFrameMixin",
         "LevelRendererParticleMixin",
         "LevelRendererTerrainMixin",
+        "LevelRendererTransientBlockMixin",
         "LightStorageMixin",
         "MinecraftClientMixin",
         "ModelPartMixin",

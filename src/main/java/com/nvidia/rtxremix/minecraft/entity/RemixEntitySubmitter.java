@@ -124,7 +124,9 @@ public class RemixEntitySubmitter {
     private static final float TEXT_LAYER_STEP =
             TEXT_QUAD_STEP * (RemixCapturingConsumer.MAX_VERTICES / 4);
     private static final float POM_DISPLACE_IN = 0.25f;
-    private static final float EMISSIVE_INTENSITY = 100.0f;
+    static final float EMISSIVE_INTENSITY = 100.0f;
+    /** See {@link #emissiveIntensityFor}; the launch-phase tuning knob for the glint's brightness. */
+    static final float GLINT_EMISSIVE_INTENSITY = EMISSIVE_INTENSITY * 0.25f;
     private static final float COPPER_BEACON_LENS_EMISSION_SCALE = 100.0f;
     private static final float THIN_SSS_MEASUREMENT_DISTANCE = 0.75f;
     private static final int DEFAULT_CUTOUT_ALPHA_REFERENCE = 1;
@@ -134,13 +136,22 @@ public class RemixEntitySubmitter {
     private static final Identifier SHIELD_PATTERNS_ATLAS_TEXTURE =
             Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/shield_patterns.png");
     private static final Identifier PARTICLE_ATLAS_ID = TextureAtlas.LOCATION_PARTICLES;
-    private static final Identifier BEDS_ATLAS_TEXTURE =
-            Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/beds.png");
     private static final Identifier MAP_DECORATIONS_ATLAS_TEXTURE =
             Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/map_decorations.png");
-    private static final String DYNAMIC_MAP_TEXTURE_PREFIX = "dynamic/map/";
-    private static final EntityMaterialKey BEDS_ATLAS_MATERIAL_KEY =
-            new EntityMaterialKey(BEDS_ATLAS_TEXTURE, RenderLayerUtils.SurfaceMode.OPAQUE);
+    /** {@code MapTextureManager.MapInstance} registers each map as {@code minecraft:map/<id>}. */
+    private static final String MAP_TEXTURE_PREFIX = "map/";
+    /**
+     * The largest block-entity atlas 26.3 still stitches. Beds became block models in
+     * 26.2 and their atlas is gone, so the chest sheet ({@code Sheets.CHEST_SHEET},
+     * which {@code AtlasManager} registers as a {@code TextureAtlas}) is what the first
+     * chest in view would otherwise stall on. Chests draw through
+     * {@code entityCutoutCull}, a cutout pipeline, so this is the key their layers use.
+     */
+    static final EntityMaterialKey LARGE_BLOCK_ENTITY_ATLAS_MATERIAL_KEY = new EntityMaterialKey(
+            // Sheets.CHEST_SHEET, spelled out so loading this class does not initialize
+            // Sheets and the render types it builds.
+            Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/chest.png"),
+            RenderLayerUtils.SurfaceMode.CUTOUT);
     static final InstanceInfoBlendEXT VERTEX_COLOR_MODULATE =
             InstanceInfoBlendEXT.textureTimesVertexColor();
     static final InstanceInfoBlendEXT BANNER_PATTERN_BLEND =
@@ -1143,9 +1154,17 @@ public class RemixEntitySubmitter {
         }
     }
 
-    private static boolean isDynamicMapTexture(Identifier textureId) {
-        return textureId.getNamespace().equals(Identifier.DEFAULT_NAMESPACE)
-                && textureId.getPath().startsWith(DYNAMIC_MAP_TEXTURE_PREFIX);
+    /** A map's texture: {@code minecraft:map/} followed by the decimal map id. */
+    static boolean isDynamicMapTexture(Identifier textureId) {
+        if (!textureId.getNamespace().equals(Identifier.DEFAULT_NAMESPACE)) return false;
+        String path = textureId.getPath();
+        int prefix = MAP_TEXTURE_PREFIX.length();
+        if (path.length() <= prefix || !path.startsWith(MAP_TEXTURE_PREFIX)) return false;
+        for (int i = prefix; i < path.length(); i++) {
+            char c = path.charAt(i);
+            if (c < '0' || c > '9') return false;
+        }
+        return true;
     }
 
     /**
@@ -2236,18 +2255,20 @@ public class RemixEntitySubmitter {
 
     /**
      * Creates the largest block-entity atlas during renderer warm-up instead of
-     * stalling the first frame in which a bed becomes visible.
+     * stalling the first frame in which a chest becomes visible. The key names an
+     * atlas {@code AtlasManager} registers, so {@code TextureManager.getTexture} never
+     * registers a missing placeholder for it.
      *
      * @return true only when a live material is cached for the atlas
      */
     public boolean preloadLargeBlockEntityAtlases() {
-        ensureMaterial(BEDS_ATLAS_MATERIAL_KEY);
+        ensureMaterial(LARGE_BLOCK_ENTITY_ATLAS_MATERIAL_KEY);
         return hasLiveLargeBlockEntityAtlasMaterial();
     }
 
-    /** Returns whether the preloaded bed-atlas material is still cached and usable. */
+    /** Returns whether the preloaded chest-atlas material is still cached and usable. */
     public boolean hasLiveLargeBlockEntityAtlasMaterial() {
-        RemixMaterial material = materialCache.get(BEDS_ATLAS_MATERIAL_KEY);
+        RemixMaterial material = materialCache.get(LARGE_BLOCK_ENTITY_ATLAS_MATERIAL_KEY);
         return material != null && !material.isDeleted();
     }
 
@@ -2320,8 +2341,10 @@ public class RemixEntitySubmitter {
             for (Map.Entry<Identifier, TextureAtlasSprite> entry : sprites.entrySet()) {
                 Identifier spriteId = entry.getKey();
                 TextureAtlasSprite sprite = entry.getValue();
-                int x = sprite.getX();
-                int y = sprite.getY();
+                // getX()/getY() are the padded stitcher slot's corner since 1.21.11;
+                // the content (and its UVs) starts padding texels further in.
+                int x = BlockTextureManager.spriteContentX(sprite, w);
+                int y = BlockTextureManager.spriteContentY(sprite, h);
                 int spriteW = sprite.contents().width();
                 int spriteH = sprite.contents().height();
                 NativeImage nImg = loadVariant(rm, spriteId, "_n");
@@ -2602,8 +2625,9 @@ public class RemixEntitySubmitter {
                     .alphaReferenceValue(cutoutAlphaReferenceValue(key.textureId()));
             case TRANSLUCENT -> opaque.blendEnabled(true)
                     .blendType(MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA);
-            case EMISSIVE -> opaque.blendEnabled(true)
-                    .blendType(MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE);
+            case EMISSIVE, GLINT -> opaque.blendEnabled(true)
+                    .blendType(blendTypeFor(key.surfaceMode()));
+            case GLASS -> { }
         }
         if (MAP_DECORATIONS_ATLAS_TEXTURE.equals(key.textureId())
                 && key.surfaceMode() == RenderLayerUtils.SurfaceMode.CUTOUT) {
@@ -2631,11 +2655,11 @@ public class RemixEntitySubmitter {
         MaterialInfo.Builder materialBuilder = MaterialInfo.builder()
                 .albedoTexture(textures.albedo.getHandle()).filterMode(0);
         if (textures.normal != null) materialBuilder.normalTexture(textures.normal.getHandle());
-        RemixTexture emissive = key.surfaceMode() == RenderLayerUtils.SurfaceMode.EMISSIVE
+        RemixTexture emissive = emitsAlbedo(key.surfaceMode())
                 ? textures.albedo : textures.emissive;
         if (emissive != null) {
             materialBuilder.emissiveTexture(emissive.getHandle())
-                    .emissiveIntensity(EMISSIVE_INTENSITY);
+                    .emissiveIntensity(emissiveIntensityFor(key.surfaceMode()));
         }
 
         MaterialInfo info = materialBuilder.opaqueExt(opaque.build()).build();
@@ -2651,11 +2675,43 @@ public class RemixEntitySubmitter {
         return material;
     }
 
+    /**
+     * The runtime blend class of a blended emissive mode. EMISSIVE layers (eyes, the
+     * translucent-emissive and additive pipelines) add their texture weighted by its
+     * alpha. GLINT adds its texture weighted by itself, source colour times source
+     * colour plus the destination, which is vanilla's {@code BlendFunction.GLINT} and
+     * the {@code color += glint^2} of its single-pass glint shaders, so the glint
+     * shimmers over the surface instead of standing as an opaque purple shell.
+     */
+    static int blendTypeFor(RenderLayerUtils.SurfaceMode surfaceMode) {
+        return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
+                ? MaterialInfoOpaqueEXT.BLEND_TYPE_COLOR_EMISSIVE
+                : MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
+    }
+
+    /** Whether the mode's own texture is its emission, rather than a LabPBR emissive map. */
+    static boolean emitsAlbedo(RenderLayerUtils.SurfaceMode surfaceMode) {
+        return surfaceMode == RenderLayerUtils.SurfaceMode.EMISSIVE
+                || surfaceMode == RenderLayerUtils.SurfaceMode.GLINT;
+    }
+
+    /**
+     * Emission strength of a material. Vanilla adds glint over a lit surface at the
+     * glint strength option, a fraction of the full brightness eyes are drawn at, so the
+     * glint emits at a quarter of {@link #EMISSIVE_INTENSITY}.
+     */
+    static float emissiveIntensityFor(RenderLayerUtils.SurfaceMode surfaceMode) {
+        return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
+                ? GLINT_EMISSIVE_INTENSITY
+                : EMISSIVE_INTENSITY;
+    }
+
     static boolean shouldAttachSubsurface(boolean hasSssMask,
                                           RenderLayerUtils.SurfaceMode surfaceMode) {
         return hasSssMask
                 && surfaceMode != RenderLayerUtils.SurfaceMode.TRANSLUCENT
-                && surfaceMode != RenderLayerUtils.SurfaceMode.EMISSIVE;
+                && surfaceMode != RenderLayerUtils.SurfaceMode.EMISSIVE
+                && surfaceMode != RenderLayerUtils.SurfaceMode.GLINT;
     }
 
     static boolean shouldUseDiffusionProfile(RenderLayerUtils.SurfaceMode surfaceMode) {

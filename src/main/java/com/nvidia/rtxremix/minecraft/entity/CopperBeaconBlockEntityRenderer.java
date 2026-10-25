@@ -7,6 +7,7 @@ package com.nvidia.rtxremix.minecraft.entity;
 import com.nvidia.rtxremix.minecraft.block.CopperBeaconBlock;
 import com.nvidia.rtxremix.minecraft.block.CopperBeaconBlockEntity;
 import com.nvidia.rtxremix.minecraft.block.CopperBeaconPose;
+import net.minecraft.client.model.Model;
 import net.minecraft.client.model.geom.ModelLayerLocation;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.geom.PartPose;
@@ -59,18 +60,15 @@ public final class CopperBeaconBlockEntityRenderer
             TextureAtlas.LOCATION_BLOCKS,
             UNLIT_LENS_SPRITE_ID);
 
-    private final ModelPart yoke;
-    private final ModelPart head;
-    private final ModelPart lens;
+    private final YokeModel yokeModel;
+    private final LensModel lensModel;
     private final SpriteGetter sprites;
     private final CopperBeaconPose.Pose pose = new CopperBeaconPose.Pose();
     private final CopperStripMapping copperMapping = new CopperStripMapping();
 
     public CopperBeaconBlockEntityRenderer(BlockEntityRendererProvider.Context context) {
-        ModelPart bodyRoot = context.bakeLayer(BODY_MODEL_LAYER);
-        yoke = bodyRoot.getChild("yoke");
-        head = yoke.getChild("head");
-        lens = context.bakeLayer(LENS_MODEL_LAYER).getChild("lens");
+        yokeModel = new YokeModel(context.bakeLayer(BODY_MODEL_LAYER).getChild("yoke"));
+        lensModel = new LensModel(context.bakeLayer(LENS_MODEL_LAYER).getChild("lens"));
         sprites = context.sprites();
     }
 
@@ -130,7 +128,8 @@ public final class CopperBeaconBlockEntityRenderer
      * Reads the frame's pose from the block entity: the mount and facing from its
      * block state, the head angles at the presentation time
      * {@link CopperBeaconAnimationClock} reconstructs from the synchronized world
-     * tick, and the lens state the lamp is drawn with.
+     * tick, the articulation they evaluate to, and the lens state the lamp is drawn
+     * with.
      */
     @Override
     public void extractRenderState(
@@ -146,11 +145,22 @@ public final class CopperBeaconBlockEntityRenderer
         double animationTick = CopperBeaconAnimationClock.sample(beacon.getLevel(), partialTicks);
         state.yawDegrees = beacon.yawAngleAt(animationTick);
         state.pitchDegrees = beacon.pitchAngleAt(animationTick);
+        extractArticulation(state.up, state.forward, state.yawDegrees, state.pitchDegrees,
+                pose, state.articulation);
         state.active = beacon.isActive();
         state.intensityMultiplier = beacon.getIntensityMultiplier();
         state.lensTint = beacon.getLensTint();
     }
 
+    /**
+     * Submits the yoke and the lens as models over this beacon's articulation. Vanilla's
+     * collector compiles them at feature prepare, once every block entity of the frame
+     * has been submitted, so the articulation travels with the render state: each
+     * model's {@code setupAnim} poses the shared parts from the articulation it is
+     * handed (see {@link CopperBeaconArticulation}). The Remix
+     * capture collector runs the same {@code setupAnim} and {@code renderToBuffer} on
+     * the spot, which renders exactly the parts {@code submitModelPart} rendered.
+     */
     @Override
     public void submit(
             CopperBeaconRenderState state,
@@ -159,28 +169,30 @@ public final class CopperBeaconBlockEntityRenderer
             CameraRenderState camera) {
         matrices.pushPose();
         matrices.translate(0.5, 0.5, 0.5);
-        CopperBeaconPose.evaluate(
-                state.up,
-                state.forward,
-                state.yawDegrees,
-                state.pitchDegrees,
-                pose);
-        matrices.rotate(pose.mountingRotation());
+        matrices.rotate(state.articulation.mountingRotation);
         matrices.translate(-0.5, -0.5, -0.5);
 
-        applyArticulation(yoke, head, lens, pose);
-
         // The yoke keeps the copper sprite's vertical strip, a UV mapping of its own
-        // rather than the bare sprite, so it is captured face by face as it was.
+        // rather than the bare sprite, so it is captured face by face as it was. The
+        // sprite is the same for every beacon, so one mapping serves all of them.
         copperMapping.sprite = sprites.get(COPPER_TEXTURE);
-        collector.submitModelPart(yoke, matrices, RenderTypes.entitySolid(TextureAtlas.LOCATION_BLOCKS),
-                state.lightCoords, OverlayTexture.NO_OVERLAY, copperMapping);
+        collector.submitModel(yokeModel, state.articulation, matrices, RenderTypes.entitySolid(TextureAtlas.LOCATION_BLOCKS),
+                state.lightCoords, OverlayTexture.NO_OVERLAY, -1, copperMapping, 0);
         // The lens is painted with its sprite directly: the capture keys the cuboid
         // by that sprite and gives the lit one the beacon's emissive material.
         TextureAtlasSprite lensSprite = sprites.get(lensTexture(state.active, state.intensityMultiplier));
-        collector.submitModelPart(lens, matrices, RenderTypes.entitySolid(TextureAtlas.LOCATION_BLOCKS),
-                state.lightCoords, OverlayTexture.NO_OVERLAY, lensSprite, state.lensTint);
+        collector.submitModel(lensModel, state.articulation, matrices, RenderTypes.entitySolid(TextureAtlas.LOCATION_BLOCKS),
+                state.lightCoords, OverlayTexture.NO_OVERLAY, state.lensTint, lensSprite, 0);
         matrices.popPose();
+    }
+
+    /** Evaluates a placement and its angles into a beacon's mounting rotation and model angles. */
+    static void extractArticulation(Direction up, Direction forward, float yawDegrees, float pitchDegrees,
+                                    CopperBeaconPose.Pose scratch, CopperBeaconArticulation destination) {
+        CopperBeaconPose.evaluate(up, forward, yawDegrees, pitchDegrees, scratch);
+        destination.mountingRotation.set(scratch.mountingRotation());
+        destination.modelYawRadians = scratch.modelYawRadians();
+        destination.modelPitchRadians = scratch.modelPitchRadians();
     }
 
     static Quaternionf mountingRotation(Direction upDirection, Direction forwardDirection) {
@@ -188,17 +200,52 @@ public final class CopperBeaconBlockEntityRenderer
                 upDirection, forwardDirection, new Quaternionf());
     }
 
-    static void applyArticulation(
-            ModelPart yoke,
-            ModelPart head,
-            ModelPart lens,
-            CopperBeaconPose.Pose pose) {
-        yoke.yRot = pose.modelYawRadians();
+    /** The fork turns with the yaw only; the head inside it pitches. */
+    static void applyYokeArticulation(ModelPart yoke, ModelPart head, float modelYawRadians,
+                                      float modelPitchRadians) {
+        yoke.yRot = modelYawRadians;
         yoke.xRot = 0.0f;
         head.yRot = 0.0f;
-        head.xRot = pose.modelPitchRadians();
-        lens.yRot = pose.modelYawRadians();
-        lens.xRot = pose.modelPitchRadians();
+        head.xRot = modelPitchRadians;
+    }
+
+    /** The lens is a root of its own and takes both angles, so it stays seated in the head. */
+    static void applyLensArticulation(ModelPart lens, float modelYawRadians, float modelPitchRadians) {
+        lens.yRot = modelYawRadians;
+        lens.xRot = modelPitchRadians;
+    }
+
+    /** The yoke and its child head, posed from a beacon's articulation. */
+    static final class YokeModel extends Model<CopperBeaconArticulation> {
+        private final ModelPart head;
+
+        YokeModel(ModelPart yoke) {
+            super(yoke, RenderTypes::entitySolid);
+            head = yoke.getChild("head");
+        }
+
+        ModelPart head() {
+            return head;
+        }
+
+        @Override
+        public void setupAnim(CopperBeaconArticulation state) {
+            super.setupAnim(state);
+            applyYokeArticulation(root, head, state.modelYawRadians, state.modelPitchRadians);
+        }
+    }
+
+    /** The lens, posed from a beacon's articulation. */
+    static final class LensModel extends Model<CopperBeaconArticulation> {
+        LensModel(ModelPart lens) {
+            super(lens, RenderTypes::entitySolid);
+        }
+
+        @Override
+        public void setupAnim(CopperBeaconArticulation state) {
+            super.setupAnim(state);
+            applyLensArticulation(root, state.modelYawRadians, state.modelPitchRadians);
+        }
     }
 
     static SpriteId lensTexture(boolean active, float intensityMultiplier) {

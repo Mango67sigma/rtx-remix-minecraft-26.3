@@ -22,6 +22,7 @@ import java.util.function.IntPredicate;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.block.MovingBlockRenderState;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.rendertype.RenderType;
@@ -100,6 +101,8 @@ public class RemixEntityPass {
     private final ClosestKHeap<Entity> entityHeap = new ClosestKHeap<>(MAX_ENTITIES);
     private final IntOpenHashSet capturedIds = new IntOpenHashSet(MAX_ENTITIES);
     private boolean frameActive = false;
+    /** The placeholder block a landed falling block leaves; see {@link #captureTransientBlock}. */
+    private final RemixTransientBlockPass transientBlockPass = new RemixTransientBlockPass();
     /** The submitter the open frame was begun with; what {@link #captureInPlace} submits to. */
     private RemixEntitySubmitter frameSubmitter;
     private int frameEntityCount, frameLayerCount, frameBoneCount, frameCapSkipped;
@@ -242,7 +245,23 @@ public class RemixEntityPass {
         frameOffReused = 0;
         frameDraws = 0;
         frameMeshCreates = 0;
+        transientBlockPass.beginFrame();
         submitter.beginFrame();
+    }
+
+    /**
+     * Captures the placeholder block vanilla submits for a moment after a falling block
+     * lands, at vanilla's own submit point, in place of that submit. It continues the
+     * falling block entity this pass captured until the entity was removed, so it follows
+     * the entity toggle: returning false, because no frame is open, hands it back to
+     * vanilla. See {@link RemixTransientBlockPass}.
+     */
+    public boolean captureTransientBlock(MovingBlockRenderState state) {
+        if (!frameActive || frameSubmitter == null || EntityRenderContext.get().isActive()) {
+            return false;
+        }
+        transientBlockPass.capture(state, frameSubmitter);
+        return true;
     }
 
     /**

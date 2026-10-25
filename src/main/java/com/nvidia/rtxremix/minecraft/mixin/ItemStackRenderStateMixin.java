@@ -56,6 +56,19 @@ public abstract class ItemStackRenderStateMixin implements RemixItemStackRenderS
         rtxremix$owner = owner;
     }
 
+    /**
+     * Forgets the source with the layers. The states live as long as the renderers and
+     * the game render state that own them, so a source kept past its layers would hold
+     * the previous world's player and level alive after a disconnect.
+     * {@code updateForTopItem} clears first and {@code ItemModelResolverMixin} records
+     * the new source at its RETURN.
+     */
+    @Inject(method = "clear", at = @At("HEAD"))
+    private void rtxremix$clearSource(CallbackInfo ci) {
+        rtxremix$stack = null;
+        rtxremix$owner = null;
+    }
+
     @Inject(method = "submit", at = @At("HEAD"))
     private void rtxremix$beginItem(PoseStack poseStack, SubmitNodeCollector submitNodeCollector,
                                     int lightCoords, int overlayCoords, int outlineColor, CallbackInfo ci) {

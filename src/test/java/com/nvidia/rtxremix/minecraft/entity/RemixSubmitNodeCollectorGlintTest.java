@@ -110,7 +110,9 @@ class RemixSubmitNodeCollectorGlintTest {
         assertEquals(TextureAtlas.LOCATION_ITEMS, surface.textureId());
         assertSame(RenderTypes.patternedShieldGlint(), glint.renderLayer());
         assertEquals(RenderLayerUtils.ITEM_GLINT_TEXTURE, glint.textureId());
-        assertEquals(RenderLayerUtils.SurfaceMode.CUTOUT, RenderLayerUtils.surfaceMode(glint.renderLayer()));
+        // Additive over the surface, not an opaque purple card painted on it.
+        assertEquals(RenderLayerUtils.SurfaceMode.GLINT, RenderLayerUtils.surfaceMode(glint.renderLayer()));
+        assertEquals(RenderLayerUtils.SurfaceMode.CUTOUT, RenderLayerUtils.surfaceMode(surface.renderLayer()));
         assertTrue(glint.layerIndex() > surface.layerIndex(), "the glint stands a shell over its surface");
 
         // The same quad, vertex for vertex: position, the surface's own texture coordinate
@@ -223,6 +225,8 @@ class RemixSubmitNodeCollectorGlintTest {
         assertSame(RenderTypes.trimmedArmorGlint(), glint.renderLayer());
         assertEquals(RenderLayerUtils.ARMOR_GLINT_TEXTURE, glint.textureId());
         assertEquals(1, glint.layerIndex());
+        // Enchanted armour adds a shimmer instead of becoming a near-black opaque shell.
+        assertEquals(RenderLayerUtils.SurfaceMode.GLINT, RenderLayerUtils.surfaceMode(glint.renderLayer()));
 
         int count = surface.vertexCount();
         assertEquals(24, count);

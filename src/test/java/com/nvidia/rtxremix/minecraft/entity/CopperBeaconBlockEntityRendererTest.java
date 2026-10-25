@@ -65,19 +65,16 @@ class CopperBeaconBlockEntityRendererTest {
     @Test
     void animatedHeadAndEmitterShareOnePoseForEveryPlacementAndFullTurnAngle() {
         float[] angles = {-360.0f, -180.0f, -45.0f, 0.0f, 90.0f, 360.0f};
-        ModelPart yoke = CopperBeaconBlockEntityRenderer
-                .getBodyTexturedModelData()
-                .bakeRoot()
-                .getChild("yoke");
-        ModelPart head = yoke.getChild("head");
-        ModelPart lens = CopperBeaconBlockEntityRenderer
-                .getLensTexturedModelData()
-                .bakeRoot()
-                .getChild("lens");
+        CopperBeaconBlockEntityRenderer.YokeModel yokeModel = yokeModel();
+        CopperBeaconBlockEntityRenderer.LensModel lensModel = lensModel();
+        ModelPart yoke = yokeModel.root();
+        ModelPart head = yokeModel.head();
+        ModelPart lens = lensModel.root();
         PoseStack matrices = new PoseStack();
         Vector3f headDirection = new Vector3f();
         Vector3f lensDirection = new Vector3f();
         CopperBeaconPose.Pose pose = new CopperBeaconPose.Pose();
+        CopperBeaconArticulation state = new CopperBeaconArticulation();
         for (Direction mount : Direction.values()) {
             for (Direction forward : Direction.values()) {
                 if (mount.getAxis() == forward.getAxis()) {
@@ -89,7 +86,12 @@ class CopperBeaconBlockEntityRendererTest {
                 for (float yaw : angles) {
                     for (float pitch : angles) {
                         CopperBeaconPose.evaluate(mount, forward, yaw, pitch, pose);
-                        CopperBeaconBlockEntityRenderer.applyArticulation(yoke, head, lens, pose);
+                        CopperBeaconBlockEntityRenderer.extractArticulation(
+                                mount, forward, yaw, pitch, new CopperBeaconPose.Pose(), state);
+                        assertQuaternion(pose.mountingRotation(), state.mountingRotation,
+                                "mounting rotation for mount=" + mount + ", forward=" + forward);
+                        yokeModel.setupAnim(state);
+                        lensModel.setupAnim(state);
 
                         matrices.pushPose();
                         yoke.translateAndRotate(matrices);
@@ -136,7 +138,10 @@ class CopperBeaconBlockEntityRendererTest {
         ModelPart head = new ModelPart(List.of(), Map.of());
         ModelPart lens = new ModelPart(List.of(), Map.of());
 
-        CopperBeaconBlockEntityRenderer.applyArticulation(yoke, head, lens, pose);
+        CopperBeaconBlockEntityRenderer.applyYokeArticulation(
+                yoke, head, pose.modelYawRadians(), pose.modelPitchRadians());
+        CopperBeaconBlockEntityRenderer.applyLensArticulation(
+                lens, pose.modelYawRadians(), pose.modelPitchRadians());
 
         assertEquals(pose.modelYawRadians(), yoke.yRot, EPSILON);
         assertEquals(0.0f, yoke.xRot, EPSILON);
@@ -144,6 +149,83 @@ class CopperBeaconBlockEntityRendererTest {
         assertEquals(pose.modelPitchRadians(), head.xRot, EPSILON);
         assertEquals(pose.modelYawRadians(), lens.yRot, EPSILON);
         assertEquals(head.xRot, lens.xRot, EPSILON);
+    }
+
+    /**
+     * Vanilla's collector defers a model's compile to feature prepare, after every
+     * beacon of the frame has been submitted, and calls {@code setupAnim} with each
+     * submit's own state then. The pose must therefore come from the state alone:
+     * replaying two beacons' states in either order, over parts another beacon left
+     * articulated, gives each beacon its own pose, with the bind offsets intact.
+     */
+    @Test
+    void modelsPoseSharedPartsFromTheirOwnStateAtPrepareTime() {
+        CopperBeaconBlockEntityRenderer.YokeModel yokeModel = yokeModel();
+        CopperBeaconBlockEntityRenderer.LensModel lensModel = lensModel();
+        ModelPart yoke = yokeModel.root();
+        ModelPart head = yokeModel.head();
+        ModelPart lens = lensModel.root();
+        float yokeX = yoke.x;
+        float yokeY = yoke.y;
+        float yokeZ = yoke.z;
+
+        // One scratch pose for both, as the renderer has: nothing may alias it.
+        CopperBeaconPose.Pose scratch = new CopperBeaconPose.Pose();
+        CopperBeaconArticulation first = new CopperBeaconArticulation();
+        CopperBeaconBlockEntityRenderer.extractArticulation(
+                Direction.UP, Direction.NORTH, 30.0f, -20.0f, scratch, first);
+        CopperBeaconArticulation second = new CopperBeaconArticulation();
+        CopperBeaconBlockEntityRenderer.extractArticulation(
+                Direction.EAST, Direction.UP, -110.0f, 45.0f, scratch, second);
+        assertQuaternion(CopperBeaconBlockEntityRenderer.mountingRotation(Direction.UP, Direction.NORTH),
+                first.mountingRotation, "first mounting rotation after a second extraction");
+
+        for (CopperBeaconArticulation[] order : new CopperBeaconArticulation[][] {
+                {first, second}, {second, first}}) {
+            for (CopperBeaconArticulation state : order) {
+                yoke.zRot = 1.0f;
+                yoke.x = 99.0f;
+                head.yRot = 2.0f;
+                lens.zRot = 3.0f;
+                yokeModel.setupAnim(state);
+                lensModel.setupAnim(state);
+
+                assertEquals(state.modelYawRadians, yoke.yRot, EPSILON);
+                assertEquals(0.0f, yoke.xRot, EPSILON);
+                assertEquals(0.0f, yoke.zRot, EPSILON);
+                assertEquals(yokeX, yoke.x, EPSILON);
+                assertEquals(yokeY, yoke.y, EPSILON);
+                assertEquals(yokeZ, yoke.z, EPSILON);
+                assertEquals(0.0f, head.yRot, EPSILON);
+                assertEquals(state.modelPitchRadians, head.xRot, EPSILON);
+                assertEquals(state.modelYawRadians, lens.yRot, EPSILON);
+                assertEquals(state.modelPitchRadians, lens.xRot, EPSILON);
+                assertEquals(0.0f, lens.zRot, EPSILON);
+            }
+        }
+        assertEquals((float) Math.toRadians(-30.0f), first.modelYawRadians, EPSILON);
+        assertEquals((float) Math.toRadians(45.0f), second.modelPitchRadians, EPSILON);
+    }
+
+    private static CopperBeaconBlockEntityRenderer.YokeModel yokeModel() {
+        return new CopperBeaconBlockEntityRenderer.YokeModel(CopperBeaconBlockEntityRenderer
+                .getBodyTexturedModelData()
+                .bakeRoot()
+                .getChild("yoke"));
+    }
+
+    private static CopperBeaconBlockEntityRenderer.LensModel lensModel() {
+        return new CopperBeaconBlockEntityRenderer.LensModel(CopperBeaconBlockEntityRenderer
+                .getLensTexturedModelData()
+                .bakeRoot()
+                .getChild("lens"));
+    }
+
+    private static void assertQuaternion(Quaternionf expected, Quaternionf actual, String message) {
+        assertEquals(expected.x, actual.x, EPSILON, message);
+        assertEquals(expected.y, actual.y, EPSILON, message);
+        assertEquals(expected.z, actual.z, EPSILON, message);
+        assertEquals(expected.w, actual.w, EPSILON, message);
     }
 
     @Test

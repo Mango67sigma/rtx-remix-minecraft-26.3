@@ -892,9 +892,10 @@ public class SkyRenderer {
     }
 
     /**
-     * Creates the star mesh from vanilla's star field once vanilla has built it. Vanilla builds
-     * its {@code SkyRenderer}, and with it the stars, on its first sky pass, so the stars can
-     * arrive a frame after the sun and moon; until then they are not drawn.
+     * Creates the star mesh from vanilla's star field. Vanilla builds its {@code SkyRenderer},
+     * and with it the stars, only in a sky pass it actually runs, which fog that hides the sky
+     * skips; until then {@link VanillaStarField} hands out the same field generated from
+     * vanilla's seed, so the stars never wait on vanilla.
      */
     private boolean ensureStarMesh() {
         if (starMeshAsset != null) {

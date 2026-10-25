@@ -12,6 +12,7 @@ import com.nvidia.rtxremix.InstanceCategoryBit;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -20,11 +21,38 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class RemixEntitySubmitterCoverageCutoutTest {
 
-    private static final Identifier MAP_TEXTURE = Identifier.fromNamespaceAndPath("minecraft", "dynamic/map/42_1");
+    /** {@code MapTextureManager.MapInstance} registers {@code minecraft:map/<id>} in 26.3. */
+    private static final Identifier MAP_TEXTURE = Identifier.fromNamespaceAndPath("minecraft", "map/42");
 
     @Test
     void dynamicMapsCutAtHalfCoverage() {
         assertEquals(128, RemixEntitySubmitter.cutoutAlphaReferenceValue(MAP_TEXTURE));
+    }
+
+    @Test
+    void mapTextureIsMapSlashDecimalIdInTheDefaultNamespace() {
+        assertTrue(RemixEntitySubmitter.isDynamicMapTexture(MAP_TEXTURE));
+        assertTrue(RemixEntitySubmitter.isDynamicMapTexture(
+                Identifier.fromNamespaceAndPath("minecraft", "map/0")));
+        assertFalse(RemixEntitySubmitter.isDynamicMapTexture(
+                Identifier.fromNamespaceAndPath("minecraft", "map/")));
+        assertFalse(RemixEntitySubmitter.isDynamicMapTexture(
+                Identifier.fromNamespaceAndPath("minecraft", "map/42_1")));
+        assertFalse(RemixEntitySubmitter.isDynamicMapTexture(
+                Identifier.fromNamespaceAndPath("minecraft", "map/background.png")));
+        assertFalse(RemixEntitySubmitter.isDynamicMapTexture(
+                Identifier.fromNamespaceAndPath("minecraft", "dynamic/map/42_1")));
+        assertFalse(RemixEntitySubmitter.isDynamicMapTexture(
+                Identifier.fromNamespaceAndPath("example", "map/42")));
+    }
+
+    @Test
+    void largeBlockEntityPreloadNamesTheChestSheet() {
+        // Sheets.CHEST_SHEET, an atlas AtlasManager registers; 26.3 has no bed atlas.
+        assertEquals(Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/chest.png"),
+                RemixEntitySubmitter.LARGE_BLOCK_ENTITY_ATLAS_MATERIAL_KEY.textureId());
+        assertEquals(RenderLayerUtils.SurfaceMode.CUTOUT,
+                RemixEntitySubmitter.LARGE_BLOCK_ENTITY_ATLAS_MATERIAL_KEY.surfaceMode());
     }
 
     @Test
@@ -69,6 +97,6 @@ class RemixEntitySubmitterCoverageCutoutTest {
         assertEquals(1, RemixEntitySubmitter.cutoutAlphaReferenceValue(
                 Identifier.fromNamespaceAndPath("minecraft", "textures/entity/slime/slime.png")));
         assertEquals(1, RemixEntitySubmitter.cutoutAlphaReferenceValue(
-                Identifier.fromNamespaceAndPath("example", "dynamic/map/42_1")));
+                Identifier.fromNamespaceAndPath("example", "map/42")));
     }
 }

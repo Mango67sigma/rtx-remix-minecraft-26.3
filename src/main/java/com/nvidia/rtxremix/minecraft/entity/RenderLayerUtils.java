@@ -52,7 +52,20 @@ final class RenderLayerUtils {
          * draws clear glass as a cutout; {@code RemixEntitySubmitter.atlasSurfaceMode}
          * assigns it to geometry from a clear-glass block item.
          */
-        GLASS
+        GLASS,
+        /**
+         * Enchantment glint: additive and unlit over the surface under it, the
+         * runtime's colour-weighted emissive blend ({@code BLEND_TYPE_COLOR_EMISSIVE},
+         * source times source plus destination). That is vanilla's
+         * {@code BlendFunction.GLINT} ({@code SRC_COLOR, ONE}) and the
+         * {@code color.rgb += glint^2} the 26.3 single-pass glint shaders do. Both glint
+         * textures are fully opaque, so any material that shows them as a surface
+         * (cutout or alpha blended) paints over the item or armour entirely. Assigned to
+         * layers that blend with {@code BlendFunction.GLINT}, which are vanilla's two
+         * separate glint passes and the glint layer the capture adds for single-pass
+         * glint types; see {@link #glintPass}.
+         */
+        GLINT
     }
 
     /** How a layer's captured vertex stream turns into Remix triangles. */
@@ -163,9 +176,10 @@ final class RenderLayerUtils {
      * layer this returns. Vanilla still draws two glints as a separate pass, the
      * patterned shield's and the trimmed armour's, and their render types are exactly
      * that layer: their primary sampler is the glint texture, and their pipeline,
-     * {@code RenderPipelines.GLINT}, blends with neither the additive nor the
-     * translucent function, so {@link #surfaceMode} gives them the cutout verdict the
-     * 1.21.1 glint layers had. A glint captured here and one vanilla submits as such a
+     * {@code RenderPipelines.GLINT}, blends with {@code BlendFunction.GLINT}, which
+     * {@link #surfaceMode} reads as {@link SurfaceMode#GLINT}. (1.21.1's capture read
+     * its glint layers as cutout, which with the opaque glint textures would paint the
+     * whole surface purple.) A glint captured here and one vanilla submits as such a
      * pass therefore land on one material.
      *
      * <p>The pass is chosen by the glint texture, see {@link #glintPassTexture}.
@@ -288,10 +302,17 @@ final class RenderLayerUtils {
      * has no material for. Its texels are either fully opaque grey or fully
      * transparent, so alpha blending them over the surface is the closest surface
      * behaviour and it is classified as translucent.
+     *
+     * <p>A layer blended with {@code BlendFunction.GLINT} is {@link SurfaceMode#GLINT},
+     * whatever else its pipeline says: it adds to the surface under it and never stands
+     * as a surface itself.
      */
     static SurfaceMode surfaceMode(RenderType layer) {
         RenderPipeline pipeline = layer.pipeline();
         BlendFunction blend = blendFunction(pipeline);
+        if (BlendFunction.GLINT.equals(blend)) {
+            return SurfaceMode.GLINT;
+        }
         return classifySurfaceMode(
                 isEmissivePipeline(pipeline),
                 BlendFunction.ADDITIVE.equals(blend),
