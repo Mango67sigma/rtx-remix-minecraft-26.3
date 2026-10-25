@@ -474,8 +474,10 @@ A benchmark pins the fullscreen mode to the configured window dimensions.
 request as the JSON object Minecraft 26.3 reads and writes for the key,
 `{"width":1920,"height":1080,"red_bits":8,"green_bits":8,"blue_bits":8,"refresh_rate":60.0}`
 (1.21.1 wrote `1920x1080@60:24`, which 26.3 does not read).
-A play launch leaves the key empty, the **Current** video-settings entry,
-so fullscreen follows the attached display.
+A play launch writes no line for the key, which the game reads as the
+**Current** video-settings entry, so fullscreen follows the attached display,
+and removes the line a pinned run left behind. An empty value would do the
+same only after 26.3 logged "Failed to parse video mode".
 
 This is not a config key, because it cannot be one. `render` lives in
 `tools/config.json` but `load_config()` merges
@@ -556,10 +558,13 @@ off to measure cold first-visit costs intentionally.
 
 ### Resource Packs
 
-The baseline LabPBR textures ship inside the mod JAR and load through Fabric's
-`fabric` resource pack. The runner lists `vanilla`, then `fabric` in
-`options.txt`, below every `file/` pack. Omitting `fabric` would make Fabric
-append it above user packs.
+The baseline LabPBR textures ship inside the mod JAR. Fabric API adds each mod's
+resources to the game as a hidden pack named for the mod and slots it above
+`vanilla` and below the packs `options.txt` lists after it, so the runner lists
+nothing for the baseline: `resourcePacks` is `vanilla` followed by the `file/`
+packs. Minecraft 26.3 has no `fabric` pack. It removes an entry for one from
+`options.txt` with a warning, as it does any pack that is missing or
+incompatible.
 
 Per-world resource packs override the mod's built-in baseline in their
 configured order. An optional selected art pack is enabled last, so it
@@ -567,6 +572,24 @@ overrides both the baseline and per-world packs. For a folder pack,
 `resourcePack.stageName` controls its name under `<gameDir>/resourcepacks/`, with
 `rtx-tools-art` as the fallback; a ZIP keeps its source filename. The shipped
 defaults select the art pack, and the runner stages no separate baseline pack.
+
+26.3 also removes a pack from `options.txt` unless its `pack.mcmeta` declares a
+resource pack format range that includes the game's, or
+`incompatibleResourcePacks` lists the pack. An art pack published for 1.21.1
+declares `pack_format` 34 alone, which is below that range. The runner
+therefore amends `pack.mcmeta` in the staged art pack, a copy it replaces at
+every launch, to declare `min_format` and `max_format` as the game's resource
+pack format major (97 for 26.3) and neither `pack_format` nor
+`supported_formats`, which 26.3 refuses beside that range. The description and
+every other key stay. The major comes from `pack_version.resource_major` in the
+`version.json` of the client jar that Loom caches in Gradle's user home
+(`GRADLE_USER_HOME`, else `~/.gradle`) for the pinned Minecraft, so a new game
+version needs no edit; until Gradle has cached the jar, the runner uses
+`FALLBACK_RESOURCE_PACK_MAJOR`. The fetched pack under
+`tools/assets/resourcepacks/` stays as published, and a `pack.mcmeta` that cannot
+be amended fails the launch with the pack's path. World packs are copied as
+authored, so one that declares an older format is left out by the game with the
+same warning.
 
 For older fixtures, a declared `rtx-remix` pack is dropped with a warning on
 stderr unless the fixture supplies a real folder or ZIP with that name.

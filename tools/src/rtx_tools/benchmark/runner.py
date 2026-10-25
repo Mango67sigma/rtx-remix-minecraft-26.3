@@ -16,13 +16,14 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+import zipfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, cast
 
-from .. import client
+from .. import client, prism
 from .. import config as tools_config
 from .. import sdk as runtime_sdk
 from . import catalog, gitmeta, gpu_telemetry, machine, tracy, util
@@ -69,6 +70,12 @@ STALE_RTX_PRESET_SETTING_ID = "preset"
 # runs its data fixers over a file stamped older. The fixers behind 26.3's graphics options rewrite what write_options
 # pins: from a file older than 4651 they set graphicsPreset to "custom" and derive the options below from graphicsMode.
 OPTIONS_DATA_VERSION = 5023
+# 26.3 leaves a pack out of options.txt unless its pack.mcmeta declares the game's resource pack format, so the art
+# pack is staged declaring it (declare_pack_format). game_resource_pack_major reads that format,
+# SharedConstants.RESOURCE_PACK_FORMAT_MAJOR, from the client jar of the pinned game and answers this one, 97 for
+# 26.3, only when it cannot; test_version_consistency.py keeps the two equal.
+FALLBACK_RESOURCE_PACK_MAJOR = 97
+PACK_METADATA_FILE = "pack.mcmeta"
 # render.graphicsMode keeps the numbers of the graphicsMode option Minecraft 1.21.1 had. 26.3 replaced that option with
 # the graphicsPreset enum, written as a JSON string, so the number picks the preset.
 GRAPHICS_PRESETS = {0: "fast", 1: "fancy", 2: "fabulous"}
@@ -2353,6 +2360,90 @@ def remove_legacy_baseline_pack(root: Path) -> None:
     shutil.rmtree(legacy)
 
 
+def game_resource_pack_major() -> int:
+    """The resource pack format major of the game the tools launch.
+
+    The game takes it from pack_version.resource_major in the version.json of its client jar, and so does this, from
+    the jar Loom caches for the Minecraft version packaging/installer.ps1 pins, so a newer game moves the staged art
+    pack with it. FALLBACK_RESOURCE_PACK_MAJOR answers when Gradle has not cached the jar yet or its version.json is
+    laid out otherwise."""
+    try:
+        gradle_home = os.environ.get("GRADLE_USER_HOME")
+        jar = (
+            (Path(gradle_home) if gradle_home else Path.home() / ".gradle")
+            / "caches"
+            / "fabric-loom"
+            / prism.installer_constant("MC_VERSION")
+            / "minecraft-client.jar"
+        )
+        with zipfile.ZipFile(jar) as archive:
+            major = json.loads(archive.read("version.json"))["pack_version"]["resource_major"]
+    except OSError, RuntimeError, ValueError, KeyError, TypeError, zipfile.BadZipFile:
+        return FALLBACK_RESOURCE_PACK_MAJOR
+    return major if type(major) is int and major > 0 else FALLBACK_RESOURCE_PACK_MAJOR
+
+
+def amended_pack_metadata(text: str, major: int) -> str | None:
+    """`text`, a pack.mcmeta, amended to declare resource pack format `major` through min_format and max_format, or None
+    when it declares exactly that already. Raises ValueError for text that is not a pack.mcmeta.
+
+    For formats above 64, PackFormat.lastPreMinorVersion for resource packs, 26.3 reads the supported range from those
+    two keys alone: it refuses supported_formats there, and a pack_format outside the range, as metadata it cannot
+    read, and Pack.readPackMetadata then takes the pack's format for unknown. A pack made for an earlier game declares
+    pack_format alone, which is below the game's range, and Options.loadSelectedResourcePacks drops it from options.txt
+    unless incompatibleResourcePacks lists it. `major` for both keys leaves the max's minor open and the min's at
+    zero, which takes in every minor of that major. The description and any other key stay."""
+    document = json.loads(text)
+    pack = document.get("pack") if isinstance(document, dict) else None
+    if not isinstance(pack, dict):
+        raise ValueError(f"it has no {PACK_METADATA_FILE} pack section")
+    amended = {key: value for key, value in pack.items() if key not in ("pack_format", "supported_formats")}
+    amended["min_format"] = amended["max_format"] = major
+    if amended == pack:
+        return None
+    return json.dumps({**document, "pack": amended}, indent=2) + "\n"
+
+
+def declare_pack_format(pack: Path, major: int) -> bool:
+    """Amend the pack.mcmeta of `pack`, a folder or a .zip, to declare resource pack format `major`
+    (amended_pack_metadata), and return whether it changed anything.
+
+    `pack` must be the tools' own staged copy, never a fetched or local source. One that declares the format already is
+    left as it is, so staging a pack again writes nothing. Metadata that cannot be amended raises RuntimeError, because
+    the game would drop the pack from options.txt and the run would measure something else."""
+    try:
+        if pack.is_dir():
+            metadata = pack / PACK_METADATA_FILE
+            amended = amended_pack_metadata(metadata.read_text(encoding="utf-8-sig"), major)
+            if amended is not None:
+                metadata.write_text(amended, encoding="utf-8")
+            return amended is not None
+        return _declare_zip_pack_format(pack, major)
+    except (ValueError, zipfile.BadZipFile) as exc:
+        raise RuntimeError(f"cannot declare resource pack format {major} in {pack}: {exc}") from exc
+
+
+def _declare_zip_pack_format(pack: Path, major: int) -> bool:
+    rewritten = pack.with_name(f"{pack.name}.rewrite")
+    try:
+        with zipfile.ZipFile(pack) as archive:
+            try:
+                text = archive.read(PACK_METADATA_FILE).decode("utf-8-sig")
+            except KeyError:
+                raise ValueError(f"it has no {PACK_METADATA_FILE}") from None
+            amended = amended_pack_metadata(text, major)
+            if amended is None:
+                return False
+            with zipfile.ZipFile(rewritten, "w") as out:
+                for member in archive.infolist():
+                    data = amended.encode("utf-8") if member.filename == PACK_METADATA_FILE else archive.read(member)
+                    out.writestr(member, data)
+        rewritten.replace(pack)
+        return True
+    finally:
+        rewritten.unlink(missing_ok=True)
+
+
 def stage_resource_packs(
     config: dict,
     selection: BenchmarkSelection | None,
@@ -2371,6 +2462,8 @@ def stage_resource_packs(
     enabled = resolve_resource_pack_files(config, selection)
     if art_pack is not None:
         copy_resource_pack(art_pack, root)
+        # An art pack published for an earlier game would be dropped from options.txt as incompatible.
+        declare_pack_format(root / art_pack.file_name, game_resource_pack_major())
         enabled = append_art_pack_files(enabled, art_pack)
     return enabled
 
@@ -2529,21 +2622,22 @@ def write_rtx_settings(config: dict, *, run_dir: Path | None = None) -> None:
     )
 
 
-def fullscreen_resolution_option_value(width: int, height: int, *, pin_display: bool) -> str:
-    """The options.txt value for fullscreenResolution.
+def fullscreen_resolution_option_value(width: int, height: int, *, pin_display: bool) -> str | None:
+    """The options.txt value for fullscreenResolution, or None for no line at all.
 
-    Unpinned writes an empty value, which Minecraft reads as the "Current"
-    entry in the video settings: VideoMode.read fails to parse it, so no
-    fullscreen mode is preferred and the monitor's own mode is used. A play
-    launch wants that, so going fullscreen follows whichever display the
-    player is actually on.
+    Unpinned there is no line. Minecraft reads an absent key as no preferred
+    fullscreen mode, the "Current" entry in the video settings, so the
+    monitor's own mode is used and going fullscreen follows whichever display
+    the player is actually on, which a play launch wants. An empty value gets
+    that mode only after VideoMode.read has failed to parse it and logged
+    "Failed to parse video mode".
 
     Pinned mirrors the windowed size, fixing the display mode so two machines
     measure the same framebuffer. 26.3 reads the mode as a JSON object
     (VideoMode.CODEC) rather than the 1920x1080@60:24 text of 1.21.1, and this
     pins 8 bits per channel and 60 Hz as well."""
     if not pin_display:
-        return ""
+        return None
     if not (width and height):
         raise RuntimeError(
             "cannot pin the display without a window to match: set render.overrideWidth and render.overrideHeight"
@@ -2589,9 +2683,11 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
     fullscreen_resolution = fullscreen_resolution_option_value(override_width, override_height, pin_display=pin_display)
     if resource_pack_files is None:
         resource_pack_files = configured_resource_pack_names(config)
-    # The mod's built-in baseline rides in Fabric's pack, below every file/ pack.
-    # Fabric appends its pack above user packs if options.txt omits it.
-    resource_pack_options = ["vanilla", "fabric", *(f"file/{file_name}" for file_name in resource_pack_files)]
+    # The mod's built-in baseline needs no entry. Fabric API 26.x adds each mod's resources as a hidden pack named for
+    # the mod and slots them in above vanilla and below every other pack, which are the file/ packs here
+    # (ModPackResourcesUtil.refreshAutoEnabledPacks). The `fabric` pack that held them in 1.21.1 is gone, and the game
+    # removes an entry for it from options.txt with a warning.
+    resource_pack_options = ["vanilla", *(f"file/{file_name}" for file_name in resource_pack_files)]
     preset = graphics_preset(render.get("graphicsMode", 1))
     values = {
         "enableVsync": "true" if render.get("vsync") else "false",
@@ -2609,8 +2705,9 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         "skipMultiplayerWarning": "true",
         "overrideWidth": str(override_width),
         "overrideHeight": str(override_height),
-        "fullscreenResolution": fullscreen_resolution,
     }
+    if fullscreen_resolution is not None:
+        values["fullscreenResolution"] = fullscreen_resolution
     options = util.RUN_DIR / "options.txt"
     if options.exists():
         lines = options.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -2624,6 +2721,9 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
             elif key in values:
                 out.append(f"{key}:{values[key]}")
                 seen.add(key)
+            elif key == "fullscreenResolution":
+                # Not in `values`, so unpinned: a line left by an earlier pin goes, and the game prefers no mode.
+                continue
             else:
                 out.append(line)
         if "version" not in seen:

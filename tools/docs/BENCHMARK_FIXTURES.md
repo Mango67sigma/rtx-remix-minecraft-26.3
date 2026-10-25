@@ -128,10 +128,15 @@ selected in Prism's profile.
 
 `resourcePacks` declares the enabled order of the world's own packs in
 `options.txt`, using pack names without `file/` (zip entries may omit `.zip`).
-The runner copies these packs from the fixture's `resourcepacks/` directory
-and enables them after `vanilla` and Fabric's `fabric` mod pack, which supplies
-the built-in baseline textures, and before the optional art pack. Omitting
-`resourcePacks` enables no world packs. Prefer unpacked folders for clean diffs.
+The runner copies these packs, unchanged, from the fixture's `resourcepacks/`
+directory and enables them after `vanilla` and the packs Fabric API adds for
+mods, which supply the built-in baseline textures, and before the optional art
+pack. Omitting `resourcePacks` enables no world packs. Prefer unpacked folders
+for clean diffs. Minecraft 26.3 leaves a pack out of `options.txt` unless its
+`pack.mcmeta` declares a resource pack format range that includes the game's,
+so author a world pack with `min_format` and `max_format`; only the art pack is
+amended at staging
+([Resource Packs](BENCHMARKING.md#resource-packs)).
 
 Older fixtures may still list `rtx-remix` for the retired baseline. The runner
 logs to stderr and drops that entry unless a real world-local folder or ZIP has

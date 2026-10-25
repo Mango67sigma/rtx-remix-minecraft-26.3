@@ -126,6 +126,17 @@ class VersionConsistencyTests(unittest.TestCase):
 
         self.assertEqual(world_version, runner.OPTIONS_DATA_VERSION)
 
+    def test_resource_pack_major_is_the_one_of_the_pinned_game(self):
+        jar = minecraft_client_jar()
+        if jar is None:
+            self.skipTest("Loom has not cached the pinned Minecraft client jar on this machine")
+        with zipfile.ZipFile(jar) as archive:
+            pack_major = json.loads(archive.read("version.json"))["pack_version"]["resource_major"]
+
+        # What the tools declare in the staged art pack, read from this jar or taken from the fallback constant.
+        self.assertEqual(pack_major, runner.FALLBACK_RESOURCE_PACK_MAJOR)
+        self.assertEqual(pack_major, runner.game_resource_pack_major())
+
     def test_runtime_code_does_not_hardcode_mod_version(self):
         benchmark_controller = (
             REPO_ROOT

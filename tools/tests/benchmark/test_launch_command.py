@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -68,6 +69,52 @@ class LaunchClientMainMenuTests(unittest.TestCase):
         self.assertTrue(request.quiet)
         self.assertEqual(request.env, {})
         benchmark_env.assert_not_called()
+
+
+class MainMenuArtPackTests(unittest.TestCase):
+    """The main-menu launch through the real staging and options.txt, up to the game's start, with an art pack that was
+    published for 1.21.1: the game must find it compatible, or it drops it from options.txt."""
+
+    @pytest.fixture(autouse=True)
+    def _launcher(self, fake_launcher: FakeLauncher) -> None:
+        self.launcher = fake_launcher
+
+    def test_the_game_starts_with_an_art_pack_it_keeps_and_no_fullscreen_mode_to_parse(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        pack = root / "art"
+        pack.mkdir()
+        legacy = json.dumps({"pack": {"pack_format": 34, "description": "PBR Test Pack"}})
+        (pack / "pack.mcmeta").write_text(legacy, encoding="utf-8")
+        run_dir = root / "run"
+        config = {
+            "render": {"overrideWidth": 1920, "overrideHeight": 1080},
+            "resourcePack": {"mode": "local", "localPath": str(pack), "stageName": "rtx-remix-art"},
+        }
+
+        with (
+            patch.object(runner.util, "RUN_DIR", run_dir),
+            patch.object(runner, "load_config", return_value=config),
+            patch.object(runner, "ensure_no_live_client"),
+            patch.object(runner, "host_arch", return_value="win64"),
+            patch.object(runner, "fetch_sdk", return_value=root / "d3d9.dll"),
+            patch.object(runner, "gradle_env", return_value={}),
+            patch.object(runner, "park_stale_runtime_state"),
+            patch.object(runner, "game_resource_pack_major", return_value=97),
+        ):
+            runner.launch_client_main_menu(sdk_variant="release", quiet=True)
+
+        self.assertEqual(len(self.launcher.requests), 1)
+        options = dict(
+            line.split(":", 1)
+            for line in (run_dir / "options.txt").read_text(encoding="utf-8").splitlines()
+            if ":" in line
+        )
+        self.assertEqual(options["resourcePacks"], '["vanilla","file/rtx-remix-art"]')
+        self.assertNotIn("incompatibleResourcePacks", options)
+        self.assertNotIn("fullscreenResolution", options)
+        staged = json.loads((run_dir / "resourcepacks" / "rtx-remix-art" / "pack.mcmeta").read_text(encoding="utf-8"))
+        self.assertEqual(staged, {"pack": {"description": "PBR Test Pack", "min_format": 97, "max_format": 97}})
+        self.assertEqual((pack / "pack.mcmeta").read_text(encoding="utf-8"), legacy)
 
 
 def test_launch_main_menu_checks_before_staging(fake_launcher: FakeLauncher, monkeypatch: pytest.MonkeyPatch):
@@ -321,7 +368,7 @@ class ArtPackFetchFailureTests(unittest.TestCase):
 
                     self.assertTrue(self.game_started())
                     options = (self.run_dir / "options.txt").read_text(encoding="utf-8")
-                    self.assertIn('resourcePacks:["vanilla","fabric"]', options)
+                    self.assertIn('resourcePacks:["vanilla"]', options)
                     self.assertIn(
                         f"Retry the download with tools\\rtx.bat resourcepack fetch {self.pin['name']}.",
                         self.stderr.getvalue(),

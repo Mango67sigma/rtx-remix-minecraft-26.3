@@ -159,6 +159,13 @@ If a fixture requires entity sanitization, configure
 copy under the game directory's `saves/`; it must never mutate the source
 fixture under `assets/`.
 
+The staged art pack declares the game's resource pack format, because 26.3 drops
+a pack that does not from `options.txt`. `runner.declare_pack_format` amends
+`pack.mcmeta` only in the copy under the game directory's `resourcepacks/`; it
+must never touch the fetched pack under `assets/` or a configured local path,
+whose content hashes explain a workload change. `docs/BENCHMARKING.md` Resource
+Packs has the rule.
+
 ## Profiling
 
 `src/rtx_tools/profiler/` owns the JFR and Tracy analysis modules. Use the shared
