@@ -278,12 +278,17 @@ releases its region when it finishes, and the last release returns the arrays
 
 **Textures and atlases.** Atlas capture produces per-sprite materials plus
 atlas-level PBR, emissive, and luminance textures. The block atlas holds only
-block sprites in 26.3; items have their own atlas. Vanilla animates atlases on
-the GPU, so no animated frame ever exists on the CPU: after each
-`SpriteContents$AnimationState.tick` the mod rebuilds the frame patch, or for
-an interpolated sprite the blend of two frames, from the animation state
-(`SpriteAnimationStateMixin`, `TextureAtlasSpriteMixin`) and forwards the
-batched patches (`AtlasAnimationForwarder`). That needs the patch types in the
+block sprites in 26.3; items have their own atlas. The stitcher surrounds every
+sprite with a padding ring that vanilla fills with the sprite's edge texels, so
+every CPU atlas copy the mod builds fills that ring the same way for every
+layer (`LabPBRConverter.fillPaddingRing`): Remix builds its own mip chain from
+those copies, and an empty ring showed as a dark line along every block edge.
+Vanilla animates atlases on the GPU, so no animated frame ever exists on the
+CPU: after each `SpriteContents$AnimationState.tick` the mod rebuilds the frame
+patch, or for an interpolated sprite the blend of two frames, from the
+animation state (`SpriteAnimationStateMixin`, `TextureAtlasSpriteMixin`) and
+forwards the batched patches (`AtlasAnimationForwarder`); each patch covers the
+padded slot so the ring follows the frame. That needs the patch types in the
 wrapper and runtime support for updating a texture from memory. Glyph pages are
 mirrored from the texture writes and buffer-to-texture copies of the frontend
 command encoder (`FrontendCommandEncoderMixin`, `GlyphAtlasTextureMixin`),
@@ -326,7 +331,12 @@ Rigid occurrences retain instances keyed by owner, category, layer, and part;
 `CuboidMixin` keys a cube by its sprite at `ModelPart.Cube.compile`; strips and
 beams stream transient meshes per frame. Enchantment glint is a second sampler
 of one pipeline in 26.3, so its capture is decided in
-`RemixSubmitNodeCollector` and `RenderLayerUtils`. `RemixBlockDamagePass` submits
+`RemixSubmitNodeCollector` and `RenderLayerUtils`. It is captured only with
+`rtxremix.entity.glint` set: both vanilla glint textures are opaque and Remix
+composites the coplanar layer by alpha, so the glint material uploads a private
+copy whose alpha is each texel's brightness, and `rtxremix.entity.glintBlend`
+and `rtxremix.entity.glintIntensity` select its blend class and intensity
+(`RemixEntitySubmitter`). `RemixBlockDamagePass` submits
 static terrain damage decals from `LevelRenderer.submitBlockDestroyAnimation`
 (`LevelRendererBlockDamageMixin`), and the block outline is captured at
 `LevelRenderer.submitBlockOutline` (`LevelRendererBlockOutlineMixin`).
