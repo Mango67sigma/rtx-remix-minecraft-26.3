@@ -5,7 +5,6 @@
 package com.nvidia.rtxremix.minecraft.particle;
 
 import com.nvidia.rtxremix.HardcodedVertex;
-import com.nvidia.rtxremix.InstanceCategoryBit;
 import com.nvidia.rtxremix.InstanceInfoBlendEXT;
 import com.nvidia.rtxremix.MeshInfoSurfaceTriangles;
 import com.nvidia.rtxremix.RemixAPI;
@@ -29,9 +28,7 @@ import net.minecraft.client.particle.Particle;
 import net.minecraft.client.particle.ParticleGroup;
 import net.minecraft.client.particle.ParticleRenderType;
 import net.minecraft.client.particle.SingleQuadParticle;
-import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
-import net.minecraft.resources.Identifier;
 import net.minecraft.util.Mth;
 import org.joml.Quaternionf;
 import org.slf4j.Logger;
@@ -56,11 +53,12 @@ import java.util.Queue;
  * {@link ParticleRenderType} that names the group, not a draw state, and every
  * {@link SingleQuadParticle} names its own atlas and pipeline through its
  * {@code SingleQuadParticle.Layer}. The bucket is therefore chosen per
- * particle from the layer's atlas: the block atlas takes the terrain route the
- * 1.21.1 {@code TERRAIN_SHEET} took, the particle atlas the route of the
- * {@code PARTICLE_SHEET_*} sheets. Layers on any other atlas (the item atlas,
- * which split from the block atlas after 1.21.1, and atlases of other mods)
- * have no Remix material yet and are not drawn.
+ * particle from the layer's atlas ({@link ParticleAtlasRoute}): the block atlas
+ * takes the terrain route the 1.21.1 {@code TERRAIN_SHEET} took, the item atlas,
+ * which split from the block atlas after 1.21.1, the same route over the item
+ * atlas material, and the particle atlas the route of the
+ * {@code PARTICLE_SHEET_*} sheets. Layers on any other atlas, such as those of
+ * other mods, have no Remix material and are not drawn.
  *
  * <p>The quad is built as {@code SingleQuadParticle.extract} builds it: the
  * particle's facing mode supplies the rotation, a nonzero roll turns it about
@@ -86,17 +84,14 @@ public class RemixParticleRenderer {
             0f, 0f, 1f, 0f
     };
 
-    private static final int BLEND_PARTICLE = 1;
-    private static final int BLEND_TERRAIN = 2;
-
     private final RemixRenderer renderer;
     private final ParticleAtlasManager atlasManager;
     private final HashMap<BucketKey, DynamicBucket> buckets = new HashMap<>();
 
     private InstanceInfoBlendEXT blendExt;
     private long pNext;
-    private InstanceInfoBlendEXT terrainBlendExt;
-    private long terrainPNext;
+    private InstanceInfoBlendEXT alphaTestBlendExt;
+    private long alphaTestPNext;
 
     private int lastParticleCount;
     private int lastDrawCount;
@@ -108,12 +103,18 @@ public class RemixParticleRenderer {
     private int lastMeshUpdateCount;
     private long frameCounter;
 
-    // This frame's bucket per layer atlas; written and read by the particle worker only.
+    // This frame's bucket per ParticleAtlasRoute, resolved lazily; the arrays are
+    // allocated once. Written and read by the particle worker only.
     private BlockTextureManager frameBlockTexMgr;
-    private boolean terrainRouteResolved;
-    private boolean particleRouteResolved;
-    private DynamicBucket terrainRouteBucket;
-    private DynamicBucket particleRouteBucket;
+    private final boolean[] routeResolved = new boolean[ParticleAtlasRoute.COUNT];
+    private final DynamicBucket[] routeBuckets = new DynamicBucket[ParticleAtlasRoute.COUNT];
+    // Last frame's bucket per route and the material handle it was keyed by, so an
+    // unchanged route finds its bucket without building a BucketKey every frame.
+    private final DynamicBucket[] cachedRouteBuckets = new DynamicBucket[ParticleAtlasRoute.COUNT];
+    private final long[] cachedRouteHandles = new long[ParticleAtlasRoute.COUNT];
+    // One-entry memo: consecutive particles mostly share a vanilla Layer constant.
+    private SingleQuadParticle.Layer lastLayer;
+    private DynamicBucket lastLayerBucket;
 
     private int particlesThisFrame;
     private int newSlotsThisFrame;
@@ -131,9 +132,9 @@ public class RemixParticleRenderer {
             blendExt = InstanceInfoBlendEXT.textureTimesVertexColorAlphaBlend(10);
             pNext = blendExt.allocNative(0);
         }
-        if (terrainBlendExt == null) {
-            terrainBlendExt = InstanceInfoBlendEXT.textureTimesVertexColorAlphaTest(128);
-            terrainPNext = terrainBlendExt.allocNative(0);
+        if (alphaTestBlendExt == null) {
+            alphaTestBlendExt = InstanceInfoBlendEXT.textureTimesVertexColorAlphaTest(128);
+            alphaTestPNext = alphaTestBlendExt.allocNative(0);
         }
     }
 
@@ -220,45 +221,50 @@ public class RemixParticleRenderer {
     }
 
     /**
-     * Starts this frame's two layer routes. Each resolves lazily, so a frame
-     * touches the bucket map at most once per route rather than once per particle.
+     * Starts this frame's layer routes. Each resolves lazily, so a frame touches
+     * the bucket map at most once per route rather than once per particle.
      */
     private void beginFrameRoutes(BlockTextureManager blockTexMgr) {
         frameBlockTexMgr = blockTexMgr;
-        terrainRouteResolved = false;
-        particleRouteResolved = false;
-        terrainRouteBucket = null;
-        particleRouteBucket = null;
+        Arrays.fill(routeResolved, false);
+        Arrays.fill(routeBuckets, null);
+        lastLayer = null;
+        lastLayerBucket = null;
     }
 
     private DynamicBucket routeBucket(SingleQuadParticle.Layer layer) {
         if (layer == null) return null;
-        Identifier atlas = layer.textureAtlasLocation();
-        if (TextureAtlas.LOCATION_PARTICLES.equals(atlas)) {
-            if (!particleRouteResolved) {
-                particleRouteResolved = true;
-                particleRouteBucket = resolveRoute(false);
+        if (layer == lastLayer) return lastLayerBucket;
+        int route = ParticleAtlasRoute.of(layer.textureAtlasLocation());
+        DynamicBucket bucket = null;
+        if (route != ParticleAtlasRoute.NONE) {
+            if (!routeResolved[route]) {
+                routeResolved[route] = true;
+                routeBuckets[route] = resolveRoute(route);
             }
-            return particleRouteBucket;
+            bucket = routeBuckets[route];
         }
-        if (TextureAtlas.LOCATION_BLOCKS.equals(atlas)) {
-            if (!terrainRouteResolved) {
-                terrainRouteResolved = true;
-                terrainRouteBucket = resolveRoute(true);
-            }
-            return terrainRouteBucket;
-        }
-        return null;
+        lastLayer = layer;
+        lastLayerBucket = bucket;
+        return bucket;
     }
 
-    private DynamicBucket resolveRoute(boolean terrain) {
-        RemixMaterial material = resolveMaterial(terrain, frameBlockTexMgr);
+    private DynamicBucket resolveRoute(int route) {
+        RemixMaterial material = resolveMaterial(route, frameBlockTexMgr);
         if (material == null || !material.isAlive()) return null;
-        int categoryFlags = terrain ? 0 : InstanceCategoryBit.PARTICLE;
-        int blendKind = terrain ? BLEND_TERRAIN : BLEND_PARTICLE;
-        return getOrCreateBucket(
-                new BucketKey(material.getHandle(), categoryFlags, blendKind),
+        long handle = material.getHandle();
+        DynamicBucket cached = cachedRouteBuckets[route];
+        if (cached != null && cached.material == material && cachedRouteHandles[route] == handle) {
+            return cached;
+        }
+        int categoryFlags = ParticleAtlasRoute.categoryFlags(route);
+        int blendKind = ParticleAtlasRoute.blendKind(route);
+        DynamicBucket bucket = getOrCreateBucket(
+                new BucketKey(handle, categoryFlags, blendKind),
                 material, categoryFlags, blendKind);
+        cachedRouteBuckets[route] = bucket;
+        cachedRouteHandles[route] = handle;
+        return bucket;
     }
 
     private PreparedFrame finishPreparation(long frame) {
@@ -337,7 +343,7 @@ public class RemixParticleRenderer {
     }
 
     private long drawPNext(int blendKind) {
-        return blendKind == BLEND_TERRAIN ? terrainPNext : pNext;
+        return blendKind == ParticleAtlasRoute.BLEND_ALPHA_TEST ? alphaTestPNext : pNext;
     }
 
     private void publishFrameStats(PreparedFrame preparedFrame, int draws, int activeQuads) {
@@ -368,11 +374,15 @@ public class RemixParticleRenderer {
         meshUpdatesThisFrame = 0;
     }
 
-    private RemixMaterial resolveMaterial(boolean terrain, BlockTextureManager blockTexMgr) {
-        if (terrain) {
-            return blockTexMgr != null ? blockTexMgr.getAtlasMaterial(BlockTextureManager.L_CUTOUT) : null;
-        }
-        return atlasManager.getMaterial();
+    private RemixMaterial resolveMaterial(int route, BlockTextureManager blockTexMgr) {
+        return switch (route) {
+            case ParticleAtlasRoute.PARTICLES -> atlasManager.getMaterial();
+            case ParticleAtlasRoute.BLOCKS -> blockTexMgr != null
+                    ? blockTexMgr.getAtlasMaterial(BlockTextureManager.L_CUTOUT) : null;
+            case ParticleAtlasRoute.ITEMS -> blockTexMgr != null
+                    ? blockTexMgr.getItemAtlasMaterial() : null;
+            default -> null;
+        };
     }
 
     private DynamicBucket getOrCreateBucket(BucketKey key, RemixMaterial material,
@@ -577,16 +587,21 @@ public class RemixParticleRenderer {
             bucket.destroy();
         }
         buckets.clear();
+        Arrays.fill(cachedRouteBuckets, null);
+        Arrays.fill(cachedRouteHandles, 0L);
+        Arrays.fill(routeBuckets, null);
+        lastLayer = null;
+        lastLayerBucket = null;
 
         if (blendExt != null) {
             blendExt.freeNative();
             blendExt = null;
             pNext = 0;
         }
-        if (terrainBlendExt != null) {
-            terrainBlendExt.freeNative();
-            terrainBlendExt = null;
-            terrainPNext = 0;
+        if (alphaTestBlendExt != null) {
+            alphaTestBlendExt.freeNative();
+            alphaTestBlendExt = null;
+            alphaTestPNext = 0;
         }
 
         lastParticleCount = 0;

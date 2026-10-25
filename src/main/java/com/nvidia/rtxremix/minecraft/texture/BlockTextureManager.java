@@ -52,11 +52,21 @@ import net.minecraft.world.level.block.state.BlockState;
  * <p>Each atlas sprite becomes an individual Remix material with [0,1] UV space.
  * LabPBR sprites (_n/_s variants) get full PBR textures including POM and SSS.
  * Non-PBR sprites get simple albedo + constant materials.
+ *
+ * <p>The item atlas, which split from the block atlas after 1.21.1, gets one
+ * atlas-level cutout material ({@link #getItemAtlasMaterial()}) for the quads
+ * that sample it with atlas UVs, such as item-break particles.
+ *
+ * <p>Every atlas is copied at each sprite's content origin
+ * ({@link #spriteContentX}, {@link #spriteContentY}), which since the
+ * GPU-stitched atlases is not {@code TextureAtlasSprite.getX()/getY()}.
  */
 public class BlockTextureManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(BlockTextureManager.class);
     public static final Identifier BLOCK_ATLAS_ID = Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png");
+    /** The item atlas, {@code TextureAtlas.LOCATION_ITEMS}, which {@code AtlasManager} registers under this id. */
+    public static final Identifier ITEM_ATLAS_ID = Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/items.png");
     /** Blend state for draw calls using the atlas cutout material, which sets useDrawCallAlphaState=true. */
     public static final InstanceInfoBlendEXT ATLAS_CUTOUT_BLEND =
             InstanceInfoBlendEXT.textureTimesVertexColorAlphaTest(128);
@@ -97,6 +107,11 @@ public class BlockTextureManager {
     private final RemixMaterial[] atlasMaterialsSSS = new RemixMaterial[LAYER_COUNT];
     private final List<RemixTexture> managedTextures = new ArrayList<>();
     private final List<RemixMaterial> managedMaterials = new ArrayList<>();
+    /**
+     * Cutout material over the item atlas. Built on the render thread in
+     * {@link #initialize()} and read by the particle worker, hence volatile.
+     */
+    private volatile RemixMaterial itemAtlasMaterial;
     private RemixMaterial waterSurfaceMaterial;
     private RemixMaterial waterCameraMediumMaterial;
     private long waterNormalHandle;
@@ -169,10 +184,10 @@ public class BlockTextureManager {
         public boolean hasPBR, hasSSS;
         float[] lightColor;
 
-        SpriteEntry(int i, Identifier id, TextureAtlasSprite s) {
+        SpriteEntry(int i, Identifier id, TextureAtlasSprite s, int atlasW, int atlasH) {
             this.index = i; this.id = id;
             u0 = s.getU0(); v0 = s.getV0(); u1 = s.getU1(); v1 = s.getV1();
-            pixX = s.getX(); pixY = s.getY();
+            pixX = spriteContentX(s, atlasW); pixY = spriteContentY(s, atlasH);
             SpriteContents contents = s.contents();
             pixW = contents.width(); pixH = contents.height();
             transparentPixels = scanTransparency(contents, pixW, pixH);
@@ -264,6 +279,7 @@ public class BlockTextureManager {
                 appliedTerrainEmissionMultiplier = terrainEmissionMultiplier;
             }
             buildAtlasMaterials(api, labPBRVariants);
+            buildItemAtlasMaterial(api, client, labPBRVariants);
             buildWaterMaterials(api);
             Map<String, AnimatedSpriteLabPBR> labPBRMap =
                 buildAnimatedSpriteLabPBRMap(labPBRVariants, spriteAtlas);
@@ -303,7 +319,7 @@ public class BlockTextureManager {
         int pbr = 0, emissiveCount = 0, idx = 0;
 
         for (var e : map.entrySet()) {
-            SpriteEntry se = new SpriteEntry(idx++, e.getKey(), e.getValue());
+            SpriteEntry se = new SpriteEntry(idx++, e.getKey(), e.getValue(), atlasW, atlasH);
             byte[] alb = extractRGBA(se.pixX, se.pixY, se.pixW, se.pixH);
             int luminance = lumMap.getOrDefault(e.getKey().toString(), 0);
 
@@ -534,6 +550,118 @@ public class BlockTextureManager {
                 hasAnyNormal, hasAnyHeight, hasAnyEmissive, hasAnySSS, sssCount, sssSprites);
     }
 
+    // ====================================================================
+    //  Item atlas (textures/atlas/items.png)
+    // ====================================================================
+
+    /**
+     * Captures the item atlas and builds its cutout material, the way
+     * {@link #buildAtlasMaterials} builds the block atlas's: the stitched albedo with
+     * LabPBR AO, and atlas-level normal, height, roughness, metallic and emissive
+     * textures from the {@code _n} and {@code _s} sidecars, plus
+     * {@link BuiltinEmission} for sprites without authored emission. Item sprite ids
+     * name their texture path ({@code minecraft:item/apple} for
+     * {@code textures/item/apple.png}), so the sidecar lookup is the block atlas's.
+     * Subsurface scattering is left out: nothing samples this atlas with SSS.
+     *
+     * <p>A missing or empty item atlas leaves the material null and the block atlas
+     * untouched; its quads are then not drawn, as before this material existed.
+     */
+    private void buildItemAtlasMaterial(RemixAPI api, Minecraft client,
+                                        LabPBRConverter.VariantCache labPBRVariants) {
+        itemAtlasMaterial = null;
+        try {
+            AbstractTexture tex = client.getTextureManager().getTexture(ITEM_ATLAS_ID);
+            if (!(tex instanceof TextureAtlas atlas)) {
+                LOGGER.warn("Item atlas {} is not a TextureAtlas, item-atlas quads stay undrawn", ITEM_ATLAS_ID);
+                return;
+            }
+            SpriteAtlasAccessor acc = (SpriteAtlasAccessor) atlas;
+            int w = acc.getWidth(), h = acc.getHeight();
+            Map<Identifier, TextureAtlasSprite> map = acc.getSprites();
+            if (w == 0 || h == 0 || map == null || map.isEmpty()) {
+                LOGGER.warn("Item atlas is empty ({}x{}), item-atlas quads stay undrawn", w, h);
+                return;
+            }
+
+            int pixels = w * h;
+            byte[] albedo = stitchAtlasRGBA(atlas);
+            byte[] normalAtlas = new byte[pixels * 4];
+            byte[] heightAtlas = new byte[pixels];
+            byte[] roughnessAtlas = new byte[pixels];
+            byte[] metallicAtlas = new byte[pixels];
+            byte[] emissiveAtlas = new byte[pixels * 4];
+            Arrays.fill(heightAtlas, (byte) 255);
+            Arrays.fill(roughnessAtlas, (byte) 180);
+            fillRGBA(normalAtlas, 128, 128, 255, 255);
+
+            boolean hasAnyNormal = false, hasAnyEmissive = false;
+            int pbr = 0;
+            for (var e : map.entrySet()) {
+                Identifier id = e.getKey();
+                TextureAtlasSprite sprite = e.getValue();
+                int sx = spriteContentX(sprite, w), sy = spriteContentY(sprite, h);
+                int sw = sprite.contents().width(), sh = sprite.contents().height();
+                if (!contentFits(sx, sy, sw, sh, w, h)) continue;
+
+                NativeImage nI = labPBRVariants.loadVariant(id, "_n");
+                NativeImage sI = labPBRVariants.loadVariant(id, "_s");
+                try {
+                    if (nI != null) {
+                        LabPBRConverter.blitNormal(normalAtlas, w, nI, sx, sy, sw, sh);
+                        LabPBRConverter.blitHeight(heightAtlas, w, nI, sx, sy, sw, sh);
+                        LabPBRConverter.applyAO(albedo, w, nI, sx, sy, sw, sh);
+                        hasAnyNormal = true;
+                    }
+                    if (sI != null) {
+                        LabPBRConverter.blitRoughness(roughnessAtlas, w, sI, sx, sy, sw, sh);
+                        LabPBRConverter.blitMetallic(metallicAtlas, w, sI, sx, sy, sw, sh);
+                    }
+                    if (sI != null && LabPBRConverter.hasEmissiveData(sI)) {
+                        LabPBRConverter.blitEmissive(emissiveAtlas, w, albedo, sI,
+                                sx, sy, sw, sh, 0f, BuiltinEmission.gain(id));
+                        hasAnyEmissive = true;
+                    } else if (BuiltinEmission.mask(id) != null) {
+                        LabPBRConverter.blitEmissiveMask(emissiveAtlas, w, albedo,
+                                sx, sy, sw, sh, BuiltinEmission.mask(id));
+                        hasAnyEmissive = true;
+                    }
+                    if (nI != null || sI != null) pbr++;
+                } finally {
+                    if (nI != null) nI.close();
+                    if (sI != null) sI.close();
+                }
+            }
+
+            RemixTexture albedoTex = upload(api, "item_atlas_albedo", albedo, w, h,
+                    TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
+            if (albedoTex == null) {
+                LOGGER.error("Failed to upload the item atlas albedo, item-atlas quads stay undrawn");
+                return;
+            }
+            RemixTexture normalTex = hasAnyNormal ? upload(api, "item_atlas_normal", normalAtlas, w, h,
+                    TextureFormat.RGBA8_UNORM, TexturePurpose.NORMAL_DX) : null;
+            RemixTexture heightTex = hasAnyNormal ? upload(api, "item_atlas_height", heightAtlas, w, h,
+                    TextureFormat.R8_UNORM, TexturePurpose.HEIGHTMAP) : null;
+            RemixTexture roughnessTex = upload(api, "item_atlas_roughness", roughnessAtlas, w, h,
+                    TextureFormat.R8_UNORM, TexturePurpose.DATA);
+            RemixTexture metallicTex = upload(api, "item_atlas_metallic", metallicAtlas, w, h,
+                    TextureFormat.R8_UNORM, TexturePurpose.DATA);
+            RemixTexture emissiveTex = hasAnyEmissive ? upload(api, "item_atlas_emissive", emissiveAtlas, w, h,
+                    TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR) : null;
+
+            itemAtlasMaterial = createMaterialViaStore(buildAtlasOpaqueMaterialInfo(albedoTex, L_CUTOUT,
+                    normalTex, heightTex, roughnessTex, metallicTex, emissiveTex, null, null,
+                    terrainEmissionIntensity()));
+            LOGGER.info("Item atlas material {} ({}x{}, {} sprites, {} with LabPBR, normal={}, emissive={})",
+                    itemAtlasMaterial != null ? "created" : "failed", w, h, map.size(), pbr,
+                    hasAnyNormal, hasAnyEmissive);
+        } catch (RuntimeException e) {
+            LOGGER.error("Item atlas capture failed, item-atlas quads stay undrawn", e);
+            itemAtlasMaterial = null;
+        }
+    }
+
     private RemixMaterial createAtlasOpaqueMaterial(int lt, RemixTexture normalTex,
                                                RemixTexture heightTex, RemixTexture roughnessTex,
                                                RemixTexture metallicTex, RemixTexture emissiveTex,
@@ -550,6 +678,17 @@ public class BlockTextureManager {
                                                RemixTexture sssTex,
                                                RemixTexture sssAlbedoTex,
                                                float emissionIntensity) {
+        return buildAtlasOpaqueMaterialInfo(atlasAlbedo, lt, normalTex, heightTex, roughnessTex,
+                metallicTex, emissiveTex, sssTex, sssAlbedoTex, emissionIntensity);
+    }
+
+    private MaterialInfo buildAtlasOpaqueMaterialInfo(RemixTexture albedoTex, int lt,
+                                               RemixTexture normalTex,
+                                               RemixTexture heightTex, RemixTexture roughnessTex,
+                                               RemixTexture metallicTex, RemixTexture emissiveTex,
+                                               RemixTexture sssTex,
+                                               RemixTexture sssAlbedoTex,
+                                               float emissionIntensity) {
         MaterialInfoOpaqueEXT.Builder ob = MaterialInfoOpaqueEXT.builder()
                 .albedoConstant(1f, 1f, 1f).roughnessConstant(1f).metallicConstant(1f)
                 .useDrawCallAlphaState(true);
@@ -561,7 +700,7 @@ public class BlockTextureManager {
                 lt == L_SOLID, sssTex, sssAlbedoTex));
 
         MaterialInfo.Builder mb = MaterialInfo.builder()
-                .albedoTexture(atlasAlbedo.getHandle()).filterMode(0);
+                .albedoTexture(albedoTex.getHandle()).filterMode(0);
         if (normalTex != null)   mb.normalTexture(normalTex.getHandle());
         if (emissiveTex != null) {
             mb.emissiveTexture(emissiveTex.getHandle())
@@ -947,6 +1086,16 @@ public class BlockTextureManager {
         return atlasMaterials[layerType];
     }
 
+    /**
+     * Returns the cutout material over the item atlas ({@link #ITEM_ATLAS_ID}), or null
+     * before initialization or when the item atlas could not be captured. Quads use it
+     * with atlas UVs and the alpha-test draw state of {@link #ATLAS_CUTOUT_BLEND}, as
+     * they use {@code getAtlasMaterial(L_CUTOUT)}.
+     */
+    public RemixMaterial getItemAtlasMaterial() {
+        return itemAtlasMaterial;
+    }
+
     /** Returns the atlas-based SSS material for the given layer type, or null if none. */
     public RemixMaterial getAtlasMaterialSSS(int layerType) {
         return atlasMaterialsSSS[layerType];
@@ -1023,7 +1172,12 @@ public class BlockTextureManager {
         }
     }
 
-    /** Reads per-sprite NativeImages and stitches into an RGBA byte[] atlas buffer. */
+    /**
+     * Reads per-sprite NativeImages and stitches into an RGBA byte[] atlas buffer.
+     * Each sprite lands at its content origin, where its UVs sample it. The padding
+     * vanilla's GPU stitch fills around a sprite stays transparent here; no quad's
+     * UVs reach it.
+     */
     public static byte[] stitchAtlasRGBA(TextureAtlas atlas) {
         SpriteAtlasAccessor acc = (SpriteAtlasAccessor) atlas;
         int w = acc.getWidth(), h = acc.getHeight();
@@ -1031,8 +1185,13 @@ public class BlockTextureManager {
         for (TextureAtlasSprite sprite : acc.getSprites().values()) {
             NativeImage img = ((SpriteContentsAccessor) sprite.contents()).getImage();
             if (img == null) continue;
-            int sx = sprite.getX(), sy = sprite.getY();
+            int sx = spriteContentX(sprite, w), sy = spriteContentY(sprite, h);
             int sw = sprite.contents().width(), sh = sprite.contents().height();
+            if (!contentFits(sx, sy, sw, sh, w, h)) {
+                LOGGER.warn("Sprite {} at ({}, {}) {}x{} lies outside its {}x{} atlas, skipped",
+                        sprite.contents().name(), sx, sy, sw, sh, w, h);
+                continue;
+            }
             for (int y = 0; y < sh; y++)
                 for (int x = 0; x < sw; x++) {
                     int abgr = NativeImagePixels.abgr(img, x, y);
@@ -1044,6 +1203,41 @@ public class BlockTextureManager {
                 }
         }
         return buf;
+    }
+
+    /**
+     * Atlas texel column of the sprite's first content texel, the column its
+     * {@code getU0()} samples. Since the atlas became GPU-stitched (1.21.11),
+     * {@code TextureAtlasSprite.getX()} is the origin of the sprite's padded slot and
+     * the content starts {@code padding} texels further in: the 26.3 constructor sets
+     * {@code u0 = (x + padding) / atlasWidth}, and {@code Stitcher} pads every sprite
+     * by {@code 1 << mipLevel << clamp(anisotropyBit - 1, 0, 4)}, so by at least one
+     * texel (16 on the block atlas at the default four mip levels). {@code padding}
+     * is private, so the origin is recovered from {@code u0}, which round-trips
+     * exactly (see {@link #texelOrigin}).
+     */
+    public static int spriteContentX(TextureAtlasSprite sprite, int atlasWidth) {
+        return texelOrigin(sprite.getU0(), atlasWidth);
+    }
+
+    /** Row counterpart of {@link #spriteContentX}, from {@code getV0()}. */
+    public static int spriteContentY(TextureAtlasSprite sprite, int atlasHeight) {
+        return texelOrigin(sprite.getV0(), atlasHeight);
+    }
+
+    /**
+     * The integer texel {@code n} for {@code uv0 = (float) n / atlasSize}. The float
+     * quotient carries a relative error of at most 2^-24, and the product is taken in
+     * double, so it lies within {@code n * 2^-24} of {@code n}: far inside the half
+     * texel {@code Math.round} tolerates for any atlas a GPU can hold.
+     */
+    static int texelOrigin(float uv0, int atlasSize) {
+        return (int) Math.round((double) uv0 * atlasSize);
+    }
+
+    /** Whether a {@code sw} x {@code sh} sprite at ({@code sx}, {@code sy}) lies inside a {@code w} x {@code h} atlas. */
+    static boolean contentFits(int sx, int sy, int sw, int sh, int w, int h) {
+        return sx >= 0 && sy >= 0 && sw >= 0 && sh >= 0 && sx + sw <= w && sy + sh <= h;
     }
 
     /** Returns the atlas width, or 0 if not initialized. */
@@ -1298,6 +1492,7 @@ public class BlockTextureManager {
         materials.clear(); sprites.clear(); spriteById.clear(); spriteLightColors.clear();
         Arrays.fill(atlasMaterials, null);
         Arrays.fill(atlasMaterialsSSS, null);
+        itemAtlasMaterial = null;
         atlasNormalTex = null;
         atlasHeightTex = null;
         atlasRoughnessTex = null;

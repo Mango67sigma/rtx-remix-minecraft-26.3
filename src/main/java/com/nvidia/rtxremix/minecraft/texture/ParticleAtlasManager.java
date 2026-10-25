@@ -41,10 +41,12 @@ import net.minecraft.server.packs.resources.ResourceManager;
  * material serves both the alpha-tested and the blended particle passes.
  *
  * <p>Mirrors {@link BlockTextureManager#buildAtlasMaterials} but operates on
- * the particle atlas ({@code SpriteAtlasTexture.PARTICLE_ATLAS_TEXTURE}).
+ * the particle atlas ({@code TextureAtlas.LOCATION_PARTICLES}). Sidecars sit at
+ * the sprite's content origin ({@link BlockTextureManager#spriteContentX}), where
+ * the stitched albedo and the particle UVs put it.
  *
- * <p>TERRAIN_SHEET particles reuse materials from {@link BlockTextureManager}
- * rather than creating new ones here.
+ * <p>Particles whose layer samples the block or the item atlas reuse
+ * {@link BlockTextureManager}'s cutout materials rather than creating new ones here.
  */
 public class ParticleAtlasManager {
 
@@ -115,9 +117,11 @@ public class ParticleAtlasManager {
             for (var entry : sprites.entrySet()) {
                 Identifier spriteId = entry.getKey();
                 TextureAtlasSprite sprite = entry.getValue();
-                int pixX = sprite.getX(), pixY = sprite.getY();
+                int pixX = BlockTextureManager.spriteContentX(sprite, atlasW);
+                int pixY = BlockTextureManager.spriteContentY(sprite, atlasH);
                 int pixW = sprite.contents().width();
                 int pixH = sprite.contents().height();
+                if (!BlockTextureManager.contentFits(pixX, pixY, pixW, pixH, atlasW, atlasH)) continue;
 
                 Identifier texId = Identifier.fromNamespaceAndPath(spriteId.getNamespace(),
                         "particle/" + spriteId.getPath());
