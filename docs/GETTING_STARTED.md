@@ -394,7 +394,7 @@ mod reads, are in [Tuning](TUNING.md).
 `tools\rtx.bat launch` starts Prism with the shell's environment, and Prism
 passes it on to the game. Set a debug-view override there instead of editing
 `rtx.conf` in the game directory, which every launch replaces, or saving a User
-Setting through Alt+X:
+Setting through Left Alt+X:
 
 ```powershell
 $env:DXVK_RTX_DEBUG_VIEW_INDEX = 51

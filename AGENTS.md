@@ -119,7 +119,7 @@ force off).
 **Overlay input.** `RemixInputGate` owns the Minecraft-side capture session for
 the Remix overlays; `KeyboardMixin` and `MouseMixin` route the SDL input events
 vanilla queues (keys, text input and IME composition, buttons, motion, scroll)
-through it. Alt+X is matched by scancode with the event's modifier mask, so it
+through it. Left Alt+X is matched by scancode with the event's modifier mask, so it
 is the same physical key on every layout. A cancelled event still reports input
 to vanilla's `FramerateLimitTracker`, so an open menu never trips the AFK frame
 cap. Capture follows whether a native menu is shown, which `rtx.showUI` records:
@@ -127,7 +127,7 @@ cap. Capture follows whether a native menu is shown, which `rtx.showUI` records:
 the head of `GameRenderer.update`, the first game-renderer work of each frame.
 The mod opens and closes menus by writing it, and the menus' own close and
 switch controls, the runtime's menu hotkey, and its First Use Guide change it
-too. Alt+X without Control toggles the developer menu over
+too. Left Alt+X without Control toggles the developer menu over
 gameplay or a screen. The only other open command in the mod is the RTX Remix
 Graphics Settings button on the settings landing page; both open through
 `RtxRemixMod.openRemixMenu`, and the button queues its request so the click
@@ -471,7 +471,7 @@ diluting the sampler's candidate pool.
   every menu the runtime shows or hides reaches the gate through
   `RtxRemixMod.followRemixMenuVisibility`, which `GameRendererMixin` calls at
   the head of `GameRenderer.update` each frame and which allocates nothing on
-  the Java heap. The packaged runtime menu binding stays away from Alt+X
+  the Java heap. The packaged runtime menu binding stays away from Left Alt+X
   (`KeyboardMixin`, `MouseMixin`, `RtxSettingsScreen`, `packaging/rtx.conf`).
 - The placed Copper Beacon is not a `BlockLightDefaults` rule: its block entity
   owns a dynamic articulated light, and a static rule would light it twice

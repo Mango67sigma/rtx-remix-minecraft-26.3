@@ -13,7 +13,7 @@ Tooltips explain each control and mark a value you have changed as
 The renderer's quality tier is Remix's own: pick it in the runtime's Graphics
 Settings menu, which the **RTX Remix Graphics Settings** button on the landing
 page opens. Minecraft receives no keyboard or mouse input while a Remix menu is
-open; close it with its own close button or press **Alt+X** to return. The
+open; close it with its own close button or press **Left Alt+X** to return. The
 menu's button for switching to the other Remix menu works too.
 `/rtx preset <name>` sets the same tier for the current session only, for a
 quick comparison without opening the menu; it changes nothing on these pages
@@ -101,7 +101,7 @@ a control, or loading a saved value for it, hands that option to you until you
 restart the game, masking any profile that wanted to author it. If you decide
 the picture is too dark, a map cannot darken it again a minute later.
 
-**The Remix runtime's overlays, under Alt+X.** The developer menu is the
+**The Remix runtime's overlays, under Left Alt+X.** The developer menu is the
 advanced one, aimed at people tuning the renderer itself; the Graphics Settings
 menu opens from the button on the landing page. Remix saves changes made in
 either separately from the mod's own settings. A Graphics Settings change wins

@@ -134,15 +134,15 @@ menu, which the **RTX Remix Graphics Settings** button on that screen opens.
 See [Settings](SETTINGS.md) for how personal changes and map lighting fit
 together.
 
-**Alt+X** opens something different: the RTX Remix runtime's own developer
+**Left Alt+X** opens something different: the RTX Remix runtime's own developer
 menu, aimed at people tuning the renderer itself. Anything you change there is
 saved by Remix and overrides the mod's settings until you undo it. The
 **RTX Remix Graphics Settings** button opens the runtime's simpler menu the
 same way. While either is open the game receives no keyboard or mouse input,
-Escape included; close the menu with its own close button, or press Alt+X
+Escape included; close the menu with its own close button, or press Left Alt+X
 again, to carry on playing. The runtime's First Use Guide opens at each launch
 until you choose **Never Show This Again** in it. It holds input the same way,
-so the title screen ignores clicks until you close the guide or press Alt+X.
+so the title screen ignores clicks until you close the guide or press Left Alt+X.
 
 ## Multiplayer
 
@@ -216,7 +216,7 @@ Open an issue on the project's
 for anything about the mod: what
 is in the world and how it looks, the settings screen, `/rtx` commands and
 keys, lighting profiles, the installer, and crashes. Denoiser, DLSS, or
-frame-generation artifacts, Remix's own menus (Alt+X and RTX Remix Graphics
+frame-generation artifacts, Remix's own menus (Left Alt+X and RTX Remix Graphics
 Settings), and anything that also happens in another RTX Remix game belong to
 the runtime. Report those on the
 [RTX Remix tracker](https://github.com/NVIDIAGameWorks/rtx-remix/issues/new?template=runtime_bug_report.yml),

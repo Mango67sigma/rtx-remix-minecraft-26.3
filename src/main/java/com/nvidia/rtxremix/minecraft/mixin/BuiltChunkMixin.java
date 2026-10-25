@@ -4,7 +4,6 @@
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
-import com.nvidia.rtxremix.minecraft.terrain.BuiltChunkNeighbourhoodAccess;
 import com.nvidia.rtxremix.minecraft.terrain.ChunkBuilderBlockEntityAccess;
 import com.nvidia.rtxremix.minecraft.terrain.SectionLeftRenderSetQueue;
 import com.nvidia.rtxremix.minecraft.terrain.visibility.ChunkSlotMoveLog;
@@ -36,14 +35,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *       render thread validates the live world section before removing Remix terrain,
  *       because with capture on every section publishes a mesh without layers.
  * </ul>
- *
- * <p>{@link BuiltChunkNeighbourhoodAccess} is the legacy 1.21.1 snapshot mask. Minecraft 26.3
- * admits a first build only once all eight neighbour columns are loaded and lit, so the mask
- * is not recorded and reads 0; the slot keeps the interface only until its last, uncalled
- * consumer in {@code BuiltChunkStorageMixin} is removed.
  */
 @Mixin(SectionRenderDispatcher.RenderSection.class)
-public abstract class BuiltChunkMixin implements ChunkBuilderBlockEntityAccess, BuiltChunkNeighbourhoodAccess {
+public abstract class BuiltChunkMixin implements ChunkBuilderBlockEntityAccess {
 
     @Unique
     private static final long rtxremix$UNPLACED_NODE = SectionPos.asLong(-1, -1, -1);
@@ -60,15 +54,6 @@ public abstract class BuiltChunkMixin implements ChunkBuilderBlockEntityAccess, 
     @Override
     public boolean rtxremix$hasBlockEntities() {
         return rtxremix$hasBlockEntities;
-    }
-
-    @Override
-    public int rtxremix$snapshotMask() {
-        return 0;
-    }
-
-    @Override
-    public void rtxremix$clearSnapshotBit(int bit) {
     }
 
     @Inject(method = "reset()V", at = @At("HEAD"))

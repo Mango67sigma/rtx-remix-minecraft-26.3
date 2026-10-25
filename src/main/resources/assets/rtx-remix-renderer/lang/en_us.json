@@ -58,7 +58,7 @@
   "rtxremix.settings.category.materials": "Materials",
   "rtxremix.settings.configure": "Configure...",
   "rtxremix.settings.openRemixMenu": "RTX Remix Graphics Settings",
-  "rtxremix.settings.openRemixMenu.tip": "Opens the RTX Remix Graphics Settings menu. Minecraft ignores input while it is open. Close it with its own close button or Alt+X.",
+  "rtxremix.settings.openRemixMenu.tip": "Opens the RTX Remix Graphics Settings menu. Minecraft ignores input while it is open. Close it with its own close button or Left Alt+X.",
   "rtxremix.settings.blockLights.title": "Block Lights",
   "rtxremix.settings.blockLights.block": "Block",
   "rtxremix.settings.blockLights.intensity": "Intensity Multiplier",
