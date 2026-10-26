@@ -30,6 +30,9 @@ SPDX_LICENSE_LINE = "SPDX-License-Identifier: Apache-2.0"
 # Release compliance review requires this exact entity, trailing period included.
 NVIDIA_ENTITY = "NVIDIA CORPORATION & AFFILIATES. All rights reserved."
 
+# Files the fork created name its contributors instead, with the same trailing period.
+FORK_ENTITY = "the rtx-remix-minecraft-26.3 contributors."
+
 # The copyright line that must sit above the Apache body in the root LICENSE.
 LICENSE_FIRST_LINE = f"Copyright (c) 2024-2026 {NVIDIA_ENTITY}"
 
@@ -124,7 +127,7 @@ def tracked_files() -> list[str]:
 
 
 def headered_sources() -> list[str]:
-    """Public tracked sources expected to carry an NVIDIA SPDX header."""
+    """Public tracked sources expected to carry an SPDX header."""
     selected = []
     for name in tracked_files():
         if name.startswith(EXCLUDED_PREFIXES) or name in EXCLUDED_PATHS:
@@ -149,15 +152,16 @@ class SourceHeaderTests(unittest.TestCase):
         missing = [name for name in sources if SPDX_LICENSE_LINE not in read_text(REPO_ROOT / name)]
         self.assertEqual([], missing, "sources without an SPDX header (new files usually arrive via rebase or merge)")
 
-    def test_headers_use_the_required_nvidia_entity(self):
+    def test_headers_name_a_known_copyright_holder(self):
         # Release compliance tooling matches on the exact entity string, trailing
         # period included, so "NVIDIA CORPORATION" alone or a missing period fails.
+        # Files NVIDIA wrote keep its entity; files the fork created name the fork's.
         offenders = []
         for name in headered_sources():
             text = read_text(REPO_ROOT / name)
-            if "SPDX-FileCopyrightText" in text and NVIDIA_ENTITY not in text:
+            if "SPDX-FileCopyrightText" in text and not (NVIDIA_ENTITY in text or FORK_ENTITY in text):
                 offenders.append(name)
-        self.assertEqual([], offenders, f"SPDX headers must name '{NVIDIA_ENTITY}'")
+        self.assertEqual([], offenders, f"SPDX headers must name '{NVIDIA_ENTITY}' or '{FORK_ENTITY}'")
 
 
 class ScriptEncodingTests(unittest.TestCase):

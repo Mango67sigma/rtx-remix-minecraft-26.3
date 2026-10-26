@@ -4,6 +4,14 @@ This archive installs a Fabric mod that renders Minecraft Java Edition 26.3
 through NVIDIA RTX Remix. It sets up a launcher, Java,
 Fabric, the mod, and the RTX Remix runtime for you.
 
+The mod in this archive is built from an unofficial community fork of NVIDIA's
+RTX Remix for Minecraft
+(<https://github.com/NVIDIAGameWorks/rtx-remix-minecraft>), ported to Minecraft
+26.3. The fork is not affiliated with, endorsed by, or supported by NVIDIA.
+Report problems with this port at
+<https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues>, not to
+NVIDIA.
+
 ## What You Need
 
 - Windows 10 or 11, x64 or ARM64.
@@ -50,7 +58,7 @@ This is a beta. The mod began as a technology showcase and was tuned against
 one showcase world, built for this project by BlockWorks
 (<https://www.blockworks.uk/>), so the places that world visits are where it
 looks and runs best. It ships with known issues, tracked at
-<https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/issues>, and there are
+<https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues>, and there are
 bugs yet to be found. It has had limited testing alongside other
 mods, it targets Minecraft 26.3 only, and blocks, mobs, dimensions, and
 situations the showcase never reaches have had less care. When something
@@ -104,7 +112,7 @@ launch.
 `INSTALLER_REFERENCE.md` covers the rest: the modes, every flag, headless and
 CI use, and what the installer verifies before it downloads anything. To add
 the mod to a Fabric instance you already have instead, see
-<https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/blob/main/docs/PLAYING.md#installing-without-the-installer>.
+<https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/blob/main/docs/PLAYING.md#installing-without-the-installer>.
 
 ## First Launch
 
@@ -123,7 +131,7 @@ and crash reports. Both boxes start checked, and closing the guide keeps them as
 they are. The mod itself collects no data. You can change both later in the
 Permissions tab of the RTX Remix Graphics Settings menu. What is sent is listed
 at
-<https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/blob/main/docs/PLAYING.md#crash-reports-and-privacy>.
+<https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/blob/main/docs/PLAYING.md#crash-reports-and-privacy>.
 
 Once you are in a world, the renderer compiles shaders and draws nothing until
 it finishes. A dark, flat, or half-built scene right after is expected. Let it
@@ -148,7 +156,7 @@ enabled. For a direct comparison, type `/rtx off`, look around, then `/rtx on`.
 ## Updating
 
 Download the new archive from
-<https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/releases/latest>,
+<https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest>,
 extract it, and run `install.bat` again. It
 preselects Upgrade and replaces the mod and its supporting files in the
 launcher that already has them. Launcher, Minecraft, Fabric, and other options
@@ -237,7 +245,7 @@ if you are wiping it anyway.
 
 Problems inside the game rather than inside the installer, such as a black
 screen or a flat-looking world, are covered by the player guide at
-<https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/blob/main/docs/PLAYING.md#troubleshooting>.
+<https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/blob/main/docs/PLAYING.md#troubleshooting>.
 One case worth checking first: with other mods installed, a crash,
 a black screen, or wrong rendering is most often a conflict with a mod that
 changes rendering or chunk loading. Remove the other mods and try again, and
@@ -245,7 +253,7 @@ say which mod was involved in your report.
 
 ## Reporting A Bug
 
-Open an issue at <https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/issues>
+Open an issue at <https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues>
 for anything about the mod: what
 is in the world and how it looks, the settings screen, `/rtx` commands and
 keys, lighting profiles, the installer, and crashes. Denoiser, DLSS, or
@@ -279,7 +287,7 @@ the following:
 
 The full guides, covering the settings screen, the commands, camera paths, and
 how to give a map its own lighting, live with the project's source at
-<https://github.com/NVIDIAGameWorks/rtx-remix-minecraft>.
+<https://github.com/Mango67sigma/rtx-remix-minecraft-26.3>.
 
 ## License
 

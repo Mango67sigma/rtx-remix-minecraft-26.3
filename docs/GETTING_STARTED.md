@@ -147,8 +147,8 @@ variant in the launcher cannot add instrumentation to a local release build.
 ## Checklist
 
 ```powershell
-git clone https://github.com/NVIDIAGameWorks/rtx-remix-minecraft.git
-cd rtx-remix-minecraft
+git clone https://github.com/Mango67sigma/rtx-remix-minecraft-26.3.git
+cd rtx-remix-minecraft-26.3
 .\tools\rtx.bat prism signin
 .\tools\rtx.bat launch
 ```

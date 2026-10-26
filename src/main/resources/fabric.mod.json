@@ -3,14 +3,14 @@
     "id": "rtx-remix-renderer",
     "version": "${version}",
     "name": "RTX Remix for Minecraft",
-    "description": "Renders Minecraft through NVIDIA RTX Remix path tracing. NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.",
+    "description": "Renders Minecraft through NVIDIA RTX Remix path tracing. NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT. Unofficial community port to Minecraft 26.3, not affiliated with or endorsed by NVIDIA.",
     "authors": [
         "NVIDIA"
     ],
     "contact": {
-        "homepage": "https://github.com/NVIDIAGameWorks/rtx-remix-minecraft",
-        "sources": "https://github.com/NVIDIAGameWorks/rtx-remix-minecraft",
-        "issues": "https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/issues"
+        "homepage": "https://github.com/Mango67sigma/rtx-remix-minecraft-26.3",
+        "sources": "https://github.com/Mango67sigma/rtx-remix-minecraft-26.3",
+        "issues": "https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues"
     },
     "license": "Apache-2.0",
     "environment": "*",

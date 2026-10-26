@@ -177,10 +177,13 @@ New files need the SPDX header used throughout the tree:
 
 ```java
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 the rtx-remix-minecraft-26.3 contributors.
  * SPDX-License-Identifier: Apache-2.0
  */
 ```
+
+A file NVIDIA wrote keeps its NVIDIA copyright line when it is modified, and a
+new file that descends from one keeps that line above the contributors' line.
 
 PowerShell scripts must be ASCII or start with a UTF-8 BOM. Windows
 PowerShell 5.1, used by `packaging/install.bat`, reads a BOM-less script using
@@ -519,7 +522,7 @@ By making a contribution to this project, I certify that:
 ## Reporting Bugs
 
 A bug report is not a contribution you have to build: open an issue on the
-project's [issue tracker](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/issues),
+project's [issue tracker](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues),
 and include everything listed in
 [Reporting a Bug](docs/PLAYING.md#reporting-a-bug).
 For wrapper failures, include the JDK version and failing Java stack trace or

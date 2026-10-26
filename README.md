@@ -1,5 +1,12 @@
 # RTX Remix for Minecraft
 
+> **Unofficial port.** This repository is a community fork of NVIDIA's
+> [RTX Remix for Minecraft](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft),
+> ported to Minecraft 26.3. It is not affiliated with, endorsed by, or supported
+> by NVIDIA. Report problems with this port on
+> [this repository's issue tracker](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues),
+> not to NVIDIA.
+
 Play Minecraft Java Edition 26.3 with real-time path tracing on a GeForce RTX
 GPU, powered by NVIDIA RTX Remix.
 
@@ -11,7 +18,7 @@ world, built for this project by [BlockWorks](https://www.blockworks.uk/) (see
 [Showcase World And Art Pack](#showcase-world-and-art-pack)), and the places
 that world visits are where it looks and runs best. We have worked hard to fix
 as many issues as we could, but it ships with
-[known issues](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/issues),
+[known issues](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues),
 and there are certainly bugs yet to be discovered.
 
 Three areas have had less attention than the rest:
@@ -31,7 +38,7 @@ We hope the community helps fill it out. If something breaks,
 ## Download
 
 Download the release archive from the
-[Releases page](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/releases/latest).
+[Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest).
 
 ## Install in three steps
 
@@ -114,7 +121,7 @@ into the world with the pack on.
 | You want to | Read |
 |---|---|
 | Play with path tracing | [Playing](docs/PLAYING.md) |
-| Check the known issues | [Issue tracker](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/issues) |
+| Check the known issues | [Issue tracker](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/issues) |
 | Play on a server | [Multiplayer](docs/PLAYING.md#multiplayer) |
 | Configure the renderer | [Settings](docs/SETTINGS.md) |
 | Look up a command, a key, or a mod-added block | [In-Game Guide](docs/IN_GAME_GUIDE.md) |

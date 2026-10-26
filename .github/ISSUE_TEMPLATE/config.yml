@@ -11,7 +11,9 @@ contact_links:
     about: >-
       Changes to path tracing, denoising, or upscaling themselves.
   - name: Security vulnerability
-    url: https://www.nvidia.com/en-us/security/
+    url: https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/security/advisories/new
     about: >-
-      Report vulnerabilities through NVIDIA PSIRT rather than as a public
-      issue. See SECURITY.md in this repository.
+      Report vulnerabilities in the mod, its tools, or its installer privately
+      through GitHub security advisories rather than as a public issue.
+      Vulnerabilities in the RTX Remix runtime go to NVIDIA instead. See
+      SECURITY.md in this repository.
