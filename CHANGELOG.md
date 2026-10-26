@@ -9,7 +9,9 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is the `mod_version` in `gradle.properties`, and it is
 also part of every mod file name.
 
-## Unreleased
+## 0.1.0 - 2026-10-26
+
+The first release of the Minecraft 26.3 port.
 
 ### Changed
 
@@ -29,7 +31,7 @@ also part of every mod file name.
   static sheen and is off until it scrolls as vanilla's does;
   `-Drtxremix.entity.glint=true` turns it on.
 
-## 0.1.0 - 2026-10-23
+## 0.1.0 (NVIDIA, Minecraft 1.21.1) - 2026-10-23
 
 The first public release, a beta.
 
