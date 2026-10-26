@@ -22,6 +22,12 @@ also part of every mod file name.
   Java 25 for it.
 - The developer tools write `options.txt` the way 26.3 reads it, so
   `render.graphicsMode` still picks the graphics preset.
+- Enchanted items, tridents, shields and armour render without their glint.
+  Since 26.2 the glint is a second sampler of the surface's own draw, and a
+  separate layer in front of the surface hides it from the path tracer, so the
+  capture bakes the glint into the surface's emission instead. The bake is a
+  static sheen and is off until it scrolls as vanilla's does;
+  `-Drtxremix.entity.glint=true` turns it on.
 
 ## 0.1.0 - 2026-10-23
 
