@@ -23,21 +23,39 @@ class EntityMaterialKeyTest {
 
     @Test
     void lookupProbeAgreesWithTheStoredRecordOnHashAndEquality() {
-        RemixEntitySubmitter.EntityMaterialKey stored =
-                new RemixEntitySubmitter.EntityMaterialKey(TEX, RenderLayerUtils.SurfaceMode.CUTOUT);
-        RemixEntitySubmitter.EntityMaterialLookupKey probe =
-                new RemixEntitySubmitter.EntityMaterialLookupKey().set(TEX, RenderLayerUtils.SurfaceMode.CUTOUT);
+        for (RenderLayerUtils.Glint glint : new RenderLayerUtils.Glint[] {null, RenderLayerUtils.Glint.ARMOR}) {
+            RemixEntitySubmitter.EntityMaterialKey stored =
+                    new RemixEntitySubmitter.EntityMaterialKey(TEX, RenderLayerUtils.SurfaceMode.CUTOUT, glint);
+            RemixEntitySubmitter.EntityMaterialLookupKey probe = new RemixEntitySubmitter.EntityMaterialLookupKey()
+                    .set(TEX, RenderLayerUtils.SurfaceMode.CUTOUT, glint);
 
-        assertEquals(stored.hashCode(), probe.hashCode());
-        assertTrue(probe.equals(stored));
+            assertEquals(stored.hashCode(), probe.hashCode());
+            assertTrue(probe.equals(stored));
+        }
     }
 
     @Test
     void surfaceModeSeparatesMaterialsOnOneTexture() {
-        RemixEntitySubmitter.EntityMaterialLookupKey probe =
-                new RemixEntitySubmitter.EntityMaterialLookupKey().set(TEX, RenderLayerUtils.SurfaceMode.CUTOUT);
+        RemixEntitySubmitter.EntityMaterialLookupKey probe = new RemixEntitySubmitter.EntityMaterialLookupKey()
+                .set(TEX, RenderLayerUtils.SurfaceMode.CUTOUT, null);
 
         assertFalse(probe.equals(
-                new RemixEntitySubmitter.EntityMaterialKey(TEX, RenderLayerUtils.SurfaceMode.TRANSLUCENT)));
+                new RemixEntitySubmitter.EntityMaterialKey(TEX, RenderLayerUtils.SurfaceMode.TRANSLUCENT, null)));
+    }
+
+    /** An enchanted surface is its plain counterpart's texture and mode under a material of its own. */
+    @Test
+    void glintSeparatesMaterialsOnOneTextureAndMode() {
+        RemixEntitySubmitter.EntityMaterialLookupKey plain = new RemixEntitySubmitter.EntityMaterialLookupKey()
+                .set(TEX, RenderLayerUtils.SurfaceMode.CUTOUT, null);
+        RemixEntitySubmitter.EntityMaterialLookupKey armor = new RemixEntitySubmitter.EntityMaterialLookupKey()
+                .set(TEX, RenderLayerUtils.SurfaceMode.CUTOUT, RenderLayerUtils.Glint.ARMOR);
+
+        assertFalse(plain.equals(new RemixEntitySubmitter.EntityMaterialKey(
+                TEX, RenderLayerUtils.SurfaceMode.CUTOUT, RenderLayerUtils.Glint.ARMOR)));
+        assertFalse(armor.equals(new RemixEntitySubmitter.EntityMaterialKey(
+                TEX, RenderLayerUtils.SurfaceMode.CUTOUT, null)));
+        assertFalse(armor.equals(new RemixEntitySubmitter.EntityMaterialKey(
+                TEX, RenderLayerUtils.SurfaceMode.CUTOUT, RenderLayerUtils.Glint.ITEM)));
     }
 }

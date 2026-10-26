@@ -26,9 +26,11 @@ accessible class net/minecraft/client/model/geom/ModelPart$Polygon
 accessible class net/minecraft/client/model/geom/ModelPart$Vertex
 
 # RenderSetup texture extraction (for entity material identity): the setup behind a
-# RenderType and the sampler-name to texture map it binds.
+# RenderType, the sampler-name to texture map it binds, and the texture transform
+# that tells the item, entity and armour glints apart.
 accessible field net/minecraft/client/renderer/rendertype/RenderType state Lnet/minecraft/client/renderer/rendertype/RenderSetup;
 accessible field net/minecraft/client/renderer/rendertype/RenderSetup textures Ljava/util/Map;
+accessible field net/minecraft/client/renderer/rendertype/RenderSetup textureTransform Lnet/minecraft/client/renderer/rendertype/TextureTransform;
 accessible class net/minecraft/client/renderer/rendertype/RenderSetup$TextureBinding
 
 # ===== section: textures =====

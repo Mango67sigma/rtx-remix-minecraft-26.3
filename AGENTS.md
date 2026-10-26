@@ -334,13 +334,14 @@ frame is swept at any distance so its light never arrives without its housing.
 Rigid occurrences retain instances keyed by owner, category, layer, and part;
 `CuboidMixin` keys a cube by its sprite at `ModelPart.Cube.compile`; strips and
 beams stream transient meshes per frame. Enchantment glint is a second sampler
-of one pipeline in 26.3, so its capture is decided in
-`RemixSubmitNodeCollector` and `RenderLayerUtils`. It is captured only with
-`rtxremix.entity.glint` set: both vanilla glint textures are opaque and Remix
-composites the coplanar layer by alpha, so the glint material uploads a private
-copy whose alpha is each texel's brightness, and `rtxremix.entity.glintBlend`
-and `rtxremix.entity.glintIntensity` select its blend class and intensity
-(`RemixEntitySubmitter`). `RemixBlockDamagePass` submits
+of one pipeline in 26.3, so a glinted surface is captured once, under its
+glinted render type, and `RemixEntitySubmitter` gives that layer its plain
+material with the glint as emission: vanilla's glint transform evaluated at
+time zero over the surface texture's coordinates, the texel squared
+(`GlintEmission`). That happens only with `rtxremix.entity.glint` set, at the
+intensity `rtxremix.entity.glintIntensity` gives. Vanilla's separate glint
+passes, over patterned shields and trimmed armour, are not captured, and
+glinted block items keep their plain atlas material. `RemixBlockDamagePass` submits
 static terrain damage decals from `LevelRenderer.submitBlockDestroyAnimation`
 (`LevelRendererBlockDamageMixin`), and the block outline is captured at
 `LevelRenderer.submitBlockOutline` (`LevelRendererBlockOutlineMixin`).
@@ -390,6 +391,11 @@ diluting the sampler's candidate pool.
   paint order, because Remix orders coplanar decals by primitive index rather
   than by depth; text turns draw order into depth the same way
   (`RemixEntitySubmitter`).
+- An overlay that covers a whole surface and only adds light to it, the
+  enchantment glint, is that surface's emission, never a layer in front of it.
+  The runtime resumes a ray past a non-opaque hit from an origin pushed further
+  than a shell offset, so the surface beneath would be skipped and the model
+  would show its dark inside (`RemixEntitySubmitter.glintFor`, `GlintEmission`).
 - A local first-person light is submitted with a zero volumetric radiance scale,
   because the volumetric grid reuses the previous frame's radiance and a
   camera-locked emitter would smear into distant geometry (`LightManager`).

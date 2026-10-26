@@ -309,7 +309,7 @@ public class RemixCapturingConsumer implements VertexConsumer {
         return this;
     }
 
-    /** The special-glint decal coordinate; Remix has no glint pass, so it is dropped. */
+    /** The special-glint decal coordinate; the glint is baked over the main coordinate, so it is dropped. */
     @Override
     public VertexConsumer setUv3(float u, float v) {
         return this;
@@ -721,21 +721,17 @@ public class RemixCapturingConsumer implements VertexConsumer {
     }
 
     /**
-     * A special-foil quad is captured as the plain quad. The capture collector writes it
-     * twice, into the surface layer and into the glint layer over it, and calls
-     * {@link #putBakedQuad} for both; this override only keeps a direct caller from
-     * reaching vanilla's default, which would write posed, bone-less vertices.
+     * A special-foil quad is captured as the plain quad. The capture collector calls
+     * {@link #putBakedQuad} for every foil quad; this override only keeps a direct caller
+     * from reaching vanilla's default, which would write posed, bone-less vertices.
      *
      * <p>Vanilla writes the special glint's coordinate to {@code UV3}
      * ({@code DefaultVertexFormat.ENTITY_GLINT_SPECIAL}): a projection of the vertex
      * through {@code sheetedDecalPose} scaled by
-     * {@code ItemFeatureRenderer.SPECIAL_FOIL_TEXTURE_SCALE}, which 1.21.1 wrote to the
-     * glint layer's {@code UV0} through {@code SheetedDecalTextureGenerator}. The glint
-     * layer keeps the quad's own {@code UV0} instead. Both are static per quad: the
-     * decal pose is the item pose scaled by a constant, so the projection comes back to
-     * the model-space position. Across an item both span only a few texels of the
-     * 128-texel glint texture, the decal one texel per block and an atlas sprite its
-     * share of the atlas, so what differs is which few texels the glint layer shows.
+     * {@code ItemFeatureRenderer.SPECIAL_FOIL_TEXTURE_SCALE}, which 1.21.1 wrote to its
+     * glint layer's {@code UV0} through {@code SheetedDecalTextureGenerator}. The glint is
+     * now baked into the surface material over {@code UV0}, so a compass or clock shows
+     * the standard glint pattern rather than the projected one.
      */
     @Override
     public void putBakedQuadWithGlint(PoseStack.Pose pose, BakedQuad quad, QuadInstance instance,

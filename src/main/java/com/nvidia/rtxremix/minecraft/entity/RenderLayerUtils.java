@@ -18,7 +18,7 @@ import java.util.WeakHashMap;
 import net.minecraft.client.renderer.RenderPipelines;
 import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
-import net.minecraft.client.renderer.rendertype.RenderTypes;
+import net.minecraft.client.renderer.rendertype.TextureTransform;
 import net.minecraft.resources.Identifier;
 
 /**
@@ -52,20 +52,36 @@ final class RenderLayerUtils {
          * draws clear glass as a cutout; {@code RemixEntitySubmitter.atlasSurfaceMode}
          * assigns it to geometry from a clear-glass block item.
          */
-        GLASS,
-        /**
-         * Enchantment glint: additive and unlit over the surface under it, the
-         * runtime's colour-weighted emissive blend ({@code BLEND_TYPE_COLOR_EMISSIVE},
-         * source times source plus destination). That is vanilla's
-         * {@code BlendFunction.GLINT} ({@code SRC_COLOR, ONE}) and the
-         * {@code color.rgb += glint^2} the 26.3 single-pass glint shaders do. Both glint
-         * textures are fully opaque, so any material that shows them as a surface
-         * (cutout or alpha blended) paints over the item or armour entirely. Assigned to
-         * layers that blend with {@code BlendFunction.GLINT}, which are vanilla's two
-         * separate glint passes and the glint layer the capture adds for single-pass
-         * glint types; see {@link #glintPass}.
-         */
-        GLINT
+        GLASS
+    }
+
+    /**
+     * The enchantment glint a single-pass glint render type adds over its surface: the
+     * glint texture it samples and the scale of the texture transform it samples it
+     * through. Vanilla's glint coordinate is the surface's own texture coordinate scaled
+     * by {@link #scale}, turned by {@link #ROTATION} and scrolled with wall-clock time
+     * ({@code TextureTransform.setupGlintTexturing}); the shader then adds the square of
+     * the texel it finds to the lit surface colour. The scales are spelled out because
+     * vanilla keeps them inside the transforms' private matrix suppliers.
+     */
+    enum Glint {
+        /** {@code TextureTransform.GLINT_TEXTURING}: items, on either atlas. */
+        ITEM(ITEM_GLINT_TEXTURE, 8.0f),
+        /** {@code TextureTransform.ENTITY_GLINT_TEXTURING}: tridents and plain shields. */
+        ENTITY(ITEM_GLINT_TEXTURE, 0.5f),
+        /** {@code TextureTransform.ARMOR_ENTITY_GLINT_TEXTURING}: armour and elytra. */
+        ARMOR(ARMOR_GLINT_TEXTURE, 0.16f);
+
+        /** The turn every glint transform gives the scaled coordinate, pi/18. */
+        static final float ROTATION = (float) (Math.PI / 18);
+
+        final Identifier texture;
+        final float scale;
+
+        Glint(Identifier texture, float scale) {
+            this.texture = texture;
+            this.scale = scale;
+        }
     }
 
     /** How a layer's captured vertex stream turns into Remix triangles. */
@@ -96,7 +112,7 @@ final class RenderLayerUtils {
     /**
      * Vanilla's item and armour glint textures, {@code ItemFeatureRenderer.ENCHANTED_GLINT_ITEM}
      * and {@code ENCHANTED_GLINT_ARMOR}. Spelled out rather than read from the renderer so
-     * that the pure helpers below load no renderer class.
+     * that {@link Glint} loads no renderer class.
      */
     static final Identifier ITEM_GLINT_TEXTURE =
             Identifier.withDefaultNamespace("textures/misc/enchanted_glint_item.png");
@@ -116,21 +132,22 @@ final class RenderLayerUtils {
     private static final Map<RenderType, Boolean> streamedPerFrameCache =
             Collections.synchronizedMap(new WeakHashMap<>());
 
-    /** Cache of RenderType -> the glint pass its glint sampler stands for, weak-keyed like {@link #capturableTextureCache}. */
-    private static final Map<RenderType, Optional<RenderType>> glintPassCache =
+    /** Cache of RenderType -> the glint it adds over its surface, weak-keyed like {@link #capturableTextureCache}. */
+    private static final Map<RenderType, Optional<Glint>> glintCache =
             Collections.synchronizedMap(new WeakHashMap<>());
 
     /**
      * Returns the texture a captured layer is submitted under, or empty when Remix has
      * nothing to draw for the layer. Results are cached by layer identity.
      *
-     * <p>Empty covers three cases. Untextured layers (shadow, debug, lines) carry no
+     * <p>Empty covers four cases. Untextured layers (shadow, debug, lines) carry no
      * material identity at all. Layers that pass the depth test unconditionally, the
      * see-through text of a name tag, are drawn over the whole scene in vanilla; no
      * placement in a ray-traced scene reproduces that, and vanilla draws the
      * depth-tested copy of the same text beside them, so their quads would only double
-     * it. And the end portal and gateway, whose two textures feed a screen-space effect
-     * rather than a surface, have no texture Remix could paint them with.
+     * it. The end portal and gateway, whose two textures feed a screen-space effect
+     * rather than a surface, have no texture Remix could paint them with. And vanilla's
+     * separate glint passes, see {@link #isGlintPass}, have no surface of their own.
      *
      * @param layer the render type (typically from an entity renderer)
      * @return the texture identifier to capture under, or empty to skip the layer
@@ -143,7 +160,8 @@ final class RenderLayerUtils {
         RenderPipeline pipeline = layer.pipeline();
         // An outline render type is vanilla's glow silhouette of a model, drawn into
         // the outline target over the whole scene; it carries no surface.
-        if (layer.isOutline() || !depthTested(pipeline) || isScreenSpaceEffect(pipeline)) {
+        if (layer.isOutline() || !depthTested(pipeline) || isScreenSpaceEffect(pipeline)
+                || isGlintPass(pipeline)) {
             return Optional.empty();
         }
         return extractTexture(layer);
@@ -151,8 +169,8 @@ final class RenderLayerUtils {
 
     /**
      * The texture bound to the layer's primary sampler. A single-pass glint layer binds
-     * the glint texture to a second sampler as well, which is not this layer's texture:
-     * the capture gives it a layer of its own, see {@link #glintPass}.
+     * the glint texture to a second sampler as well, which is not this layer's texture
+     * but the glint it adds over it, see {@link #glint}.
      */
     private static Optional<Identifier> extractTexture(RenderType layer) {
         return boundTexture(layer, PRIMARY_SAMPLER);
@@ -164,50 +182,37 @@ final class RenderLayerUtils {
     }
 
     /**
-     * The separate glint pass that stands for the glint {@code layer} draws in its own
-     * pipeline, or null when the layer binds no glint texture.
+     * The glint {@code layer} adds over its surface, or null when it binds no glint.
      *
-     * <p>Up to 1.21.1 a glinted surface was drawn twice: once under its own layer and
-     * once more, vertex for vertex, under a glint layer whose only texture was the glint
-     * (vanilla's {@code VertexMultiConsumer} for items, tridents and shields, a second
-     * {@code renderToBuffer} for armour), and the capture recorded that second draw as a
-     * layer of its own. Since 26.2 the glint is a second sampler in the surface's
-     * pipeline, so there is no second draw to record; the capture makes it, into the
-     * layer this returns. Vanilla still draws two glints as a separate pass, the
-     * patterned shield's and the trimmed armour's, and their render types are exactly
-     * that layer: their primary sampler is the glint texture, and their pipeline,
-     * {@code RenderPipelines.GLINT}, blends with {@code BlendFunction.GLINT}, which
-     * {@link #surfaceMode} reads as {@link SurfaceMode#GLINT}. (1.21.1's capture read
-     * its glint layers as cutout, which with the opaque glint textures would paint the
-     * whole surface purple.) A glint captured here and one vanilla submits as such a
-     * pass therefore land on one material.
-     *
-     * <p>The pass is chosen by the glint texture, see {@link #glintPassTexture}.
+     * <p>Since 26.2 a glinted surface is drawn once, in a pipeline that samples the glint
+     * on a second sampler and adds it in the shader, so the glint belongs to the surface
+     * rather than to a layer of its own. The capture keeps it there: the layer is
+     * captured like its plain counterpart, under the same texture and surface mode, and
+     * the submitter bakes this glint into the emission of that surface's material.
      */
-    static RenderType glintPass(RenderType layer) {
-        return glintPassCache.computeIfAbsent(layer, RenderLayerUtils::glintPassUncached).orElse(null);
+    static Glint glint(RenderType layer) {
+        return glintCache.computeIfAbsent(layer, RenderLayerUtils::glintUncached).orElse(null);
     }
 
-    private static Optional<RenderType> glintPassUncached(RenderType layer) {
+    private static Optional<Glint> glintUncached(RenderType layer) {
         if (layer.isOutline()) {
             return Optional.empty();
         }
-        return boundTexture(layer, GLINT_SAMPLER).map(texture ->
-                ARMOR_GLINT_TEXTURE.equals(glintPassTexture(texture))
-                        ? RenderTypes.trimmedArmorGlint()
-                        : RenderTypes.patternedShieldGlint());
+        return boundTexture(layer, GLINT_SAMPLER)
+                .map(texture -> glintFor(setup(layer).textureTransform, texture));
     }
 
     /**
-     * The texture of the separate glint pass a glint sampler's texture is captured
-     * under. Vanilla has a pass for each of its two glint textures; a glint texture of
-     * a mod's own, which vanilla has no pass for, takes the item glint's. The capture
-     * makes no render type of its own for it: {@code RenderType.create} is
-     * package-private in vanilla and public only through Fabric's transitive access
-     * widener, and a mod glint is rare enough not to lean on that.
+     * The glint of a layer whose glint sampler binds {@code samplerTexture} through
+     * {@code transform}. Vanilla pairs each of its three glint transforms with one glint
+     * texture; a mod's own transform takes the glint of its texture, and a mod's own
+     * texture the item glint, since only vanilla's two textures are baked.
      */
-    static Identifier glintPassTexture(Identifier glintSamplerTexture) {
-        return ARMOR_GLINT_TEXTURE.equals(glintSamplerTexture) ? ARMOR_GLINT_TEXTURE : ITEM_GLINT_TEXTURE;
+    static Glint glintFor(TextureTransform transform, Identifier samplerTexture) {
+        if (transform == TextureTransform.GLINT_TEXTURING) return Glint.ITEM;
+        if (transform == TextureTransform.ENTITY_GLINT_TEXTURING) return Glint.ENTITY;
+        if (transform == TextureTransform.ARMOR_ENTITY_GLINT_TEXTURING) return Glint.ARMOR;
+        return ARMOR_GLINT_TEXTURE.equals(samplerTexture) ? Glint.ARMOR : Glint.ITEM;
     }
 
     private static RenderSetup setup(RenderType layer) {
@@ -225,6 +230,20 @@ final class RenderLayerUtils {
 
     private static boolean isScreenSpaceEffect(RenderPipeline pipeline) {
         return pipeline == RenderPipelines.END_PORTAL || pipeline == RenderPipelines.END_GATEWAY;
+    }
+
+    /**
+     * Whether the pipeline is one of vanilla's separate glint passes: a model drawn a
+     * second time over what is already on screen, with the glint texture alone, blended
+     * with {@code BlendFunction.GLINT} and depth-tested for equality. 26.3 still draws
+     * two glints that way, the patterned shield's and the trimmed armour's. Such a pass
+     * has no surface of its own to carry the glint, and captured as a layer it would
+     * stand in front of the surface it covers by less than the runtime's ray-resume
+     * offset and hide that surface (see {@code RemixEntitySubmitter.glintFor}). So it is
+     * not captured, and a patterned shield or trimmed armour shows no glint.
+     */
+    static boolean isGlintPass(RenderPipeline pipeline) {
+        return BlendFunction.GLINT.equals(blendFunction(pipeline));
     }
 
     /**
@@ -302,17 +321,10 @@ final class RenderLayerUtils {
      * has no material for. Its texels are either fully opaque grey or fully
      * transparent, so alpha blending them over the surface is the closest surface
      * behaviour and it is classified as translucent.
-     *
-     * <p>A layer blended with {@code BlendFunction.GLINT} is {@link SurfaceMode#GLINT},
-     * whatever else its pipeline says: it adds to the surface under it and never stands
-     * as a surface itself.
      */
     static SurfaceMode surfaceMode(RenderType layer) {
         RenderPipeline pipeline = layer.pipeline();
         BlendFunction blend = blendFunction(pipeline);
-        if (BlendFunction.GLINT.equals(blend)) {
-            return SurfaceMode.GLINT;
-        }
         return classifySurfaceMode(
                 isEmissivePipeline(pipeline),
                 BlendFunction.ADDITIVE.equals(blend),
@@ -340,9 +352,8 @@ final class RenderLayerUtils {
 
     /**
      * The solid entity pipelines: the one every opaque model draws with, its forward
-     * z-offset variant, and the glinted one, whose surface is the solid layer the glint
-     * pass used to be drawn over; the glint itself is captured as that pass, see
-     * {@link #glintPass}.
+     * z-offset variant, and the glinted one, which draws the same solid surface with the
+     * glint added in its shader; see {@link #glint}.
      */
     static boolean isSolidPipeline(RenderPipeline pipeline) {
         return pipeline == RenderPipelines.ENTITY_SOLID

@@ -229,21 +229,4 @@ class RemixEntitySubmitterShellOffsetTest {
             assertEquals(0f, o[2][i]);
         }
     }
-
-    /**
-     * The capture opens a glint layer right after the surface it overlays, so its ordinal
-     * is the surface's plus one or more, and its coplanar copy of the surface stands that
-     * many shells further out: over the surface, never inside it.
-     */
-    @Test
-    void aGlintLayerOpenedAfterItsSurfaceStandsAShellOverIt() {
-        for (int surface = 0; surface < 4; surface++) {
-            int glint = surface + 1;
-            float surfaceDepth = RemixEntitySubmitter.surfaceDepth(false,
-                    RemixEntitySubmitter.shellLayerFor(surface, 0, RemixEntitySubmitter.PatternCanvasRole.NONE), 0);
-            float glintDepth = RemixEntitySubmitter.surfaceDepth(false,
-                    RemixEntitySubmitter.shellLayerFor(glint, 0, RemixEntitySubmitter.PatternCanvasRole.NONE), 0);
-            assertEquals(DEPTH, glintDepth - surfaceDepth, EPSILON, "surface ordinal " + surface);
-        }
-    }
 }

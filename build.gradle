@@ -218,9 +218,6 @@ test {
     useJUnitPlatform()
     // Pin the per-frame install cap so tests don't depend on the CPU count
     systemProperty 'rtxremix.chunk.maxInstalledColumnsPerFrame', '8'
-    // The glint capture layer is off by default in the game until its material is
-    // tuned; the tests keep covering it.
-    systemProperty 'rtxremix.entity.glint', 'true'
 }
 
 def gitBranch = providers.exec { commandLine 'git', 'rev-parse', '--abbrev-ref', 'HEAD' }

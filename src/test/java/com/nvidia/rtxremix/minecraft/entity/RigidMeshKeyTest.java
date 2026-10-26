@@ -33,7 +33,7 @@ class RigidMeshKeyTest {
     private static RemixEntitySubmitter.CuboidMeshKey key(
             Identifier tex, int shellLayer, ModelPart.Polygon[] sides, TextureAtlasSprite sprite) {
         return new RemixEntitySubmitter.CuboidMeshKey(
-                tex, RenderLayerUtils.SurfaceMode.OPAQUE, shellLayer, sides, sprite);
+                tex, RenderLayerUtils.SurfaceMode.OPAQUE, null, shellLayer, sides, sprite);
     }
 
     @Test
@@ -93,7 +93,7 @@ class RigidMeshKeyTest {
         RemixEntitySubmitter.RigidMeshLookupKey probe =
                 new RemixEntitySubmitter.RigidMeshLookupKey();
 
-        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.OPAQUE, 2);
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.OPAQUE, null, 2);
         probe.setCuboid(sides, sprite);
         RemixEntitySubmitter.RigidMeshKey cuboid = probe.immutableCopy();
         assertEquals(cuboid.hashCode(), probe.hashCode());
@@ -117,7 +117,7 @@ class RigidMeshKeyTest {
         // different geometry: the same vertices index into different triangles.
         RemixEntitySubmitter.RigidMeshLookupKey probe =
                 new RemixEntitySubmitter.RigidMeshLookupKey();
-        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.OPAQUE, 0);
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.OPAQUE, null, 0);
 
         probe.setHashed(RenderLayerUtils.Topology.QUADS, 8, 0x1234L);
         RemixEntitySubmitter.RigidMeshKey quads = probe.immutableCopy();
@@ -136,19 +136,61 @@ class RigidMeshKeyTest {
         RemixEntitySubmitter.RigidMeshLookupKey probe =
                 new RemixEntitySubmitter.RigidMeshLookupKey();
 
-        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.CUTOUT, 0);
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.CUTOUT, null, 0);
         probe.setCuboid(sides, null);
         RemixEntitySubmitter.RigidMeshKey cutoutCuboid = probe.immutableCopy();
         probe.setHashed(RenderLayerUtils.Topology.QUADS, 8, 0x1234L);
         RemixEntitySubmitter.RigidMeshKey cutoutHashed = probe.immutableCopy();
 
-        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, 0);
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, null, 0);
         probe.setCuboid(sides, null);
         assertFalse(probe.equals(cutoutCuboid));
         assertNotEquals(cutoutCuboid, probe.immutableCopy());
         probe.setHashed(RenderLayerUtils.Topology.QUADS, 8, 0x1234L);
         assertFalse(probe.equals(cutoutHashed));
         assertNotEquals(cutoutHashed, probe.immutableCopy());
+    }
+
+    @Test
+    void glintForksEveryKeyForm() {
+        // An enchanted item or armour piece is its plain counterpart's geometry under a
+        // material with the glint as emission, and the material is baked into the pooled
+        // mesh, so the plain and the glinted copy must never share one.
+        ModelPart.Polygon[] sides = new ModelPart.Polygon[6];
+        TextureAtlasSprite stripe = SpriteFixtures.sprite(0, 0, 4, 16);
+        RemixCapturingConsumer source = canvas(sides, new TextureAtlasSprite[] {stripe}, new int[] {RED});
+        RemixEntitySubmitter.RigidMeshLookupKey probe =
+                new RemixEntitySubmitter.RigidMeshLookupKey();
+
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.CUTOUT, null, 0);
+        probe.setCuboid(sides, null);
+        RemixEntitySubmitter.RigidMeshKey plainCuboid = probe.immutableCopy();
+        probe.setHashed(RenderLayerUtils.Topology.QUADS, 8, 0x1234L);
+        RemixEntitySubmitter.RigidMeshKey plainHashed = probe.immutableCopy();
+        probe.setCanvas(sides, source, 1, 1);
+        RemixEntitySubmitter.RigidMeshKey plainCanvas = probe.immutableCopy();
+
+        for (RenderLayerUtils.Glint glint : RenderLayerUtils.Glint.values()) {
+            probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.CUTOUT, glint, 0);
+            probe.setCuboid(sides, null);
+            assertFalse(probe.equals(plainCuboid), glint.name());
+            assertNotEquals(plainCuboid, probe.immutableCopy());
+            assertEquals(probe.immutableCopy().hashCode(), probe.hashCode());
+            assertTrue(probe.equals(probe.immutableCopy()));
+            probe.setHashed(RenderLayerUtils.Topology.QUADS, 8, 0x1234L);
+            assertFalse(probe.equals(plainHashed), glint.name());
+            assertNotEquals(plainHashed, probe.immutableCopy());
+            probe.setCanvas(sides, source, 1, 1);
+            assertFalse(probe.equals(plainCanvas), glint.name());
+            assertNotEquals(plainCanvas, probe.immutableCopy());
+        }
+
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.CUTOUT, RenderLayerUtils.Glint.ITEM, 0);
+        probe.setHashed(RenderLayerUtils.Topology.QUADS, 8, 0x1234L);
+        RemixEntitySubmitter.RigidMeshKey itemGlint = probe.immutableCopy();
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.CUTOUT, RenderLayerUtils.Glint.ENTITY, 0);
+        probe.setHashed(RenderLayerUtils.Topology.QUADS, 8, 0x1234L);
+        assertFalse(probe.equals(itemGlint), "two glints bake two emissions");
     }
 
     // ---- Canvas keys ----
@@ -181,7 +223,7 @@ class RigidMeshKeyTest {
         RemixEntitySubmitter.RigidMeshLookupKey probe =
                 new RemixEntitySubmitter.RigidMeshLookupKey();
 
-        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, 1);
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, null, 1);
         probe.setCanvas(sides, canvas, 1, 2);
         RemixEntitySubmitter.RigidMeshKey record = probe.immutableCopy();
 
@@ -198,7 +240,7 @@ class RigidMeshKeyTest {
         TextureAtlasSprite border = SpriteFixtures.sprite(4, 0, 4, 16);
         RemixEntitySubmitter.RigidMeshLookupKey probe =
                 new RemixEntitySubmitter.RigidMeshLookupKey();
-        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, 1);
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, null, 1);
         probe.setCanvas(sides, canvas(sides, new TextureAtlasSprite[] {stripe, border}, new int[] {RED, BLUE}), 1, 2);
         RemixEntitySubmitter.RigidMeshKey redStripeBlueBorder = probe.immutableCopy();
 
@@ -227,7 +269,7 @@ class RigidMeshKeyTest {
         TextureAtlasSprite stripe = SpriteFixtures.sprite(0, 0, 4, 16);
         RemixEntitySubmitter.RigidMeshLookupKey probe =
                 new RemixEntitySubmitter.RigidMeshLookupKey();
-        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, 1);
+        probe.setLayer(TEX_A, RenderLayerUtils.SurfaceMode.TRANSLUCENT, null, 1);
 
         probe.setCuboid(sides, stripe);
         RemixEntitySubmitter.RigidMeshKey cuboid = probe.immutableCopy();

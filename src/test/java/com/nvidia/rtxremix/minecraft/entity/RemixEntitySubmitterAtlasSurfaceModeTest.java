@@ -71,21 +71,6 @@ class RemixEntitySubmitterAtlasSurfaceModeTest {
                         RenderLayerUtils.SurfaceMode.CUTOUT, BlockTextureManager.L_GLASS));
     }
 
-    /**
-     * The glint layer over a held block records that block's terrain layer like any part
-     * of the item, but it is the glint texture, not the atlas, so it stays the additive
-     * glint over glass and ice too.
-     */
-    @Test
-    void theGlintOverAHeldBlockIsNeverNarrowed() {
-        for (int blockItemLayer : new int[] {
-                BlockTextureManager.L_GLASS, BlockTextureManager.L_TRANS, EntityRenderContext.NO_BLOCK_ITEM}) {
-            assertEquals(RenderLayerUtils.SurfaceMode.GLINT,
-                    RemixEntitySubmitter.atlasSurfaceMode(RenderLayerUtils.ITEM_GLINT_TEXTURE,
-                            RenderLayerUtils.SurfaceMode.GLINT, blockItemLayer));
-        }
-    }
-
     @Test
     void aHeldBlockBorrowsTheAtlasMaterialItsPlacedCounterpartUses() {
         assertEquals(BlockTextureManager.L_TRANS,

@@ -97,9 +97,10 @@ particles on the item atlas or a mod atlas, such as the crumbs of a breaking
 tool or eaten food, which have no Remix material route yet. Text on grayscale
 glyph pages, which 26.3 draws with the `TEXT_GRAYSCALE` pipelines, is captured
 but has not yet been checked in game. Enchantment glint is drawn by 26.3 as a
-second sampler of the item's own pipeline; how it reaches the scene is decided
-in `RemixSubmitNodeCollector`, so check there before treating a missing glint as
-a capture failure.
+second sampler of the item's own pipeline, and the capture bakes it into the
+emission of the surface's own material, only with `rtxremix.entity.glint` set
+(`RemixEntitySubmitter.glintFor`). Vanilla's separate glint passes, over
+patterned shields and trimmed armour, and glinted block items carry no glint.
 
 Minecraft's model parts are rigid: their pivot belongs in the instance
 transform, not a skinning stream. Skinning would add CPU mesh work in the
@@ -121,6 +122,13 @@ origin and thousands of blocks away before attributing a distance-dependent
 artifact to capture. Sprites exceeding
 `RemixCapturingConsumer.MAX_CARD_FACE_RECTS` retain full faces and their alpha
 relaunch behavior.
+
+The same resume hides a surface behind a non-opaque layer that stands in front
+of it by less than the offset, as a shell layer does: a ray that hits the layer
+resumes behind the surface and shades the unlit inside of the model, a black
+silhouette under whatever the layer itself emits. A layer that covers its whole
+surface, such as the enchantment glint, is therefore baked into the surface's
+emission instead of standing in front of it.
 
 ## Material Updates And Surface Capacity
 

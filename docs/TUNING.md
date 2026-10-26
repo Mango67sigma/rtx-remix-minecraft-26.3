@@ -171,9 +171,8 @@ their distance.
 | Key | Effect | Owner |
 |---|---|---|
 | `rtxremix.entity.meshCache.maxEntries` | Pooled entity meshes kept for reuse | `RemixEntitySubmitter` |
-| `rtxremix.entity.glint` | Capture the enchantment glint as a coplanar emissive layer over the item or armour. Off by default while the layer's look is tuned; with it off, enchanted items render without a glint | `RemixVertexConsumerProvider` |
-| `rtxremix.entity.glintBlend` | Blend class of the glint material: `alphaEmissive` (default), `emissive` or `colorEmissive`. Read when the glint material is created | `RemixEntitySubmitter` |
-| `rtxremix.entity.glintIntensity` | Emissive intensity of the glint material, a finite non-negative number. The default is a quarter of the eye-glow intensity | `RemixEntitySubmitter` |
+| `rtxremix.entity.glint` | Give enchanted items, tridents, shields and armour vanilla's glint, a static sheen baked into the emission of the surface it is drawn on. Off by default until its look is checked in game; with it off, enchanted items look like their plain counterparts | `RemixEntitySubmitter` |
+| `rtxremix.entity.glintIntensity` | Emissive intensity of the baked glint, a finite non-negative number. The default is a quarter of the eye-glow intensity. Read when a glinted material is created | `RemixEntitySubmitter` |
 | `rtxremix.dynamicTextureCache.maxEntries` | Entries in the dynamic texture cache that serves skins and glyph pages | `DynamicTextureCache` |
 | `rtxremix.directBufferPool.maxBytes` | Bytes of idle direct buffers kept pooled. 0 disables pooling | `DirectBufferPool` |
 | `rtxremix.waterRapids.spawnBudgetPerTick` | Foam and mist particles spawned per tick near fast water. 0 turns the effect off | `WaterRapidParticleSpawner` |

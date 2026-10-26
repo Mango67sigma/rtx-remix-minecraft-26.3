@@ -45,9 +45,12 @@ import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -90,9 +93,11 @@ import net.minecraft.world.phys.Vec3;
  *   local geometry: a cuboid by its identity and the sprite it was painted with, a canvas's
  *   pattern stack by its cuboid and every layer's sprite and tint in paint order, anything
  *   else by a hash of its vertices</li>
- *   <li>{@code materialCache}, {@link RemixMaterial} keyed by texture and render-phase behavior</li>
+ *   <li>{@code materialCache}, {@link RemixMaterial} keyed by texture, render-phase behavior
+ *   and enchantment glint</li>
  *   <li>{@code textureSets}, owned albedo and LabPBR channel textures keyed by texture identifier,
- *   and {@code glintTextureSets}, the same for GLINT materials with brightness-derived alpha</li>
+ *   and {@code glintEmissions}, the glint emission textures glinted materials share, keyed by
+ *   glint and size</li>
  * </ul>
  *
  * <p>The mesh pool is shared across owners and frames. Identical cuboids or item
@@ -126,12 +131,21 @@ public class RemixEntitySubmitter {
             TEXT_QUAD_STEP * (RemixCapturingConsumer.MAX_VERTICES / 4);
     private static final float POM_DISPLACE_IN = 0.25f;
     static final float EMISSIVE_INTENSITY = 100.0f;
-    /** The glint's default brightness; see {@link #emissiveIntensityFor} and {@link #GLINT_INTENSITY_PROPERTY}. */
+    /**
+     * {@code -Drtxremix.entity.glint=true} gives a glinted layer the enchantment glint, baked
+     * into its material's emission; see {@link #glintFor}. Off by default until the look has
+     * been checked in game: enchanted items, tridents and armour then look like their plain
+     * counterparts.
+     */
+    static final boolean GLINT_CAPTURE = Boolean.getBoolean("rtxremix.entity.glint");
+    /**
+     * The glint's default emissive intensity. Vanilla adds the squared glint over a lit
+     * surface at the glint strength option, a fraction of the full brightness eyes are drawn
+     * at, so the glint emits at a quarter of {@link #EMISSIVE_INTENSITY}.
+     */
     static final float GLINT_EMISSIVE_INTENSITY = EMISSIVE_INTENSITY * 0.25f;
     /** Overrides {@link #GLINT_EMISSIVE_INTENSITY} per launch; see {@link #glintEmissiveIntensity}. */
     static final String GLINT_INTENSITY_PROPERTY = "rtxremix.entity.glintIntensity";
-    /** Selects the glint's runtime blend class per launch; see {@link #glintBlendType}. */
-    static final String GLINT_BLEND_PROPERTY = "rtxremix.entity.glintBlend";
     private static final float COPPER_BEACON_LENS_EMISSION_SCALE = 100.0f;
     private static final float THIN_SSS_MEASUREMENT_DISTANCE = 0.75f;
     private static final int DEFAULT_CUTOUT_ALPHA_REFERENCE = 1;
@@ -156,7 +170,7 @@ public class RemixEntitySubmitter {
             // Sheets.CHEST_SHEET, spelled out so loading this class does not initialize
             // Sheets and the render types it builds.
             Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/chest.png"),
-            RenderLayerUtils.SurfaceMode.CUTOUT);
+            RenderLayerUtils.SurfaceMode.CUTOUT, null);
     static final InstanceInfoBlendEXT VERTEX_COLOR_MODULATE =
             InstanceInfoBlendEXT.textureTimesVertexColor();
     static final InstanceInfoBlendEXT BANNER_PATTERN_BLEND =
@@ -182,15 +196,21 @@ public class RemixEntitySubmitter {
      * {@link EntityMaterialLookupKey} probe share one explicit formula. A record's
      * generated hash is unspecified; a probe pinned to it would miss every lookup
      * if that changed, and a miss here drops the layer with no error raised.
+     *
+     * <p>{@code glint} is the enchantment glint the material emits, null for none: a
+     * glinted surface is its plain counterpart's material with the glint as emission.
      */
-    record EntityMaterialKey(Identifier textureId, RenderLayerUtils.SurfaceMode surfaceMode) {
+    record EntityMaterialKey(Identifier textureId, RenderLayerUtils.SurfaceMode surfaceMode,
+                             RenderLayerUtils.Glint glint) {
         @Override
         public int hashCode() {
-            return hash(textureId, surfaceMode);
+            return hash(textureId, surfaceMode, glint);
         }
 
-        static int hash(Identifier textureId, RenderLayerUtils.SurfaceMode surfaceMode) {
-            return 31 * Objects.hashCode(textureId) + Objects.hashCode(surfaceMode);
+        static int hash(Identifier textureId, RenderLayerUtils.SurfaceMode surfaceMode,
+                        RenderLayerUtils.Glint glint) {
+            int result = 31 * Objects.hashCode(textureId) + Objects.hashCode(surfaceMode);
+            return 31 * result + Objects.hashCode(glint);
         }
     }
 
@@ -202,10 +222,13 @@ public class RemixEntitySubmitter {
     static final class EntityMaterialLookupKey {
         private Identifier textureId;
         private RenderLayerUtils.SurfaceMode surfaceMode;
+        private RenderLayerUtils.Glint glint;
 
-        EntityMaterialLookupKey set(Identifier textureId, RenderLayerUtils.SurfaceMode surfaceMode) {
+        EntityMaterialLookupKey set(Identifier textureId, RenderLayerUtils.SurfaceMode surfaceMode,
+                                    RenderLayerUtils.Glint glint) {
             this.textureId = textureId;
             this.surfaceMode = surfaceMode;
+            this.glint = glint;
             return this;
         }
 
@@ -213,12 +236,13 @@ public class RemixEntitySubmitter {
         public boolean equals(Object o) {
             return o instanceof EntityMaterialKey e
                     && Objects.equals(textureId, e.textureId())
-                    && surfaceMode == e.surfaceMode();
+                    && surfaceMode == e.surfaceMode()
+                    && glint == e.glint();
         }
 
         @Override
         public int hashCode() {
-            return EntityMaterialKey.hash(textureId, surfaceMode);
+            return EntityMaterialKey.hash(textureId, surfaceMode, glint);
         }
     }
 
@@ -235,15 +259,17 @@ public class RemixEntitySubmitter {
      * <p>{@code surfaceMode} is a component because the material is baked into
      * the pooled mesh and atlasSurfaceMode narrows item parts one at a time, so
      * two parts of one layer can share a geometry hash and need different materials.
+     * {@code glint} is one for the same reason: an enchanted item is its plain
+     * counterpart's geometry under another material.
      */
     record HashedMeshKey(Identifier texId, RenderLayerUtils.SurfaceMode surfaceMode,
-                         RenderLayerUtils.Topology topology,
+                         RenderLayerUtils.Glint glint, RenderLayerUtils.Topology topology,
                          int shellLayer, int vertexCount, long geometryHash)
             implements RigidMeshKey {
         @Override
         public int hashCode() {
             return RigidMeshLookupKey.hashedHash(
-                    texId, surfaceMode, topology, shellLayer, vertexCount, geometryHash);
+                    texId, surfaceMode, glint, topology, shellLayer, vertexCount, geometryHash);
         }
     }
 
@@ -270,8 +296,9 @@ public class RemixEntitySubmitter {
      * <p>The other components are the things proven to vary for one cuboid within a
      * single frame. {@code texId} separates iron from diamond armour on the shared
      * armour model. {@code surfaceMode} varies per entity via playerSkinSurfaceMode.
-     * {@code shellLayer} scales the shell offset baked into the vertices, so dropping
-     * it collapses a dyed-leather overlay onto the body.
+     * {@code glint} separates enchanted from plain armour on one texture. {@code shellLayer}
+     * scales the shell offset baked into the vertices, so dropping it collapses a
+     * dyed-leather overlay onto the body.
      *
      * <p>Tint is deliberately NOT part of the key. It rides the instance as a
      * texture-factor blend, so one white mesh serves every recolour of a cuboid
@@ -279,13 +306,15 @@ public class RemixEntitySubmitter {
      * per-instance update instead of a native mesh create per part per frame.
      */
     record CuboidMeshKey(Identifier texId, RenderLayerUtils.SurfaceMode surfaceMode,
-                         int shellLayer, ModelPart.Polygon[] sides, TextureAtlasSprite sprite)
+                         RenderLayerUtils.Glint glint, int shellLayer,
+                         ModelPart.Polygon[] sides, TextureAtlasSprite sprite)
             implements RigidMeshKey {
         @Override
         public boolean equals(Object other) {
             return other instanceof CuboidMeshKey key
                     && Objects.equals(texId, key.texId)
                     && surfaceMode == key.surfaceMode
+                    && glint == key.glint
                     && shellLayer == key.shellLayer
                     && sides == key.sides
                     && sprite == key.sprite;
@@ -293,7 +322,7 @@ public class RemixEntitySubmitter {
 
         @Override
         public int hashCode() {
-            return RigidMeshLookupKey.cuboidHash(texId, surfaceMode, shellLayer, sides, sprite);
+            return RigidMeshLookupKey.cuboidHash(texId, surfaceMode, glint, shellLayer, sides, sprite);
         }
     }
 
@@ -311,13 +340,15 @@ public class RemixEntitySubmitter {
      * are values, baked as vertex colour.
      */
     record CanvasMeshKey(Identifier texId, RenderLayerUtils.SurfaceMode surfaceMode,
-                         int shellLayer, ModelPart.Polygon[] sides, TextureAtlasSprite[] sprites, int[] tints)
+                         RenderLayerUtils.Glint glint, int shellLayer,
+                         ModelPart.Polygon[] sides, TextureAtlasSprite[] sprites, int[] tints)
             implements RigidMeshKey {
         @Override
         public boolean equals(Object other) {
             if (!(other instanceof CanvasMeshKey key)
                     || !Objects.equals(texId, key.texId)
                     || surfaceMode != key.surfaceMode
+                    || glint != key.glint
                     || shellLayer != key.shellLayer
                     || sides != key.sides
                     || sprites.length != key.sprites.length
@@ -332,7 +363,7 @@ public class RemixEntitySubmitter {
 
         @Override
         public int hashCode() {
-            int result = RigidMeshLookupKey.canvasHashPrefix(texId, surfaceMode, shellLayer, sides);
+            int result = RigidMeshLookupKey.canvasHashPrefix(texId, surfaceMode, glint, shellLayer, sides);
             for (int i = 0; i < sprites.length; i++) {
                 result = RigidMeshLookupKey.foldCanvasLayer(result, sprites[i], tints[i]);
             }
@@ -350,6 +381,7 @@ public class RemixEntitySubmitter {
     static final class RigidMeshLookupKey implements RigidMeshKey {
         private Identifier texId;
         private RenderLayerUtils.SurfaceMode surfaceMode;
+        private RenderLayerUtils.Glint glint;
         private int shellLayer;
         private RenderLayerUtils.Topology topology;
         private int vertexCount;
@@ -368,11 +400,12 @@ public class RemixEntitySubmitter {
         private int canvasPatternCount;
 
         void setLayer(Identifier texId, RenderLayerUtils.SurfaceMode surfaceMode,
-                      int shellLayer) {
+                      RenderLayerUtils.Glint glint, int shellLayer) {
             this.texId = texId;
             this.surfaceMode = surfaceMode;
+            this.glint = glint;
             this.shellLayer = shellLayer;
-            this.layerHashPrefix = layerHash(texId, surfaceMode, shellLayer);
+            this.layerHashPrefix = layerHash(texId, surfaceMode, glint, shellLayer);
         }
 
         void setCuboid(ModelPart.Polygon[] sides, TextureAtlasSprite sprite) {
@@ -420,8 +453,8 @@ public class RemixEntitySubmitter {
 
         RigidMeshKey immutableCopy() {
             return switch (form) {
-                case CUBOID -> new CuboidMeshKey(texId, surfaceMode, shellLayer, sides, sprite);
-                case HASHED -> new HashedMeshKey(texId, surfaceMode, topology, shellLayer,
+                case CUBOID -> new CuboidMeshKey(texId, surfaceMode, glint, shellLayer, sides, sprite);
+                case HASHED -> new HashedMeshKey(texId, surfaceMode, glint, topology, shellLayer,
                         vertexCount, geometryHash);
                 case CANVAS -> {
                     TextureAtlasSprite[] sprites = new TextureAtlasSprite[canvasPatternCount];
@@ -431,7 +464,7 @@ public class RemixEntitySubmitter {
                         sprites[i] = canvasSource.getPartSprite(part);
                         tints[i] = canvasSource.getPartTint(part);
                     }
-                    yield new CanvasMeshKey(texId, surfaceMode, shellLayer, sides, sprites, tints);
+                    yield new CanvasMeshKey(texId, surfaceMode, glint, shellLayer, sides, sprites, tints);
                 }
             };
         }
@@ -452,12 +485,14 @@ public class RemixEntitySubmitter {
                 case CUBOID -> other instanceof CuboidMeshKey key
                         && Objects.equals(texId, key.texId())
                         && surfaceMode == key.surfaceMode()
+                        && glint == key.glint()
                         && shellLayer == key.shellLayer()
                         && sides == key.sides()
                         && sprite == key.sprite();
                 case HASHED -> other instanceof HashedMeshKey key
                         && Objects.equals(texId, key.texId())
                         && surfaceMode == key.surfaceMode()
+                        && glint == key.glint()
                         && topology == key.topology()
                         && shellLayer == key.shellLayer()
                         && vertexCount == key.vertexCount()
@@ -469,6 +504,7 @@ public class RemixEntitySubmitter {
         private boolean equalsCanvas(CanvasMeshKey key) {
             if (!Objects.equals(texId, key.texId())
                     || surfaceMode != key.surfaceMode()
+                    || glint != key.glint()
                     || shellLayer != key.shellLayer()
                     || sides != key.sides()
                     || canvasPatternCount != key.sprites().length) {
@@ -485,8 +521,9 @@ public class RemixEntitySubmitter {
         }
 
         static int cuboidHash(Identifier texId, RenderLayerUtils.SurfaceMode surfaceMode,
-                              int shellLayer, ModelPart.Polygon[] sides, TextureAtlasSprite sprite) {
-            return cuboidHash(layerHash(texId, surfaceMode, shellLayer), sides, sprite);
+                              RenderLayerUtils.Glint glint, int shellLayer,
+                              ModelPart.Polygon[] sides, TextureAtlasSprite sprite) {
+            return cuboidHash(layerHash(texId, surfaceMode, glint, shellLayer), sides, sprite);
         }
 
         private static int cuboidHash(int layerHashPrefix, ModelPart.Polygon[] sides, TextureAtlasSprite sprite) {
@@ -495,9 +532,9 @@ public class RemixEntitySubmitter {
         }
 
         static int hashedHash(Identifier texId, RenderLayerUtils.SurfaceMode surfaceMode,
-                              RenderLayerUtils.Topology topology, int shellLayer,
-                              int vertexCount, long geometryHash) {
-            return hashedHash(layerHash(texId, surfaceMode, shellLayer),
+                              RenderLayerUtils.Glint glint, RenderLayerUtils.Topology topology,
+                              int shellLayer, int vertexCount, long geometryHash) {
+            return hashedHash(layerHash(texId, surfaceMode, glint, shellLayer),
                     topology, vertexCount, geometryHash);
         }
 
@@ -509,8 +546,9 @@ public class RemixEntitySubmitter {
         }
 
         static int canvasHashPrefix(Identifier texId, RenderLayerUtils.SurfaceMode surfaceMode,
-                                    int shellLayer, ModelPart.Polygon[] sides) {
-            return canvasHashPrefix(layerHash(texId, surfaceMode, shellLayer), sides);
+                                    RenderLayerUtils.Glint glint, int shellLayer,
+                                    ModelPart.Polygon[] sides) {
+            return canvasHashPrefix(layerHash(texId, surfaceMode, glint, shellLayer), sides);
         }
 
         private static int canvasHashPrefix(int layerHashPrefix, ModelPart.Polygon[] sides) {
@@ -524,9 +562,11 @@ public class RemixEntitySubmitter {
 
         private static int layerHash(Identifier texId,
                                      RenderLayerUtils.SurfaceMode surfaceMode,
+                                     RenderLayerUtils.Glint glint,
                                      int shellLayer) {
             int result = Objects.hashCode(texId);
             result = 31 * result + Objects.hashCode(surfaceMode);
+            result = 31 * result + Objects.hashCode(glint);
             return 31 * result + shellLayer;
         }
     }
@@ -591,8 +631,15 @@ public class RemixEntitySubmitter {
     private final IdentityHashMap<CopperBeaconBlockEntity, BeaconLensAssets>
             beaconLensAssets = new IdentityHashMap<>();
     private final Map<Identifier, EntityTextureSet> textureSets = new HashMap<>();
-    /** GLINT materials' texture sets, whose albedo alpha is derived by {@link #deriveGlintAlpha}. */
-    private final Map<Identifier, EntityTextureSet> glintTextureSets = new HashMap<>();
+    /**
+     * Baked glint emissions, owned here and shared by every glinted material whose surface
+     * texture bakes to the same size: a bake depends on the glint and the size alone, not on
+     * the texture it is laid over. See {@link #glintEmission}.
+     */
+    private final Map<GlintEmissionKey, RemixTexture> glintEmissions = new HashMap<>();
+    /** The glint textures the bakes sample, read once per resource load; empty when one cannot be read. */
+    private final Map<RenderLayerUtils.Glint, Optional<GlintImage>> glintImages =
+            new EnumMap<>(RenderLayerUtils.Glint.class);
     private final Map<Identifier, TextureSize> dynamicTextureSizes = new HashMap<>();
     private final Map<Identifier, Long> dynamicTextureVersions = new HashMap<>();
     private final Set<Identifier> failedTextures = new HashSet<>();
@@ -620,7 +667,14 @@ public class RemixEntitySubmitter {
 
     private final ParticleAtlasManager particleAtlasManager;
 
+    private record GlintEmissionKey(RenderLayerUtils.Glint glint, int width, int height) {}
+
+    private record GlintImage(byte[] rgba, int width, int height) {}
+
     private static final class EntityTextureSet {
+        /** The albedo's size in texels, which a glint emission laid over it is baked to. */
+        int albedoWidth;
+        int albedoHeight;
         RemixTexture albedo;
         RemixTexture normal;
         RemixTexture height;
@@ -869,6 +923,8 @@ public class RemixEntitySubmitter {
                 result.owner() instanceof Player
                         && renderLayer == RenderTypes.entityTranslucent(texId));
 
+        RenderLayerUtils.Glint glint = glintFor(renderLayer, GLINT_CAPTURE);
+
         RemixCapturingConsumer consumer = layer.consumer();
         // Guard on parts, not vertices: a cuboid part carries no captured
         // vertices, so a layer of nothing but cuboids has vertexCount 0 while
@@ -911,12 +967,12 @@ public class RemixEntitySubmitter {
             }
             if (canvasPatternCount > 0) {
                 submitCanvasPatterns(result, consumer, canvasFirstPart, canvasPatternCount,
-                        texId, surfaceMode, layerIndex, worldTransform, patternCategoryFlags);
+                        texId, surfaceMode, glint, layerIndex, worldTransform, patternCategoryFlags);
                 canvasPatternCount = 0;
             }
             if (canvasReader.isBacking(role, sides, bone)) continue;
             submitRigidPart(result, consumer, part, texId,
-                    atlasSurfaceMode(texId, surfaceMode, consumer.getPartBlockItemLayer(part)),
+                    atlasSurfaceMode(texId, surfaceMode, consumer.getPartBlockItemLayer(part)), glint,
                     layer.topology(), layer.transientGeometry(), layerIndex,
                     shellLayerFor(layerIndex, canvasReader.depth(), role), role,
                     worldTransform, baseCategoryFlags | textureCategoryFlags
@@ -924,8 +980,25 @@ public class RemixEntitySubmitter {
         }
         if (canvasPatternCount > 0) {
             submitCanvasPatterns(result, consumer, canvasFirstPart, canvasPatternCount,
-                    texId, surfaceMode, layerIndex, worldTransform, patternCategoryFlags);
+                    texId, surfaceMode, glint, layerIndex, worldTransform, patternCategoryFlags);
         }
+    }
+
+    /**
+     * The enchantment glint a layer's material carries: the glint its render type adds over
+     * its surface, while {@code glintEnabled}, else none.
+     *
+     * <p>Vanilla draws a glinted surface once and adds the glint in that surface's shader,
+     * so the glint is the surface's own emission rather than a second surface. The capture
+     * keeps it that way, by baking the glint into the emission of the surface's material
+     * ({@link #glintEmission}). A glint captured as a separate layer cannot work in the
+     * path tracer: it would stand in front of its surface by a shell offset, less than the
+     * runtime pushes a ray it resumes past a non-opaque hit (see
+     * {@code RemixCapturingConsumer.putBakedQuad}), so a ray that hits the glint resumes
+     * behind the surface beneath it and finds the unlit inside of the item.
+     */
+    static RenderLayerUtils.Glint glintFor(RenderType renderLayer, boolean glintEnabled) {
+        return glintEnabled ? RenderLayerUtils.glint(renderLayer) : null;
     }
 
     /**
@@ -1212,6 +1285,7 @@ public class RemixEntitySubmitter {
                                  int partIndex,
                                  Identifier texId,
                                  RenderLayerUtils.SurfaceMode surfaceMode,
+                                 RenderLayerUtils.Glint glint,
                                  RenderLayerUtils.Topology topology,
                                  boolean transientGeometry,
                                  int layerIndex,
@@ -1223,10 +1297,10 @@ public class RemixEntitySubmitter {
         int vertexCount = consumer.getPartVertexCount(partIndex);
         ModelPart.Polygon[] sides = consumer.getPartSides(partIndex);
         TextureAtlasSprite sprite = consumer.getPartSprite(partIndex);
-        // Key and material both derive from this part's narrowed mode, so a
-        // pooled mesh is never handed to a part whose material differs from the
-        // one baked into it.
-        rigidMeshLookupKey.setLayer(texId, surfaceMode, shellLayer);
+        // Key and material both derive from this part's narrowed mode and the
+        // layer's glint, so a pooled mesh is never handed to a part whose material
+        // differs from the one baked into it.
+        rigidMeshLookupKey.setLayer(texId, surfaceMode, glint, shellLayer);
         if (sides != null) {
             rigidMeshLookupKey.setCuboid(sides, sprite);
         } else {
@@ -1247,9 +1321,9 @@ public class RemixEntitySubmitter {
                         beacon, vertexCount, texId, shellLayer, sides, sprite)
                 : transientGeometry && sides == null
                         ? createTransientMesh(consumer, startVertex, vertexCount,
-                                texId, surfaceMode, topology, shellLayer)
+                                texId, surfaceMode, glint, topology, shellLayer)
                         : acquirePooledMesh(consumer, startVertex, vertexCount,
-                                texId, surfaceMode, topology, shellLayer, sides, sprite);
+                                texId, surfaceMode, glint, topology, shellLayer, sides, sprite);
         if (mesh == null) return;
 
         drawRetainedPart(result, consumer.getPartBone(partIndex), layerIndex, partIndex,
@@ -1360,10 +1434,11 @@ public class RemixEntitySubmitter {
                                       int patternCount,
                                       Identifier texId,
                                       RenderLayerUtils.SurfaceMode surfaceMode,
+                                      RenderLayerUtils.Glint glint,
                                       int layerIndex,
                                       Transform worldTransform,
                                       int categoryFlags) {
-        rigidMeshLookupKey.setLayer(texId, surfaceMode, layerIndex);
+        rigidMeshLookupKey.setLayer(texId, surfaceMode, glint, layerIndex);
         rigidMeshLookupKey.setCanvas(consumer.getPartSides(firstPart), consumer, firstPart, patternCount);
         pendingPartKey = null;
         RemixMesh mesh = pooledMesh();
@@ -1375,7 +1450,7 @@ public class RemixEntitySubmitter {
             rebuildScratch.finishOpenVertex();
             // Every layer's depth is already in its vertices, so the mesh is built at shell 0.
             mesh = createRigidMesh(meshKey, rebuildScratch, 0, rebuildScratch.getVertexCount(),
-                    texId, surfaceMode, RenderLayerUtils.Topology.QUADS, 0);
+                    texId, surfaceMode, glint, RenderLayerUtils.Topology.QUADS, 0);
             if (mesh == null) return;
         }
         drawRetainedPart(result, consumer.getPartBone(firstPart), layerIndex, firstPart,
@@ -1467,6 +1542,7 @@ public class RemixEntitySubmitter {
                                         int vertexCount,
                                         Identifier texId,
                                         RenderLayerUtils.SurfaceMode surfaceMode,
+                                        RenderLayerUtils.Glint glint,
                                         RenderLayerUtils.Topology topology,
                                         int shellLayer,
                                         ModelPart.Polygon[] sides,
@@ -1478,7 +1554,7 @@ public class RemixEntitySubmitter {
         pendingPartKey = meshKey;
         if (sides == null) {
             return createRigidMesh(meshKey, consumer, startVertex, vertexCount,
-                    texId, surfaceMode, topology, shellLayer);
+                    texId, surfaceMode, glint, topology, shellLayer);
         }
         // Rebuild through the same emitter and the same buildSurface the captured
         // path uses, so there is one geometry path rather than two that can drift.
@@ -1490,7 +1566,7 @@ public class RemixEntitySubmitter {
         rebuildScratch.finishOpenVertex();
         // A cuboid is quads by construction, whatever topology its layer draws.
         return createRigidMesh(meshKey, rebuildScratch, 0, vertexCount,
-                texId, surfaceMode, RenderLayerUtils.Topology.QUADS, shellLayer);
+                texId, surfaceMode, glint, RenderLayerUtils.Topology.QUADS, shellLayer);
     }
 
     private RetainedEntityPart createPendingRetainedPart() {
@@ -1966,10 +2042,11 @@ public class RemixEntitySubmitter {
                                       int vertexCount,
                                       Identifier textureId,
                                       RenderLayerUtils.SurfaceMode surfaceMode,
+                                      RenderLayerUtils.Glint glint,
                                       RenderLayerUtils.Topology topology,
                                       int shellLayer) {
         RemixMesh mesh = createMesh(consumer, sourceStart, vertexCount,
-                textureId, surfaceMode, topology, shellLayer);
+                textureId, surfaceMode, glint, topology, shellLayer);
         if (mesh != null) {
             rigidMeshPool.put(meshKey, new PooledMesh(mesh, frameIndex()));
         }
@@ -1993,10 +2070,11 @@ public class RemixEntitySubmitter {
                                           int vertexCount,
                                           Identifier textureId,
                                           RenderLayerUtils.SurfaceMode surfaceMode,
+                                          RenderLayerUtils.Glint glint,
                                           RenderLayerUtils.Topology topology,
                                           int shellLayer) {
         RemixMesh mesh = createMesh(consumer, sourceStart, vertexCount,
-                textureId, surfaceMode, topology, shellLayer);
+                textureId, surfaceMode, glint, topology, shellLayer);
         if (mesh != null) {
             transientMeshes.add(mesh);
         }
@@ -2009,11 +2087,12 @@ public class RemixEntitySubmitter {
                                  int vertexCount,
                                  Identifier textureId,
                                  RenderLayerUtils.SurfaceMode surfaceMode,
+                                 RenderLayerUtils.Glint glint,
                                  RenderLayerUtils.Topology topology,
                                  int shellLayer) {
-        RemixMaterial material = materialCache.get(materialLookupKey.set(textureId, surfaceMode));
+        RemixMaterial material = materialCache.get(materialLookupKey.set(textureId, surfaceMode, glint));
         if (material == null || material.isDeleted()) {
-            EntityMaterialKey materialKey = new EntityMaterialKey(textureId, surfaceMode);
+            EntityMaterialKey materialKey = new EntityMaterialKey(textureId, surfaceMode, glint);
             ensureMaterial(materialKey);
             material = materialCache.get(materialLookupKey);
             if (material == null || material.isDeleted()) {
@@ -2122,6 +2201,8 @@ public class RemixEntitySubmitter {
         Identifier textureId = materialKey.textureId();
 
         // Item entities borrow the block atlas and its already-built LabPBR materials.
+        // BlockTextureManager owns them and builds no glinted variant, so an enchanted
+        // block item shows its block without the glint.
         if (BlockTextureManager.BLOCK_ATLAS_ID.equals(textureId)) {
             BlockTextureManager btm = BlockTextureManager.get();
             if (btm == null || !btm.isInitialized()) return;
@@ -2150,20 +2231,15 @@ public class RemixEntitySubmitter {
         if (failedTextures.contains(textureId)) return;
 
         try {
-            // A glint material gets its own copy of the texture whose alpha is the
-            // texel's brightness (deriveGlintAlpha), so it never shares a set with a
-            // non-glint layer that binds the same texture.
-            boolean glintAlpha = usesGlintAlpha(materialKey.surfaceMode(), textureId);
-            Map<Identifier, EntityTextureSet> sets = glintAlpha ? glintTextureSets : textureSets;
-            EntityTextureSet textures = sets.get(textureId);
+            EntityTextureSet textures = textureSets.get(textureId);
             if (textures == null) {
                 textures = RenderLayerUtils.UNTEXTURED_LAYER_ID.equals(textureId)
                         ? createUntexturedTextureSet()
                         : isAtlasTexture(textureId)
                         ? tryCreateAtlasTextureSet(textureId)
-                        : tryCreateTextureSet(textureId, glintAlpha);
+                        : tryCreateTextureSet(textureId);
                 if (textures == null) return;
-                sets.put(textureId, textures);
+                textureSets.put(textureId, textures);
             }
 
             RemixMaterial material = createMaterial(materialKey, textures);
@@ -2181,6 +2257,8 @@ public class RemixEntitySubmitter {
      */
     private EntityTextureSet createUntexturedTextureSet() {
         EntityTextureSet textures = new EntityTextureSet();
+        textures.albedoWidth = 1;
+        textures.albedoHeight = 1;
         try {
             populateTextureSet(textures, RenderLayerUtils.UNTEXTURED_LAYER_ID.toString(),
                     UNTEXTURED_WHITE_PIXEL.clone(), 1, 1, null, null, null);
@@ -2195,45 +2273,7 @@ public class RemixEntitySubmitter {
         return textures;
     }
 
-    /**
-     * Whether a material's albedo is rebuilt with {@link #deriveGlintAlpha}: only a GLINT
-     * layer over a plain texture. Atlases and the untextured white texel keep their own paths.
-     */
-    static boolean usesGlintAlpha(RenderLayerUtils.SurfaceMode surfaceMode, Identifier textureId) {
-        return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
-                && !RenderLayerUtils.UNTEXTURED_LAYER_ID.equals(textureId)
-                && !isAtlasTexture(textureId);
-    }
-
-    /**
-     * Makes a glint texture's alpha carry its pattern, in place, once per texture set.
-     *
-     * <p>Vanilla's glint textures are opaque everywhere ({@code enchanted_glint_item.png}
-     * has no alpha channel, {@code enchanted_glint_armor.png} no {@code tRNS}), and vanilla
-     * never reads their alpha: the glint is added as {@code glint^2}. The runtime composites
-     * a blended layer coplanar with its surface by the layer's alpha, so an opaque glint
-     * covers the item with its dark purple. Each texel's alpha becomes its brightest channel,
-     * scaled by any alpha it already had, and its colour is kept. Under an alpha-weighted
-     * add the texel then contributes {@code rgb * max(r, g, b)}: exactly vanilla's
-     * {@code c^2} in the dominant channel and a little more in the others. Luminance would
-     * be the other choice, but the glint is saturated blue-purple, which luminance weighs at
-     * a fraction of its visible strength (the item glint's mean texel, 88/42/143, has
-     * luminance 59 against a maximum of 143), so the pattern would nearly vanish. Dark
-     * texels become transparent and leave the item showing.
-     */
-    static void deriveGlintAlpha(byte[] rgba) {
-        for (int i = 0; i + 3 < rgba.length; i += 4) {
-            int r = rgba[i] & 0xFF;
-            int g = rgba[i + 1] & 0xFF;
-            int b = rgba[i + 2] & 0xFF;
-            int a = rgba[i + 3] & 0xFF;
-            int brightness = Math.max(r, Math.max(g, b));
-            rgba[i + 3] = (byte) ((brightness * a + 127) / 255);
-        }
-    }
-
-    private EntityTextureSet tryCreateTextureSet(Identifier textureId, boolean glintAlpha)
-            throws Exception {
+    private EntityTextureSet tryCreateTextureSet(Identifier textureId) throws Exception {
         var client = Minecraft.getInstance();
         if (client == null) return null;
         ResourceManager rm = client.getResourceManager();
@@ -2268,14 +2308,14 @@ public class RemixEntitySubmitter {
             pixels = Arrays.copyOf(cached.data(), cached.data().length);
             cachedPixels = cached;
         }
-        // Both branches hand over a fresh array, so the rewrite touches no shared pixels.
-        if (glintAlpha) deriveGlintAlpha(pixels);
 
         Identifier spriteId = deriveLabPBRSpriteId(textureId);
         NativeImage nImg = loadVariant(rm, spriteId, "_n");
         NativeImage sImg = loadVariant(rm, spriteId, "_s");
         NativeImage sssImg = loadVariant(rm, spriteId, "_sss");
         EntityTextureSet textures = new EntityTextureSet();
+        textures.albedoWidth = width;
+        textures.albedoHeight = height;
         try {
             populateTextureSet(textures, textureId.toString(), pixels, width, height,
                     nImg, sImg, sssImg);
@@ -2447,6 +2487,8 @@ public class RemixEntitySubmitter {
             BlockTextureManager.fillPaddingRings(atlas, sssAlbedoData, 4);
 
             EntityTextureSet textures = new EntityTextureSet();
+            textures.albedoWidth = w;
+            textures.albedoHeight = h;
             String name = "atlas_" + textureId;
             textures.albedo = uploadAndOwn(textures, name + "_a", pixels, w, h,
                     TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
@@ -2513,11 +2555,6 @@ public class RemixEntitySubmitter {
         Long appliedVersion = dynamicTextureVersions.get(textureId);
         if (appliedVersion != null && appliedVersion >= pixels.version()) return;
 
-        if (glintTextureSets.containsKey(textureId)) {
-            // The glint copy's alpha is derived from the pixels; rebuild it from the new ones.
-            invalidateMaterialTexture(textureId);
-            return;
-        }
         EntityTextureSet textures = textureSets.get(textureId);
         if (textures == null || textures.albedo == null || textures.albedo.isDeleted()) return;
 
@@ -2585,8 +2622,6 @@ public class RemixEntitySubmitter {
         }
         EntityTextureSet textures = textureSets.remove(textureId);
         if (textures != null) textures.destroy();
-        EntityTextureSet glintTextures = glintTextureSets.remove(textureId);
-        if (glintTextures != null) glintTextures.destroy();
         dynamicTextureSizes.remove(textureId);
         dynamicTextureVersions.remove(textureId);
         failedTextures.remove(textureId);
@@ -2695,8 +2730,8 @@ public class RemixEntitySubmitter {
                     .alphaReferenceValue(cutoutAlphaReferenceValue(key.textureId()));
             case TRANSLUCENT -> opaque.blendEnabled(true)
                     .blendType(MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA);
-            case EMISSIVE, GLINT -> opaque.blendEnabled(true)
-                    .blendType(blendTypeFor(key.surfaceMode()));
+            case EMISSIVE -> opaque.blendEnabled(true)
+                    .blendType(MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE);
             case GLASS -> { }
         }
         if (MAP_DECORATIONS_ATLAS_TEXTURE.equals(key.textureId())
@@ -2725,62 +2760,78 @@ public class RemixEntitySubmitter {
         MaterialInfo.Builder materialBuilder = MaterialInfo.builder()
                 .albedoTexture(textures.albedo.getHandle()).filterMode(0);
         if (textures.normal != null) materialBuilder.normalTexture(textures.normal.getHandle());
-        RemixTexture emissive = emitsAlbedo(key.surfaceMode())
-                ? textures.albedo : textures.emissive;
-        float emissiveIntensity = emissiveIntensityFor(key.surfaceMode());
+        // A glinted surface emits its glint in place of any LabPBR emission of its own: the
+        // material has one emissive texture, and the bake is shared across textures.
+        RemixTexture glintEmission = key.glint() != null ? glintEmission(key.glint(), textures) : null;
+        RemixTexture emissive = glintEmission != null ? glintEmission
+                : emitsAlbedo(key.surfaceMode()) ? textures.albedo : textures.emissive;
+        float emissiveIntensity = glintEmission != null
+                ? glintEmissiveIntensity(System.getProperty(GLINT_INTENSITY_PROPERTY))
+                : EMISSIVE_INTENSITY;
         if (emissive != null) {
             materialBuilder.emissiveTexture(emissive.getHandle())
                     .emissiveIntensity(emissiveIntensity);
         }
-        if (key.surfaceMode() == RenderLayerUtils.SurfaceMode.GLINT) {
-            LOGGER.info("Glint material {}: blendType={}, emissiveIntensity={}, alphaFromBrightness={}",
-                    key.textureId(), blendTypeFor(key.surfaceMode()), emissiveIntensity,
-                    usesGlintAlpha(key.surfaceMode(), key.textureId()));
-        }
 
         MaterialInfo info = materialBuilder.opaqueExt(opaque.build()).build();
-        RemixMaterial material = new RemixMaterial(info, textures.ownedTextures, null);
+        List<RemixTexture> referenced = textures.ownedTextures;
+        if (glintEmission != null) {
+            referenced = new ArrayList<>(referenced);
+            referenced.add(glintEmission);
+        }
+        RemixMaterial material = new RemixMaterial(info, referenced, null);
         RemixMaterialStore.get().create(material);
-        LOGGER.info("Created entity material {} (mode={}, LabPBR={}, normal={}, height={}, "
-                        + "specular={}, emissive={}, sss={}, sssProfile={})",
-                key.textureId(), key.surfaceMode(), textures.hasPBR,
-                textures.normal != null, textures.height != null,
+        LOGGER.info("Created entity material {} (mode={}, glint={}, LabPBR={}, normal={}, height={}, "
+                        + "specular={}, emissive={}, emissiveIntensity={}, sss={}, sssProfile={})",
+                key.textureId(), key.surfaceMode(), glintEmission != null ? key.glint() : "none",
+                textures.hasPBR, textures.normal != null, textures.height != null,
                 textures.roughness != null || textures.metallic != null,
-                emissive != null, hasSubsurface,
+                emissive != null, emissiveIntensity, hasSubsurface,
                 hasSubsurface ? (diffusionProfile ? "diffusion" : "thin") : "none");
         return material;
     }
 
     /**
-     * The runtime blend class of a blended emissive mode. EMISSIVE layers (eyes, the
-     * translucent-emissive and additive pipelines) add their texture weighted by its
-     * alpha, and so does GLINT by default: its texture's alpha is its brightness
-     * ({@link #deriveGlintAlpha}), so the add lands where the pattern is bright and the
-     * item shows through elsewhere. {@value #GLINT_BLEND_PROPERTY} picks the glint's class
-     * per launch, read when a glint material is created; see {@link #glintBlendType}.
+     * The emission a {@code glint} adds over a surface texture, uploaded once per glint and
+     * baked size and shared by every material that needs it; null when the glint texture
+     * cannot be read, in which case the surface keeps its plain look.
      */
-    static int blendTypeFor(RenderLayerUtils.SurfaceMode surfaceMode) {
-        return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
-                ? glintBlendType(System.getProperty(GLINT_BLEND_PROPERTY))
-                : MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
+    private RemixTexture glintEmission(RenderLayerUtils.Glint glint, EntityTextureSet textures) {
+        GlintImage image = glintImage(glint);
+        if (image == null) return null;
+        int width = GlintEmission.size(textures.albedoWidth, glint.scale, image.width());
+        int height = GlintEmission.size(textures.albedoHeight, glint.scale, image.height());
+        GlintEmissionKey key = new GlintEmissionKey(glint, width, height);
+        RemixTexture emission = glintEmissions.get(key);
+        if (emission != null && !emission.isDeleted()) return emission;
+        byte[] pixels = GlintEmission.bake(image.rgba(), image.width(), image.height(),
+                glint.scale, width, height);
+        emission = uploadPixels("entity_glint_" + glint + "_" + width + "x" + height, pixels,
+                width, height, TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
+        if (emission != null) glintEmissions.put(key, emission);
+        return emission;
     }
 
-    /**
-     * The glint's blend class for a {@value #GLINT_BLEND_PROPERTY} value: {@code alphaEmissive}
-     * (the default, also for an absent or unrecognised value), {@code emissive} or
-     * {@code colorEmissive}. The runtime header documents none of the classes, so this is
-     * a live-trial knob rather than a settled choice.
-     */
-    static int glintBlendType(String value) {
-        if (value == null || value.isBlank()) return MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
-        switch (value.trim()) {
-            case "alphaEmissive": return MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
-            case "emissive": return MaterialInfoOpaqueEXT.BLEND_TYPE_EMISSIVE;
-            case "colorEmissive": return MaterialInfoOpaqueEXT.BLEND_TYPE_COLOR_EMISSIVE;
-            default:
-                LOGGER.warn("Ignoring -D{}={}: expected alphaEmissive, emissive or colorEmissive",
-                        GLINT_BLEND_PROPERTY, value);
-                return MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA_EMISSIVE;
+    /** The glint texture {@code glint} samples, read once per resource load, or null if it cannot be read. */
+    private GlintImage glintImage(RenderLayerUtils.Glint glint) {
+        return glintImages.computeIfAbsent(glint, RemixEntitySubmitter::readGlintImage).orElse(null);
+    }
+
+    private static Optional<GlintImage> readGlintImage(RenderLayerUtils.Glint glint) {
+        Optional<Resource> resource = Minecraft.getInstance().getResourceManager().getResource(glint.texture);
+        if (resource.isEmpty()) {
+            LOGGER.warn("Glint texture {} is missing; {} glinted surfaces keep their plain look",
+                    glint.texture, glint);
+            return Optional.empty();
+        }
+        try (InputStream stream = resource.get().open(); NativeImage image = NativeImage.read(stream)) {
+            int width = image.getWidth();
+            int height = image.getHeight();
+            return Optional.of(new GlintImage(argbToRGBA(image, width, height), width, height));
+        } catch (IOException e) {
+            LOGGER.warn("Failed to read glint texture {}; {} glinted surfaces keep their plain look: {}",
+                    glint.texture, glint, e.getMessage());
+            return Optional.empty();
         }
     }
 
@@ -2803,28 +2854,14 @@ public class RemixEntitySubmitter {
 
     /** Whether the mode's own texture is its emission, rather than a LabPBR emissive map. */
     static boolean emitsAlbedo(RenderLayerUtils.SurfaceMode surfaceMode) {
-        return surfaceMode == RenderLayerUtils.SurfaceMode.EMISSIVE
-                || surfaceMode == RenderLayerUtils.SurfaceMode.GLINT;
-    }
-
-    /**
-     * Emission strength of a material. Vanilla adds glint over a lit surface at the
-     * glint strength option, a fraction of the full brightness eyes are drawn at, so the
-     * glint emits at a quarter of {@link #EMISSIVE_INTENSITY} unless
-     * {@value #GLINT_INTENSITY_PROPERTY} says otherwise, read when a glint material is created.
-     */
-    static float emissiveIntensityFor(RenderLayerUtils.SurfaceMode surfaceMode) {
-        return surfaceMode == RenderLayerUtils.SurfaceMode.GLINT
-                ? glintEmissiveIntensity(System.getProperty(GLINT_INTENSITY_PROPERTY))
-                : EMISSIVE_INTENSITY;
+        return surfaceMode == RenderLayerUtils.SurfaceMode.EMISSIVE;
     }
 
     static boolean shouldAttachSubsurface(boolean hasSssMask,
                                           RenderLayerUtils.SurfaceMode surfaceMode) {
         return hasSssMask
                 && surfaceMode != RenderLayerUtils.SurfaceMode.TRANSLUCENT
-                && surfaceMode != RenderLayerUtils.SurfaceMode.EMISSIVE
-                && surfaceMode != RenderLayerUtils.SurfaceMode.GLINT;
+                && surfaceMode != RenderLayerUtils.SurfaceMode.EMISSIVE;
     }
 
     static boolean shouldUseDiffusionProfile(RenderLayerUtils.SurfaceMode surfaceMode) {
@@ -2982,8 +3019,11 @@ public class RemixEntitySubmitter {
 
         for (EntityTextureSet textures : textureSets.values()) textures.destroy();
         textureSets.clear();
-        for (EntityTextureSet textures : glintTextureSets.values()) textures.destroy();
-        glintTextureSets.clear();
+        for (RemixTexture emission : glintEmissions.values()) {
+            if (!emission.isDeleted()) emission.destroy();
+        }
+        glintEmissions.clear();
+        glintImages.clear();
         dynamicTextureSizes.clear();
         dynamicTextureVersions.clear();
         failedTextures.clear();

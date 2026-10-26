@@ -30,7 +30,6 @@ import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.state.level.QuadParticleRenderState;
-import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.client.renderer.texture.UvMapping;
@@ -74,21 +73,18 @@ import org.jspecify.annotations.Nullable;
  * too; the terrain crack is captured by {@code RemixBlockDamagePass} at its own hook.
  * Ordering is ignored: the capture keys parts by owner and submit order, not by phase.
  *
- * <p>One thing is added. A glinted surface is drawn by vanilla in one pipeline with
- * the glint texture on a second sampler; the capture draws it twice, as 1.21.1
- * vanilla did, once into the surface's layer and once into a glint layer over it
- * ({@link RemixVertexConsumerProvider#getGlintBuffer}). The glint layer's texture
- * coordinates are the surface's own: vanilla scrolls the glint with a texture matrix
- * that never reaches a vertex, in 26.3 as in 1.21.1, so the capture never saw the
- * scroll and still does not.
+ * <p>A glinted surface is captured once, under the glinted render type vanilla draws it
+ * with, as a layer of its own beside the plain one. Vanilla draws the glint in the same
+ * pipeline as the surface, from a second sampler, and the capture leaves it there: the
+ * submitter gives that layer the surface's material with the glint in its emission (see
+ * {@link RenderLayerUtils#glint}). Vanilla's two separate glint passes, the patterned
+ * shield's and the trimmed armour's, are not captured.
  */
 public final class RemixSubmitNodeCollector implements SubmitNodeCollector {
 
     private static final Direction[] DIRECTIONS = Direction.values();
     private static final float NAME_TAG_SCALE = 0.025F;
     private static final int NAME_TAG_BACKGROUND = -16777216;
-    /** A model's glint pass is drawn white, {@code ItemFeatureRenderer.NO_TINT}, as 1.21.1's armour glint was. */
-    private static final int GLINT_COLOR = -1;
 
     private final RemixVertexConsumerProvider provider;
     private final QuadInstance quadInstance = new QuadInstance();
@@ -158,13 +154,6 @@ public final class RemixSubmitNodeCollector implements SubmitNodeCollector {
      * so the sprite travels with each cuboid. An outline render type is vanilla's glow
      * copy of the model and carries no surface, so it is dropped; the main submit of a
      * glowing entity arrives separately under its real render type.
-     *
-     * <p>A glinted model (the first layer of enchanted armour, a trident, a shield
-     * without patterns) is compiled a second time into its glint layer, through the
-     * same UV mapping, after its surface: 1.21.1 armour drew its glint as that second
-     * {@code renderToBuffer}, and its tridents and shields drew the same vertices into
-     * both layers. The glint pass is untinted and carries no overlay, as 1.21.1's
-     * {@code renderGlint} drew it.
      */
     @Override
     public <S> void submitModel(Model<? super S> model, S state, PoseStack poseStack, RenderType renderType,
@@ -177,19 +166,13 @@ public final class RemixSubmitNodeCollector implements SubmitNodeCollector {
         if (!(buffer instanceof RemixCapturingConsumer)) {
             return;
         }
-        VertexConsumer glint = provider.getGlintBuffer(renderType, renderType);
         model.setupAnim(state);
         model.renderToBuffer(poseStack, mapped(buffer, uvMapping), lightCoords, overlayCoords, tintedColor);
-        if (glint != null) {
-            model.renderToBuffer(poseStack, mapped(glint, uvMapping), lightCoords, OverlayTexture.NO_OVERLAY,
-                    GLINT_COLOR);
-        }
     }
 
     /**
      * Compiles one part straight from the stack, without the {@code Model.Simple} the
-     * interface default would allocate per call, and again into its glint layer as
-     * {@link #submitModel} does.
+     * interface default would allocate per call.
      */
     @Override
     public void submitModelPart(ModelPart modelPart, PoseStack poseStack, RenderType renderType, int lightCoords,
@@ -201,11 +184,7 @@ public final class RemixSubmitNodeCollector implements SubmitNodeCollector {
         if (!(buffer instanceof RemixCapturingConsumer)) {
             return;
         }
-        VertexConsumer glint = provider.getGlintBuffer(renderType, renderType);
         modelPart.render(poseStack, mapped(buffer, uvMapping), lightCoords, overlayCoords, tintedColor);
-        if (glint != null) {
-            modelPart.render(poseStack, mapped(glint, uvMapping), lightCoords, OverlayTexture.NO_OVERLAY, GLINT_COLOR);
-        }
     }
 
     private static VertexConsumer mapped(VertexConsumer buffer, @Nullable UvMapping uvMapping) {
@@ -215,16 +194,14 @@ public final class RemixSubmitNodeCollector implements SubmitNodeCollector {
     // ---- Items and block models ----
 
     /**
-     * Captures an item's quads in model order under each quad's plain item render type,
-     * the layer 1.21.1 drew a glinted item's surface into, and a foil item's quads again
-     * into the glint layer over that surface, then adds the lit element a hand-held
+     * Captures an item's quads in model order, each under the render type
+     * {@code ItemFeatureRenderer} draws it with, then adds the lit element a hand-held
      * item carries. The pose stack still holds the item's block-space pose, so the held
      * flame finds the torch tip where it was.
      *
-     * <p>The glint quad is the surface quad with the surface's colour, as 1.21.1's
-     * {@code VertexMultiConsumer} wrote it into both layers. A special foil (a compass or
-     * clock) takes the item's own texture coordinates too, where vanilla projects a decal
-     * coordinate ({@code putBakedQuadWithGlint}); see the note on
+     * <p>A foil quad is captured under its glinted render type, whose layer the submitter
+     * gives the glint. A special foil (a compass or clock) is captured like a standard
+     * one: vanilla's decal coordinate for it is dropped, see
      * {@link RemixCapturingConsumer#putBakedQuadWithGlint}.
      */
     @Override
@@ -235,29 +212,21 @@ public final class RemixSubmitNodeCollector implements SubmitNodeCollector {
         quadInstance.setOverlayCoords(overlayCoords);
         for (BakedQuad quad : quads.all()) {
             BakedQuad.MaterialInfo material = quad.materialInfo();
-            RenderType surface = material.itemRenderType();
-            VertexConsumer buffer = provider.getBuffer(surface);
+            VertexConsumer buffer = provider.getBuffer(itemRenderType(material, foilType));
             if (!(buffer instanceof RemixCapturingConsumer)) {
                 continue;
             }
             quadInstance.setColor(layerColor(tintLayers, material));
             buffer.putBakedQuad(pose, quad, quadInstance);
-            RenderType glintSource = foilRenderType(material, foilType);
-            if (glintSource != null) {
-                VertexConsumer glint = provider.getGlintBuffer(surface, glintSource);
-                if (glint != null) {
-                    glint.putBakedQuad(pose, quad, quadInstance);
-                }
-            }
         }
         HeldItemEffectsRenderer.render(EntityRenderContext.get(), displayContext, poseStack, provider);
     }
 
-    /** The glinted render type {@code ItemFeatureRenderer} draws a quad with, or null for no foil. */
-    private static @Nullable RenderType foilRenderType(BakedQuad.MaterialInfo material,
-                                                       ItemStackRenderState.FoilType foilType) {
+    /** The render type {@code ItemFeatureRenderer} draws a quad with under {@code foilType}. */
+    private static RenderType itemRenderType(BakedQuad.MaterialInfo material,
+                                             ItemStackRenderState.FoilType foilType) {
         return switch (foilType) {
-            case NONE -> null;
+            case NONE -> material.itemRenderType();
             case STANDARD -> material.itemGlintRenderType();
             case SPECIAL -> material.itemGlintSpecialRenderType();
         };
