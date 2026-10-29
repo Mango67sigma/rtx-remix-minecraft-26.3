@@ -105,6 +105,8 @@ public class ChunkManager {
      * which the dashboard, the CI scene-completeness gate and {@code /rtx status} read.
      */
     private int retainedPageCount;
+    /** Bumped whenever a column may have started or stopped being published or drawn. */
+    private long drawnColumnGeneration;
     private static final int DIAGNOSTICS_REFRESH_FRAMES = 8;
     /** Frames left to hold the current gauges. Starts at zero so the first frame computes. */
     private int diagnosticsRefreshCountdown;
@@ -374,6 +376,8 @@ public class ChunkManager {
         int dirtyMask;
         boolean buildInFlight;
         boolean hasPublishedState;
+        /** Whether the published pages reached the column's highest section holding a block when published. */
+        boolean drawn;
         boolean urgentBuild;
         long dirtySinceFrame = Long.MIN_VALUE;
         long settleUntilFrame;
@@ -393,19 +397,21 @@ public class ChunkManager {
         private final int categoryMask;
         private final int[] categoryFingerprints;
         private final int epoch;
+        private final int topSectionY;
         private volatile BlockMeshBuilder.MeshPage[] pages;
         private volatile long accountedBytes;
         private volatile Throwable failure;
         private volatile boolean complete;
 
         MeshBuildResult(ColumnRenderState owner, int generation, int categoryMask,
-                        int[] categoryFingerprints, int epoch, long estimatedBytes) {
+                        int[] categoryFingerprints, int epoch, long estimatedBytes, int topSectionY) {
             this.owner = owner;
             this.generation = generation;
             this.categoryMask = categoryMask;
             this.categoryFingerprints = categoryFingerprints;
             this.epoch = epoch;
             this.accountedBytes = estimatedBytes;
+            this.topSectionY = topSectionY;
         }
 
         ColumnRenderState owner() { return owner; }
@@ -413,6 +419,8 @@ public class ChunkManager {
         int categoryMask() { return categoryMask; }
         int[] categoryFingerprints() { return categoryFingerprints; }
         int epoch() { return epoch; }
+        /** Highest section the build's snapshot held, or {@link Integer#MIN_VALUE} for none. */
+        int topSectionY() { return topSectionY; }
         BlockMeshBuilder.MeshPage[] pages() { return pages; }
         long accountedBytes() { return accountedBytes; }
         Throwable failure() { return failure; }
@@ -1161,6 +1169,7 @@ public class ChunkManager {
         state.activePages.clear();
         state.dirtyMask = 0;
         state.generation++;
+        if (state.hasPublishedState) drawnColumnGeneration++;
     }
 
     private void clearLightWork() {
@@ -1295,7 +1304,7 @@ public class ChunkManager {
         }
         if (categoryMask == 0) {
             if (!state.buildInFlight && state.dirtyMask == 0) {
-                state.hasPublishedState = true;
+                publish(state, topSectionY(terrain.findColumn(cx, cz)));
             }
             return state;
         }
@@ -1354,7 +1363,7 @@ public class ChunkManager {
             if (buildMask == 0) {
                 state.dirtyMask &= ~requestedMask;
                 clearDirtyTimingIfClean(state);
-                state.hasPublishedState = true;
+                publish(state, topSectionY(column));
                 continue;
             }
 
@@ -1369,7 +1378,7 @@ public class ChunkManager {
             int submittedMask = buildMask;
             MeshBuildResult result = new MeshBuildResult(
                     state, generation, submittedMask, fingerprints,
-                    currentEpoch, estimatedBytes);
+                    currentEpoch, estimatedBytes, topSectionY(column));
             // The build reads the section buffers on the mesh thread while the
             // render thread may replace or unload those sections; the build's
             // own reference keeps the buffers out of the pool until it is done.
@@ -1627,9 +1636,81 @@ public class ChunkManager {
                 owner.categoryFingerprints[category] = result.categoryFingerprints()[category];
             }
         }
-        owner.hasPublishedState = true;
+        publish(owner, result.topSectionY());
         owner.buildInFlight = false;
         pendingMeshBytes.addAndGet(-result.accountedBytes());
+    }
+
+    /**
+     * Marks a column's pages as standing for its captured terrain, and records whether they
+     * reach the highest section of the live chunk that holds a block. Minecraft builds a
+     * section only once its visibility walk reaches it, so a column can stand published with
+     * its caves and without the ground above them.
+     *
+     * @param publishedTopSectionY highest section the published pages were built from
+     */
+    private void publish(ColumnRenderState state, int publishedTopSectionY) {
+        boolean firstPublish = !state.hasPublishedState;
+        state.hasPublishedState = true;
+        boolean drawn = reachesSurface(publishedTopSectionY, liveTopSectionY(state.cx, state.cz));
+        if (firstPublish || drawn != state.drawn) {
+            state.drawn = drawn;
+            drawnColumnGeneration++;
+        }
+    }
+
+    /** Whether pages built up to one section cover a chunk whose blocks reach up to another. */
+    static boolean reachesSurface(int publishedTopSectionY, int liveTopSectionY) {
+        return publishedTopSectionY >= liveTopSectionY;
+    }
+
+    /** Highest section a column's captured terrain holds, or {@link Integer#MIN_VALUE} for none. */
+    private static int topSectionY(TerrainState.ChunkColumn column) {
+        int top = Integer.MIN_VALUE;
+        if (column == null) return top;
+        List<TerrainState.SectionEntry> entries = column.sectionEntries();
+        for (int i = 0, count = entries.size(); i < count; i++) {
+            top = Math.max(top, entries.get(i).sy);
+        }
+        return top;
+    }
+
+    /**
+     * Highest section of the live chunk that holds a block, or {@link Integer#MIN_VALUE}
+     * when it holds none or the client has no such chunk.
+     */
+    private int liveTopSectionY(int cx, int cz) {
+        if (currentWorld == null) return Integer.MIN_VALUE;
+        LevelChunk chunk = currentWorld.getChunkSource().getChunk(cx, cz, false);
+        if (chunk == null) return Integer.MIN_VALUE;
+        for (int index = chunk.getSectionsCount() - 1; index >= 0; index--) {
+            if (!chunk.getSection(index).hasOnlyAir()) return chunk.getSectionYFromSectionIndex(index);
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    /**
+     * Changes whenever a column may have started or stopped being published or drawn, so a
+     * consumer of {@link #isColumnDrawn} knows when to look again. Render thread only.
+     */
+    public long drawnColumnGeneration() {
+        return drawnColumnGeneration;
+    }
+
+    /** Whether any terrain of a chunk column is in the scene, its surface or not. Render thread only. */
+    public boolean isColumnPublished(int cx, int cz) {
+        ColumnRenderState state = renderColumns.get(packChunkKey(cx, cz));
+        return state != null && state.hasPublishedState;
+    }
+
+    /**
+     * Whether a chunk column's terrain is in the scene up to the highest section that held a
+     * block when it was published: the column's ground is drawn, not just its caves. Render
+     * thread only.
+     */
+    public boolean isColumnDrawn(int cx, int cz) {
+        ColumnRenderState state = renderColumns.get(packChunkKey(cx, cz));
+        return state != null && state.hasPublishedState && state.drawn;
     }
 
     private void abortInstall(MeshInstallCursor cursor) {
@@ -2014,6 +2095,7 @@ public class ChunkManager {
             state.activePages.clear();
         }
         renderColumns.clear();
+        drawnColumnGeneration++;
         retainedPageCount = 0;
         retainedInstancesHidden = false;
         dirtyBuildScratch.clear();

@@ -304,10 +304,10 @@ class ChunkManagerMeshInstallTest {
         Class<?> resultType = nested("MeshBuildResult");
         Constructor<?> constructor = resultType.getDeclaredConstructor(
                 nested("ColumnRenderState"), int.class, int.class,
-                int[].class, int.class, long.class);
+                int[].class, int.class, long.class, int.class);
         constructor.setAccessible(true);
         return constructor.newInstance(owner, generation, categoryMask,
-                fingerprints, epoch, accountedBytes);
+                fingerprints, epoch, accountedBytes, Integer.MIN_VALUE);
     }
 
     private static Object newCursor(Object result) throws Exception {
