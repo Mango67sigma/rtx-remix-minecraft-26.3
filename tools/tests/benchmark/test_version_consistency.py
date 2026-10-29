@@ -50,15 +50,33 @@ def minecraft_client_jar() -> Path | None:
 
 def java_major_in(path: Path, pattern: str) -> int:
     """The one Java major that `pattern`, which captures it, finds in the file at `path`."""
-    found = {int(major) for major in re.findall(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)}
+    return java_major_in_text(path.read_text(encoding="utf-8"), pattern, str(path))
+
+
+def java_major_in_text(text: str, pattern: str, where: str) -> int:
+    """The one Java major that `pattern`, which captures it, finds in `text`; `where` names the text in the failure."""
+    found = {int(major) for major in re.findall(pattern, text, re.MULTILINE)}
     if len(found) != 1:
-        raise AssertionError(f"{path} should name one Java major through {pattern!r}, but names {sorted(found)}")
+        raise AssertionError(f"{where} should name one Java major through {pattern!r}, but names {sorted(found)}")
     return found.pop()
+
+
+def workflow_job_text(path: Path, job: str) -> str:
+    """The YAML of the job named `job` in the GitHub Actions workflow at `path`: from its key, at the indent of the
+    entries under `jobs:`, up to the next job's key."""
+    text = path.read_text(encoding="utf-8")
+    job_block = rf"^  {re.escape(job)}:[ \t]*\n.*?(?=^  [A-Za-z0-9_-]+:[ \t]*$|\Z)"
+    match = re.search(job_block, text, re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise AssertionError(f"{path} has no job {job!r}")
+    return match.group(0)
 
 
 def java_majors() -> dict[str, int]:
     """The Java major of every place that fixes one: the installer, the developer tools, the Gradle toolchain and
-    compiler release, the mod's metadata, the CI runner's JDK, and the mixin compatibility level."""
+    compiler release, the mod's metadata, the JDK of the CI job that builds the mod, and the mixin compatibility
+    level. The workflow's other jobs build the Java 8 legacy interop and the Forge 1.12.2 bootstrap and pin their own
+    JDK on purpose."""
     gradle = REPO_ROOT / "build.gradle"
     resources = REPO_ROOT / "src" / "main" / "resources"
     fabric_java = json.loads((resources / "fabric.mod.json").read_text(encoding="utf-8"))["depends"]["java"]
@@ -73,8 +91,10 @@ def java_majors() -> dict[str, int]:
         "build.gradle JavaLanguageVersion": java_major_in(gradle, r"JavaLanguageVersion\.of\((\d+)\)"),
         "build.gradle options.release": java_major_in(gradle, r"options\.release\s*=\s*(\d+)"),
         "fabric.mod.json depends.java": int(metadata_major.group(1)),
-        "build.yml java-version": java_major_in(
-            REPO_ROOT / ".github" / "workflows" / "build.yml", r'^\s*java-version:\s*"?(\d+)"?\s*$'
+        "build.yml build job java-version": java_major_in_text(
+            workflow_job_text(REPO_ROOT / ".github" / "workflows" / "build.yml", "build"),
+            r'^\s*java-version:\s*"?(\d+)"?\s*$',
+            "the build job of build.yml",
         ),
         "mixins.json compatibilityLevel": java_major_in(
             resources / "rtx-remix-renderer.mixins.json", r'"compatibilityLevel":\s*"JAVA_(\d+)"'
