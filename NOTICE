@@ -12,3 +12,10 @@ This repository is a fork of RTX Remix for Minecraft
 rtx-remix-minecraft-26.3 contributors and are licensed under the Apache
 License, Version 2.0; the changed files are identified in the Git history.
 The fork is not affiliated with or endorsed by NVIDIA.
+
+The LOD terrain capture for Distant Horizons was written with
+kazumasa200/rtx-remix-minecraft-26-3
+(https://github.com/kazumasa200/rtx-remix-minecraft-26-3), a fork licensed under
+the Apache License, Version 2.0, as a reference; the files that adapt parts of
+it name their source in a comment. Distant Horizons itself is neither included
+nor distributed.
