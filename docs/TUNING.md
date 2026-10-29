@@ -179,6 +179,17 @@ water. Ending capture gives both back. Any other Distant Horizons version is
 left to itself, and the log says so: it draws its own terrain, which the
 path-traced image covers, so that terrain shows only with path tracing off.
 
+Distant Horizons generates its distant terrain with Minecraft's world generator
+on its own threads, and that allocation rate is more than the 2 GB heap of
+`RECOMMENDED_JVM_ARGS` absorbs. In the demo world on that heap, garbage
+collection took 100 s of a 236 s benchmark run in pauses of up to 290 ms, and
+the run averaged 52 fps against 135 without Distant Horizons; with `-Xmx6G`
+the same run held 120 fps, its longest frame 69 ms, with 3 s of collection,
+while the capture's own render-thread work was a quarter of a millisecond a
+frame in both. Give the game a 6 GB heap whenever Distant Horizons is
+installed; [JVM Arguments](#jvm-arguments) says where each launcher takes its
+heap from.
+
 | Key | Effect | Owner |
 |---|---|---|
 | `rtxremix.lod.distantHorizons` | Path trace Distant Horizons' LOD terrain. Set to false to leave Distant Horizons to itself, as for an unsupported version; its mixins are then not applied at all | `DistantHorizonsSupport` |

@@ -22,7 +22,9 @@ also part of every mod file name.
   memory, nearest first, and the view fade moves out to its radius. Turning
   path tracing off hands the terrain back to Distant Horizons.
   `-Drtxremix.lod.distantHorizons=false` leaves it to Distant Horizons
-  altogether.
+  altogether. With Distant Horizons installed the game needs a 6 GB heap; on
+  the installer's 2 GB its terrain generation stalls the game in garbage
+  collection.
 
 ## 0.1.0 - 2026-10-26
 

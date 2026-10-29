@@ -31,7 +31,10 @@ and there are bugs yet to be found. Two things to know before a long session:
   Fabric mod and its distant terrain is path traced beyond your render
   distance, up to a sixteenth of the graphics card's memory, nearest first.
   While path tracing is on, its settings show LOD shading and transparency as
-  set by RTX Remix; turning path tracing off gives them back.
+  set by RTX Remix; turning path tracing off gives them back. It needs more
+  memory than the mod alone: give the game a 6 GB heap, `-Xmx6G`, in place of
+  the 2 GB the installer sets, or its terrain generation stalls the game in
+  garbage collection.
 - **Scope.** It targets Minecraft 26.3 only. Blocks, mobs, dimensions, and
   situations the showcase never reaches have had less care, and some will look
   wrong or run slowly.
