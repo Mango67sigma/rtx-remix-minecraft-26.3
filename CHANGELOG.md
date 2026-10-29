@@ -9,7 +9,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is the `mod_version` in `gradle.properties`, and it is
 also part of every mod file name.
 
-## Unreleased
+## 0.1.1 - 2026-10-29
 
 ### Added
 
@@ -25,6 +25,15 @@ also part of every mod file name.
   altogether. With Distant Horizons installed the game needs a 6 GB heap; on
   the installer's 2 GB its terrain generation stalls the game in garbage
   collection.
+
+### Changed
+
+- NVIDIA's changes to the 1.21.1 project through 2026-10-28 are merged: the
+  shared Java facade under `rtxremix-java/` stays compatible with Java 8, the
+  developer tools' `tools\rtx.bat` clears PowerShell 7's module path, and an
+  experimental Forge 1.12.2 bootstrap with a Windows OpenGL interop for legacy
+  Java clients lives under `forge-1.12.2/` with its own build. The release
+  archive holds the Minecraft 26.3 mod only.
 
 ## 0.1.0 - 2026-10-26
 
