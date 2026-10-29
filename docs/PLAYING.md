@@ -27,6 +27,11 @@ and there are bugs yet to be found. Two things to know before a long session:
 
 - **Other mods.** It has had limited testing alongside other mods, and mods
   that change rendering or chunk loading are likely to conflict with it.
+  Distant Horizons 3.3.4 is supported experimentally: install it like any
+  Fabric mod and its distant terrain is path traced beyond your render
+  distance, up to a sixteenth of the graphics card's memory, nearest first.
+  While path tracing is on, its settings show LOD shading and transparency as
+  set by RTX Remix; turning path tracing off gives them back.
 - **Scope.** It targets Minecraft 26.3 only. Blocks, mobs, dimensions, and
   situations the showcase never reaches have had less care, and some will look
   wrong or run slowly.

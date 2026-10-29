@@ -124,6 +124,17 @@ repositories {
         name = 'Fabric'
         url = 'https://maven.fabricmc.net/'
     }
+    // Distant Horizons publishes no Maven artifact of its own; Modrinth's Maven serves
+    // its release jars, and only for this group.
+    exclusiveContent {
+        forRepository {
+            maven {
+                name = 'Modrinth'
+                url = 'https://api.modrinth.com/maven'
+            }
+        }
+        filter { includeGroup 'maven.modrinth' }
+    }
 }
 
 // Minecraft 26.1 and later require Java 25
@@ -208,6 +219,10 @@ dependencies {
     implementation "net.fabricmc:fabric-loader:0.20.1"
 
     implementation fabricApiCoordinate
+
+    // Optional at runtime and never packaged: the LOD capture compiles against Distant
+    // Horizons' API and the classes its mixins target, and applies only when it is installed.
+    compileOnly "maven.modrinth:distanthorizons:3.3.4-26.3"
 
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'

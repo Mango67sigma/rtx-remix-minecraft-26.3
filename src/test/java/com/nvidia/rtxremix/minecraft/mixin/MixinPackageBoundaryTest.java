@@ -10,6 +10,12 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.tree.AnnotationNode;
+import org.objectweb.asm.tree.ClassNode;
+import org.objectweb.asm.tree.FieldNode;
+import org.objectweb.asm.tree.MethodNode;
 
 import java.io.InputStreamReader;
 import java.lang.annotation.Annotation;
@@ -29,22 +35,23 @@ import java.util.TreeSet;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MixinPackageBoundaryTest {
     private static final String MIXIN_PACKAGE = "com.nvidia.rtxremix.minecraft.mixin";
     private static final String MIXIN_CONFIG = "rtx-remix-renderer.mixins.json";
+    private static final String DH_MIXIN_PACKAGE = MIXIN_PACKAGE + ".distanthorizons";
+    private static final String DH_MIXIN_CONFIG = "rtx-remix-renderer.distanthorizons.mixins.json";
     private static final String MIXIN_ANNOTATION_PACKAGE = "org.spongepowered.asm.mixin";
     private static final String MEMBER_PREFIX = "rtxremix$";
 
     @Test
     void productionMixinPackageContainsOnlyConfiguredMixins() throws Exception {
-        Path classesRoot = Path.of(RtxRemixMod.class.getProtectionDomain()
-                .getCodeSource().getLocation().toURI());
-        Path mixinDirectory = classesRoot.resolve(MIXIN_PACKAGE.replace('.', '/'));
+        Path mixinDirectory = classesRoot().resolve(MIXIN_PACKAGE.replace('.', '/'));
 
-        Set<String> configured = configuredMixins();
+        Set<String> configured = configuredMixins(MIXIN_CONFIG);
 
         Set<String> unconfigured = new HashSet<>();
         try (Stream<Path> classes = Files.list(mixinDirectory)) {
@@ -68,7 +75,7 @@ class MixinPackageBoundaryTest {
     @Test
     void mixinAddedMembersCarryTheModPrefix() throws Exception {
         Set<String> offenders = new TreeSet<>();
-        for (String simpleName : configuredMixins()) {
+        for (String simpleName : configuredMixins(MIXIN_CONFIG)) {
             Class<?> mixin = Class.forName(
                     MIXIN_PACKAGE + "." + simpleName, false, getClass().getClassLoader());
             for (Member member : declaredMembers(mixin)) {
@@ -82,18 +89,95 @@ class MixinPackageBoundaryTest {
                 "mixin-added members must be prefixed with " + MEMBER_PREFIX);
     }
 
-    private Set<String> configuredMixins() throws Exception {
-        JsonObject config;
-        try (var stream = RtxRemixMod.class.getClassLoader().getResourceAsStream(MIXIN_CONFIG)) {
-            assertNotNull(stream, "missing " + MIXIN_CONFIG);
-            config = JsonParser.parseReader(
+    /**
+     * The Distant Horizons mixins have a config, and a package inside the reserved one, of
+     * their own. Their plugin is an ordinary class, so it must live outside both packages.
+     */
+    @Test
+    void distantHorizonsMixinPackageContainsOnlyItsConfiguredMixins() throws Exception {
+        JsonObject config = readConfig(DH_MIXIN_CONFIG);
+        assertEquals(DH_MIXIN_PACKAGE, config.get("package").getAsString());
+        String plugin = config.get("plugin").getAsString();
+        assertFalse(plugin.startsWith(MIXIN_PACKAGE + "."), "the mixin plugin must not live in a mixin package");
+
+        Set<String> configured = configuredMixins(DH_MIXIN_CONFIG);
+        Set<String> present = new TreeSet<>();
+        try (Stream<Path> classes = Files.list(classesRoot().resolve(DH_MIXIN_PACKAGE.replace('.', '/')))) {
+            classes.map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".class") && !name.contains("$"))
+                    .map(name -> name.substring(0, name.length() - ".class".length()))
+                    .forEach(present::add);
+        }
+
+        assertEquals(new TreeSet<>(configured), present,
+                "the Distant Horizons mixin package holds exactly its configured mixins");
+    }
+
+    /**
+     * The prefix rule for the Distant Horizons mixins. Distant Horizons is not on the test
+     * classpath, so their class files are read rather than loaded.
+     */
+    @Test
+    void distantHorizonsMixinAddedMembersCarryTheModPrefix() throws Exception {
+        Path directory = classesRoot().resolve(DH_MIXIN_PACKAGE.replace('.', '/'));
+        Set<String> offenders = new TreeSet<>();
+        for (String simpleName : configuredMixins(DH_MIXIN_CONFIG)) {
+            ClassNode mixin = new ClassNode();
+            new ClassReader(Files.readAllBytes(directory.resolve(simpleName + ".class"))).accept(mixin, 0);
+            assertTrue(mixin.interfaces.isEmpty(), simpleName + " implements an interface this check does not cover");
+            for (FieldNode field : mixin.fields) {
+                if (isMerged(field.access, field.visibleAnnotations, field.invisibleAnnotations)
+                        && !field.name.toLowerCase().startsWith(MEMBER_PREFIX)) {
+                    offenders.add(simpleName + "." + field.name);
+                }
+            }
+            for (MethodNode method : mixin.methods) {
+                if (method.name.startsWith("<")) continue;
+                if (isMerged(method.access, method.visibleAnnotations, method.invisibleAnnotations)
+                        && !method.name.toLowerCase().startsWith(MEMBER_PREFIX)) {
+                    offenders.add(simpleName + "." + method.name);
+                }
+            }
+        }
+
+        assertEquals(Set.of(), offenders,
+                "mixin-added members must be prefixed with " + MEMBER_PREFIX);
+    }
+
+    private static Path classesRoot() throws Exception {
+        return Path.of(RtxRemixMod.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+    }
+
+    private static JsonObject readConfig(String name) throws Exception {
+        try (var stream = RtxRemixMod.class.getClassLoader().getResourceAsStream(name)) {
+            assertNotNull(stream, "missing " + name);
+            return JsonParser.parseReader(
                     new InputStreamReader(stream, StandardCharsets.UTF_8)).getAsJsonObject();
         }
+    }
+
+    private static Set<String> configuredMixins(String configName) throws Exception {
+        JsonObject config = readConfig(configName);
         Set<String> configured = new HashSet<>();
-        addEntries(configured, config.getAsJsonArray("mixins"));
-        addEntries(configured, config.getAsJsonArray("client"));
-        addEntries(configured, config.getAsJsonArray("server"));
+        addEntries(configured, config.getAsJsonArray("mixins"), configName);
+        addEntries(configured, config.getAsJsonArray("client"), configName);
+        addEntries(configured, config.getAsJsonArray("server"), configName);
         return configured;
+    }
+
+    /** The class-file form of {@link #isMerged(Member)}, for mixins whose targets cannot be loaded. */
+    private static boolean isMerged(int access, List<AnnotationNode> visible, List<AnnotationNode> invisible) {
+        if ((access & (Opcodes.ACC_SYNTHETIC | Opcodes.ACC_ABSTRACT)) != 0) return false;
+        return !hasMixinAnnotation(visible) && !hasMixinAnnotation(invisible);
+    }
+
+    private static boolean hasMixinAnnotation(List<AnnotationNode> annotations) {
+        if (annotations == null) return false;
+        String prefix = "L" + MIXIN_ANNOTATION_PACKAGE.replace('.', '/') + "/";
+        for (AnnotationNode annotation : annotations) {
+            if (annotation.desc.startsWith(prefix)) return true;
+        }
+        return false;
     }
 
     private static List<Member> declaredMembers(Class<?> mixin) {
@@ -129,11 +213,11 @@ class MixinPackageBoundaryTest {
         return false;
     }
 
-    private static void addEntries(Set<String> configured, JsonArray entries) {
+    private static void addEntries(Set<String> configured, JsonArray entries, String configName) {
         if (entries == null) return;
         for (JsonElement entry : entries) {
             String name = entry.getAsString();
-            assertTrue(configured.add(name), name + " is listed twice in " + MIXIN_CONFIG);
+            assertTrue(configured.add(name), name + " is listed twice in " + configName);
         }
     }
 }

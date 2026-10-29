@@ -69,15 +69,51 @@ class ViewDistanceFadeTest {
     }
 
     @Test
+    void lodLayerStrengthIsZeroWithoutLodTerrainBeyondTheRenderDistance() {
+        ViewDistanceFade fade = new ViewDistanceFade();
+        fade.layerStrength(12);
+        assertEquals(0.0f, fade.lodLayerStrength(12, 0f), 1e-6f);
+        assertEquals(0.0f, fade.lodLayerStrength(12, 12 * 16f), 1e-6f);
+
+        fade.setAuto(false);
+        fade.layerStrength(12);
+        assertEquals(0.0f, fade.lodLayerStrength(12, 4096f), 1e-6f, "manual mode keeps the baseline");
+    }
+
+    @Test
+    void lodLayerPlacesTheFadeBandAtTheLodRadius() {
+        ViewDistanceFade fade = new ViewDistanceFade();
+        for (int chunks : new int[] {2, 12, 32}) {
+            for (float radius : new float[] {1024f, 4096f, 16384f, 65536f}) {
+                float near = fade.layerStrength(chunks);
+                float lod = fade.lodLayerStrength(chunks, radius);
+                float fadeMin = lerp(lerp(ViewDistanceFade.RESTORE_FADE_MIN, ViewDistanceFade.LAYER_FADE_MIN, near),
+                        ViewDistanceFade.LOD_LAYER_FADE_MIN, lod);
+                float fadeMax = lerp(lerp(ViewDistanceFade.RESTORE_FADE_MAX, ViewDistanceFade.LAYER_FADE_MAX, near),
+                        ViewDistanceFade.LOD_LAYER_FADE_MAX, lod);
+                assertEquals(radius * 0.7f, fadeMin, radius * 1e-4f, "fade min at " + chunks + " chunks, " + radius);
+                assertEquals(radius * 0.8f, fadeMax, radius * 1e-4f, "fade max at " + chunks + " chunks, " + radius);
+            }
+        }
+        fade.layerStrength(12);
+        fade.lodLayerStrength(12, 4096f);
+        assertEquals("auto (from render distance), fade 2867 to 3277 blocks", fade.describe());
+    }
+
+    @Test
     void endpointProfilesMatchControllerConstants() throws Exception {
         Map<String, Float> baseline = readConf(Path.of("packaging", "rtx.conf"));
         Map<String, Float> minimum = readConf(Path.of("packaging", "rtx-remix", "mods",
                 "minecraft-logic", "confs", "view_distance.conf"));
+        Map<String, Float> lod = readConf(Path.of("packaging", "rtx-remix", "mods",
+                "minecraft-logic", "confs", "view_distance_lod.conf"));
 
         assertEquals(ViewDistanceFade.RESTORE_FADE_MIN, baseline.get(FADE_MIN_KEY));
         assertEquals(ViewDistanceFade.RESTORE_FADE_MAX, baseline.get(FADE_MAX_KEY));
         assertEquals(ViewDistanceFade.LAYER_FADE_MIN, minimum.get(FADE_MIN_KEY));
         assertEquals(ViewDistanceFade.LAYER_FADE_MAX, minimum.get(FADE_MAX_KEY));
+        assertEquals(ViewDistanceFade.LOD_LAYER_FADE_MIN, lod.get(FADE_MIN_KEY));
+        assertEquals(ViewDistanceFade.LOD_LAYER_FADE_MAX, lod.get(FADE_MAX_KEY));
     }
 
     private static float lerp(float from, float to, float amount) {

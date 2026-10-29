@@ -280,6 +280,45 @@ creator, by each `RenderSectionRegion` built from it, and by the frame's
 releases its region when it finishes, and the last release returns the arrays
 (`ChunkRendererRegionMixin`, `RebuildTaskMixin`, `LevelExtractorTerrainMixin`).
 
+**LOD terrain.** With Distant Horizons 3.3.4 installed (Fabric id
+`distanthorizons`; a compile-only dependency, never packaged), the far terrain it
+builds beyond Minecraft's render distance is path traced instead of drawn by it.
+Distant Horizons stays the authority on which sections exist, at what detail, and
+whether they are drawn; the mod mirrors each as one retained instance
+(`lod/`). Only `lod/dh/` and the second mixin config's
+`mixin/distanthorizons/` name its types, and `DistantHorizonsSupport` decides for
+both the mixin plugin and the renderer. `LodRenderSectionMixin` copies a
+section's quads at the head of `LodRenderSection.uploadToGpuAsync`, before
+Distant Horizons returns its pooled buffers, into a reference-counted
+`LodGeometry`, and follows `setRenderingEnabled` and `close`; every change queues
+the section once in `LodCapture`, and a copy carries its capture session's
+generation. While capturing, `DistantHorizonsLodSource` cancels
+`DhApiBeforeRenderEvent` and `DhApiBeforeDeferredRenderEvent` (Distant Horizons
+still runs its render-thread tasks first, so uploads complete and its detail
+swaps proceed) and overrides LOD shading to `DISABLED` and transparency to
+`COMPLETE`, the one mode that builds the ground under water; `ClientApiMixin`
+skips its vanilla fade passes; `LodBufferContainerMixin` completes
+`uploadBuffersAsync` without uploading, so Distant Horizons keeps no GPU copy;
+`MinecraftClientWrapperMixin` keeps vanilla's cloud setting. Stopping restores
+both options and clears Distant Horizons' render cache, so it rebuilds with real
+buffers. `LodTerrain` builds meshes on low-priority threads, nearest
+the camera first (`LodMeshBuilder`: vertex colour over a white texel as albedo,
+water as its own surface with the water material, normals from the face index),
+and installs them under a frame budget. `LodClip` removes exactly the chunk
+columns `ChunkManager.isColumnDrawn` reports, published up to the highest
+section of the live chunk that holds a block, or within a chunk of the camera
+published at all; merged quads split along chunk borders, what still overlaps
+sinks 1/32 block, and a per-section clip signature rebuilds only sections whose
+clipped set changed, at most every four frames while columns stream in.
+`LodSwapTracker` keeps a section Distant Horizons stops drawing on screen while
+the sections replacing it are built and holds a ready one while what it
+overlaps lingers, so a detail swap shows neither a hole nor both. A section
+Distant Horizons does not draw gives its mesh up and keeps its geometry.
+`LodBudget` caps installed mesh bytes at a sixteenth of video memory, 256 MiB to
+2 GiB, spent nearest first. `confs/view_distance_lod.conf` moves Remix's fade
+out to the LOD radius, and the camera's far plane follows it (the weather
+overlay's projection with it).
+
 **Textures and atlases.** Atlas capture produces per-sprite materials plus
 atlas-level PBR, emissive, and luminance textures. The block atlas holds only
 block sprites in 26.3; items have their own atlas. The stitcher surrounds every
@@ -380,7 +419,7 @@ diluting the sampler's candidate pool.
 
 - Every Remix handle is created, updated, and destroyed on the render thread;
   workers hand over CPU data through bounded, generation-tagged queues
-  (`BlockDataQueue`, `ChunkManager`).
+  (`BlockDataQueue`, `ChunkManager`, `LodCapture`).
 - A retained instance is submitted where it is created or mutated, never once
   per frame (`ChunkManager`, `RemixEntitySubmitter`).
 - A prepared particle payload holds world-space vertices and a live bucket, so
@@ -400,6 +439,17 @@ diluting the sampler's candidate pool.
   because the volumetric grid reuses the previous frame's radiance and a
   camera-locked emitter would smear into distant geometry (`LightManager`).
 - Ordinary classes must not live in the mixin package (`MixinPackageBoundaryTest`).
+- Nothing outside `lod/dh/` and `mixin/distanthorizons/` names a Distant
+  Horizons type, and `DistantHorizonsSupport` gates the hooks and the capture
+  together, so without the supported version installed, or with
+  `rtxremix.lod.distantHorizons=false`, the mod behaves as if it were absent
+  (`DistantHorizonsMixinPlugin`, `DistantHorizonsLod`).
+- LOD terrain never draws over a column Minecraft's terrain draws: its clip
+  follows `ChunkManager.drawnColumnGeneration` and `isColumnDrawn`, so any change
+  to when or how a column counts as published bumps the generation
+  (`ChunkManager`, `LodTerrain`).
+- A shown LOD section is hidden or replaced only in the frame what replaces it
+  is ready, or after its maximum linger (`LodSwapTracker`).
 - The game runs on the OpenGL backend. The GL interop, the composite, the
   weather overlay, and the sky generator's raw GL depend on it; on any other
   backend the renderer refuses to initialize rather than half-work
@@ -643,6 +693,9 @@ with the mixin's name instead of silently capturing nothing. The exceptions
 are the profiling-phase injectors marked `require = 0` in
 `MinecraftClientMixin`, `ParticleManagerMixin`, and `ParticleGroupMixin`; see
 [Verifying A Mixin Injection](CONTRIBUTING.md#verifying-a-mixin-injection).
+The Distant Horizons mixins apply only with the supported version installed, so
+their anchors are proven only by a launch with it; the LOD tests build their
+input in Distant Horizons' vertex format and need no Distant Horizons at all.
 
 Python tooling uses `tools\rtx.bat check --tests` for its test suite.
 Its shared defaults pin the demo world and art pack without selecting a

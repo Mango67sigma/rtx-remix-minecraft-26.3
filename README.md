@@ -26,6 +26,11 @@ Three areas have had less attention than the rest:
 - **Other mods.** It has had limited testing alongside other mods, and a
   renderer that takes over the scene the way this one does is likely to
   conflict with anything that changes rendering or the chunk pipeline.
+  [Distant Horizons](https://modrinth.com/mod/distanthorizons) 3.3.4 is
+  supported experimentally: its distant terrain is path traced, so far land
+  casts shadows and shows in reflections, while Distant Horizons still decides
+  what is built and at what detail. Other versions of it are left to
+  themselves, and their terrain shows only with path tracing off.
 - **A full playthrough.** Blocks, mobs, dimensions, and situations the showcase
   never reaches have had less care, and some will look wrong or run slowly.
 - **Other versions.** It targets Minecraft 26.3 only. Ports to newer versions

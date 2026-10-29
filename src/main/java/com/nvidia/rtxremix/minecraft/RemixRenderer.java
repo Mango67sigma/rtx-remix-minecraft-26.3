@@ -23,6 +23,10 @@ import com.nvidia.rtxremix.minecraft.asset.RemixTextureStore;
 import com.nvidia.rtxremix.minecraft.benchmark.BenchmarkController;
 import com.nvidia.rtxremix.minecraft.gl.GlInterop;
 import com.nvidia.rtxremix.minecraft.light.LightManager;
+import com.nvidia.rtxremix.minecraft.lod.LodCapture;
+import com.nvidia.rtxremix.minecraft.lod.LodSource;
+import com.nvidia.rtxremix.minecraft.lod.LodTerrain;
+import com.nvidia.rtxremix.minecraft.lod.dh.DistantHorizonsLod;
 import com.nvidia.rtxremix.minecraft.logic.ViewDistanceFade;
 import com.nvidia.rtxremix.minecraft.profiling.PerformanceTimer;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
@@ -109,6 +113,14 @@ public class RemixRenderer {
     private static final List<String> ACCOUNT_OPTIONS =
             List.of("--username", "--accessToken", "--uuid", "--xuid", "--clientId");
 
+    /** Far plane of the Remix camera without LOD terrain, in blocks. */
+    private static final float MIN_FAR_PLANE = 1000.0f;
+    /**
+     * The far plane's reach past the LOD radius: the LOD mod's sections are squares, so a
+     * section at the radius reaches out to its corners.
+     */
+    private static final float LOD_FAR_PLANE_MARGIN = 1.5f;
+
     // Remix API instance
     private RemixAPI remixApi;
     private boolean initialized = false;
@@ -121,6 +133,8 @@ public class RemixRenderer {
 
     // Scene managers
     private ChunkManager chunkManager;
+    /** Far terrain from an LOD mod; null without a supported one installed. */
+    private LodTerrain lodTerrain;
     // Zones authored via command blocks / commands; written on the server and
     // client threads, read per-frame on the render thread.
     private final ZoneRegistry zoneRegistry = new ZoneRegistry();
@@ -178,6 +192,7 @@ public class RemixRenderer {
     private int perfLights = -1;
     private int perfChunkGen = -1;
     private int perfChunkDraw = -1;
+    private int perfLod = -1;
     private int perfEntities = -1;
     private int perfSky = -1;
     private int perfClouds = -1;
@@ -352,6 +367,11 @@ public class RemixRenderer {
             lightManager = new LightManager(this);
             skyRenderer = new SkyRenderer(this);
             cloudRenderer = new CloudRenderer(this);
+            LodSource lodSource = DistantHorizonsLod.createSource();
+            if (lodSource != null) {
+                lodTerrain = new LodTerrain(perfTimer, LodCapture.shared(), lodSource);
+                perfLod = perfTimer.registerSection("Lod");
+            }
             
             particleAtlasManager = new ParticleAtlasManager(this);
             entityPass = new RemixEntityPass(lightManager::ownsLightThisFrame);
@@ -577,6 +597,7 @@ public class RemixRenderer {
         entityAtlasPreloadPending = true;
         if (weatherRenderer != null) weatherRenderer.cleanup();
         if (chunkManager != null) chunkManager.clear();
+        if (lodTerrain != null) lodTerrain.releaseMaterials();
         if (textureManager != null) textureManager.reload();
         if (skyRenderer != null) skyRenderer.reloadResources();
         if (cloudRenderer != null) {
@@ -777,6 +798,7 @@ public class RemixRenderer {
             
             if (world == null || client.gameRenderer == null) {
                 if (chunkManager != null) chunkManager.hideRetainedInstances();
+                if (lodTerrain != null) lodTerrain.suspend();
                 discardPendingParticleFrame();
                 // Closed by the finally, like the RTX-disabled branch below. endFrame is not
                 // idempotent: it re-adds elapsed from the same frame start and refolds min,
@@ -794,6 +816,7 @@ public class RemixRenderer {
             // intentionally left untouched so off<->on transitions don't desync.
             if (!RtxRemixMod.isRtxEnabled()) {
                 if (chunkManager != null) chunkManager.hideRetainedInstances();
+                if (lodTerrain != null) lodTerrain.suspend();
                 // A payload prepared before the toggle holds world-space vertices from the
                 // old camera position; publishing it on re-enable would draw stale geometry.
                 discardPendingParticleFrame();
@@ -846,8 +869,10 @@ public class RemixRenderer {
                 } catch (Exception e) {
                     LOGGER.error("Error updating chunks", e);
                 }
+                updateLodTerrain(world, cameraPos);
             } else {
                 chunkManager.hideRetainedInstances();
+                if (lodTerrain != null) lodTerrain.suspend();
             }
 
             entitySubmitter.beginFrame();
@@ -1014,6 +1039,22 @@ public class RemixRenderer {
             }
             perfTimer.endFrame();
             benchmarkController.onFrameEnd(perfTimer);
+        }
+    }
+
+    /**
+     * Mirrors the LOD mod's far terrain after the chunk columns of this frame are published,
+     * since the LOD terrain gives way exactly where they are drawn.
+     */
+    private void updateLodTerrain(ClientLevel world, Vec3 cameraPos) {
+        if (lodTerrain == null) return;
+        perfTimer.begin(perfLod);
+        try (ProfileScope lodScope = ProfileScope.begin("Lod")) {
+            lodTerrain.update(remixApi, world, cameraPos, textureManager, chunkManager);
+        } catch (Exception e) {
+            LOGGER.error("Error updating LOD terrain", e);
+        } finally {
+            perfTimer.end(perfLod);
         }
     }
 
@@ -1252,12 +1293,15 @@ public class RemixRenderer {
             int width = client.getWindow().getWidth();
             int height = client.getWindow().getHeight();
             float aspect = (float) width / (float) height;
+            float lodRadius = lodTerrain != null ? lodTerrain.radiusBlocks() : 0f;
+            float farPlane = Math.max(MIN_FAR_PLANE, lodRadius * LOD_FAR_PLANE_MARGIN);
             if (weatherRenderer != null) {
                 weatherRenderer.updateCamera(
                         camera,
                         worldFov,
                         width,
-                        height);
+                        height,
+                        farPlane);
             }
     
             CameraInfoParameterizedEXT worldCameraParams = CameraInfoParameterizedEXT.builder()
@@ -1268,7 +1312,7 @@ public class RemixRenderer {
                 .fovYInDegrees(worldFov)
                 .aspect(aspect)
                 .nearPlane(0.05f)
-                .farPlane(1000.0f)
+                .farPlane(farPlane)
                 .build();
     
             CameraInfo worldCameraInfo = CameraInfo.builder()
@@ -1287,8 +1331,10 @@ public class RemixRenderer {
     
             remixApi.setupCamera(worldCameraInfo);
             remixApi.setupCamera(viewModelCameraInfo);
-            float viewDistanceStrength = viewDistanceFade.layerStrength(ClientViewDistance.chunks());
-            updateCameraMedium(camera, pos, viewDistanceStrength, tickDelta);
+            int renderDistance = ClientViewDistance.chunks();
+            float viewDistanceStrength = viewDistanceFade.layerStrength(renderDistance);
+            float lodViewDistanceStrength = viewDistanceFade.lodLayerStrength(renderDistance, lodRadius);
+            updateCameraMedium(camera, pos, viewDistanceStrength, lodViewDistanceStrength, tickDelta);
         } catch (RemixException e) {
             LOGGER.error("Error updating camera: {} (code: {})", e.getMessage(), e.getErrorCode());
         } catch (Exception e) {
@@ -1319,10 +1365,13 @@ public class RemixRenderer {
         if (!initialized) {
             return;
         }
-        viewDistanceFade.layerStrength(ClientViewDistance.chunks());
+        int renderDistance = ClientViewDistance.chunks();
+        viewDistanceFade.layerStrength(renderDistance);
+        viewDistanceFade.lodLayerStrength(renderDistance, lodTerrain != null ? lodTerrain.radiusBlocks() : 0f);
     }
 
-    private void updateCameraMedium(Camera camera, Vec3 cameraPos, float viewDistanceStrength, float tickDelta) {
+    private void updateCameraMedium(Camera camera, Vec3 cameraPos, float viewDistanceStrength,
+                                    float lodViewDistanceStrength, float tickDelta) {
         try {
             Minecraft client = Minecraft.getInstance();
             ClientLevel world = client != null ? client.level : null;
@@ -1344,7 +1393,7 @@ public class RemixRenderer {
             // until the next successful /rtx conf reload.
             if (confLayerDriver != null && confLayerDriver.isActive() && world != null) {
                 confLayerDriver.update(world, cameraPos, underwater,
-                        viewDistanceStrength, tickDelta, zoneRegistry);
+                        viewDistanceStrength, lodViewDistanceStrength, tickDelta, zoneRegistry);
             }
             if (materialHandle != lastCameraMediumHandle) {
                 LOGGER.info("Camera medium updated: {}", materialHandle != 0 ? "water" : "clear");
@@ -1467,6 +1516,23 @@ public class RemixRenderer {
     }
 
     /**
+     * The client moved to another level, such as through a portal. Runs from the client's
+     * task queue, after the change, so the LOD terrain of the level left behind goes before
+     * the next frame.
+     */
+    public void onLevelChanged(ClientLevel level) {
+        if (lodTerrain != null) lodTerrain.onLevelChanged(level);
+    }
+
+    /**
+     * Drops the LOD meshes before shared terrain materials are rebuilt outside a texture
+     * reload; the next frames rebuild them with the new materials.
+     */
+    public void releaseLodMaterials() {
+        if (lodTerrain != null) lodTerrain.releaseMaterials();
+    }
+
+    /**
      * Requests a full texture/material rebuild at the next world-render start.
      * Call when the sprite atlas changes (resource pack add/remove/reorder).
      */
@@ -1494,6 +1560,9 @@ public class RemixRenderer {
         
         if (chunkManager != null) {
             chunkManager.clear();
+        }
+        if (lodTerrain != null) {
+            lodTerrain.clear();
         }
         if (lightManager != null) {
             lightManager.clear();
@@ -1559,6 +1628,10 @@ public class RemixRenderer {
 
         if (chunkManager != null) {
             chunkManager.destroy();
+        }
+        if (lodTerrain != null) {
+            lodTerrain.destroy();
+            lodTerrain = null;
         }
 
         // Retained entity meshes reference the block atlas and particle atlas

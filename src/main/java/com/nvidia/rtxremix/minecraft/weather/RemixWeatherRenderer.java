@@ -66,7 +66,6 @@ import java.util.OptionalDouble;
  */
 public final class RemixWeatherRenderer {
     private static final float NEAR_PLANE = 0.05f;
-    private static final float FAR_PLANE = 1000.0f;
     /**
      * Each column is one quad: {@code WeatherEffectRenderer.prepare} builds the
      * buffer with {@code new BufferBuilder(..., PrimitiveTopology.QUADS,
@@ -159,10 +158,14 @@ public final class RemixWeatherRenderer {
         snowColumns = snowColumnCount;
     }
 
-    /** Builds the weather view and projection from the frame's camera; width and height are the render target's. */
-    public void updateCamera(Camera camera, float fovYDegrees, int width, int height) {
+    /**
+     * Builds the weather view and projection from the frame's camera; width and height are
+     * the render target's. {@code farPlane} must be the Remix camera's, since the depth test
+     * compares against Remix's depth.
+     */
+    public void updateCamera(Camera camera, float fovYDegrees, int width, int height, float farPlane) {
         camera.getViewRotationMatrix(modelView);
-        projection.setupPerspective(NEAR_PLANE, FAR_PLANE, fovYDegrees, width, height);
+        projection.setupPerspective(NEAR_PLANE, farPlane, fovYDegrees, width, height);
         cameraReady = true;
     }
 

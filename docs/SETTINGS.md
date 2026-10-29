@@ -25,7 +25,8 @@ sliders is Auto, which follows it. Light culling chooses which chunks are
 considered; light reach then decides whether each light is bright enough to
 matter where you stand. Brighter lights reach further. Auto view fade never
 overrides a stronger situational profile, so a map that authors its own fade
-keeps it.
+keeps it. With Distant Horizons installed, Auto view fade moves the fade out to
+the edge of its distant terrain.
 
 The background frame cap only lowers Minecraft's own Max Framerate;
 Unlimited leaves that setting in charge. A running benchmark is never capped,

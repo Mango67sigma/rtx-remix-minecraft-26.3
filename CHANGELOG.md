@@ -9,6 +9,21 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is the `mod_version` in `gradle.properties`, and it is
 also part of every mod file name.
 
+## Unreleased
+
+### Added
+
+- Distant Horizons 3.3.4, experimental: with it installed, the distant terrain
+  it builds beyond Minecraft's render distance is path traced instead of drawn
+  by Distant Horizons, so far land casts shadows, shows in reflections and takes
+  the sky's light. Distant Horizons still decides which terrain exists and at
+  what detail. Its terrain gives way exactly where Minecraft's own is drawn,
+  changes detail without holes, keeps to a sixteenth of the graphics card's
+  memory, nearest first, and the view fade moves out to its radius. Turning
+  path tracing off hands the terrain back to Distant Horizons.
+  `-Drtxremix.lod.distantHorizons=false` leaves it to Distant Horizons
+  altogether.
+
 ## 0.1.0 - 2026-10-26
 
 The first release of the Minecraft 26.3 port.

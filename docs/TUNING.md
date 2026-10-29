@@ -166,6 +166,63 @@ their distance.
 | `rtxremix.chunk.maxPendingLightOps` | Queued light work before backpressure | `ChunkManager` |
 | `rtxremix.light.floodSliceNs` | Render-thread time per frame a connectivity rebuild may take. The rebuild fills a second set across frames and swaps it in when complete, so a larger slice finishes sooner and a smaller one costs less per frame | `TerrainState` |
 
+## LOD Terrain
+
+With Distant Horizons 3.3.4 installed, the terrain it builds beyond Minecraft's
+render distance is path traced: each of its sections becomes one Remix mesh,
+built on low-priority threads and installed on the render thread under a frame
+budget, while Distant Horizons draws nothing and uploads nothing to the GPU.
+For as long, Distant Horizons' menu shows two of its options as set by RTX
+Remix: LOD shading is off, since Remix lights the terrain, and transparency is
+complete, since only then does Distant Horizons build the ground under its
+water. Ending capture gives both back. Any other Distant Horizons version is
+left to itself, and the log says so: it draws its own terrain, which the
+path-traced image covers, so that terrain shows only with path tracing off.
+
+| Key | Effect | Owner |
+|---|---|---|
+| `rtxremix.lod.distantHorizons` | Path trace Distant Horizons' LOD terrain. Set to false to leave Distant Horizons to itself, as for an unsupported version; its mixins are then not applied at all | `DistantHorizonsSupport` |
+| `rtxremix.lod.buildThreads` | Threads that turn Distant Horizons sections into Remix meshes, at the lowest thread priority | `LodTerrain` |
+| `rtxremix.lod.installBudgetNs` | Render-thread time per frame for installing LOD meshes; one install always goes through | `LodTerrain` |
+| `rtxremix.lod.maxLingerFrames` | Frames a section Distant Horizons no longer draws may stay on screen while the sections replacing it are built | `LodTerrain` |
+| `rtxremix.lod.meshBudgetMiB` | Cap on installed LOD mesh memory, in MiB. 0, the default, takes a sixteenth of the card's dedicated video memory, between 256 MiB and 2 GiB | `LodTerrain` |
+
+Past the cap the farthest sections wait unbuilt: a new mesh first gives up
+meshes farther from the camera than itself, farthest first, and is left out if
+that is not enough. The radius at which that happened stops the building, and
+grows back once the camera moves while at most three quarters of the cap is in
+use. The view fade and the camera's far plane follow the smaller of Distant
+Horizons' radius and that one.
+
+The performance report counts the LOD terrain under `Lod`, a timing section for
+its render-thread work, and these per-frame counters:
+
+| Counter | Meaning |
+|---|---|
+| `Lod.Sections` | Distant Horizons sections mirrored |
+| `Lod.InstalledMB` | MiB of LOD meshes installed in Remix, against the cap |
+| `Lod.GeometryMB` | MiB of copied Distant Horizons geometry kept to rebuild meshes from |
+| `Lod.Builds` | Mesh builds started this frame |
+| `Lod.BuildQueue` | Sections waiting for a build |
+| `Lod.Clips` | Sections whose share of Minecraft's drawn columns changed this frame |
+| `Lod.Awaited` | Sections Distant Horizons draws whose mesh is not installed yet |
+| `Lod.Lingering` | Sections Distant Horizons stopped drawing, still shown while their replacement is built |
+| `Lod.Held` | Installed sections kept hidden while a section they overlap lingers |
+| `Lod.Starved` | Sections past the cap's radius, left unbuilt |
+
+The log reports each change of state:
+
+```text
+Distant Horizons 3.3.4 found; Remix path traces its LOD terrain
+LOD terrain capture started for Distant Horizons 3.3.4: 2048 MiB mesh budget (32607 MiB of video memory), 3 builder threads
+LOD terrain filled its 2048 MiB mesh budget; building no farther than 5632 blocks
+LOD terrain capture stopped; Distant Horizons 3.3.4 draws its own terrain again
+```
+
+Capture stops whenever Remix stops drawing the world (path tracing or world
+capture toggled off, no world loaded) and starts again with the next world
+frame; each start makes Distant Horizons rebuild every section once.
+
 ## Entities, Textures, And Particles
 
 | Key | Effect | Owner |

@@ -58,6 +58,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientChunkEvents;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLevelEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -550,6 +551,15 @@ public class RtxRemixMod implements ClientModInitializer {
                 renderer.clearWorld();
             }
         });
+
+        // A portal or respawn into another dimension swaps the level without a disconnect.
+        // The renderer drops what it mirrored of the old level from the task queue, which
+        // runs before the next frame; the level may have changed again by then.
+        ClientLevelEvents.AFTER_CLIENT_LEVEL_CHANGE.register((client, level) -> client.execute(() -> {
+            if (renderer != null && renderer.isInitialized() && client.level == level) {
+                renderer.onLevelChanged(level);
+            }
+        }));
 
         ClientChunkEvents.CHUNK_UNLOAD.register((world, chunk) -> {
             ChunkPos pos = chunk.getPos();
@@ -1839,6 +1849,9 @@ public class RtxRemixMod implements ClientModInitializer {
     private void clearTerrainForMaterialRebuild() {
         if (renderer != null && renderer.getChunkManager() != null) {
             renderer.getChunkManager().clear();
+        }
+        if (renderer != null) {
+            renderer.releaseLodMaterials();
         }
     }
 

@@ -49,7 +49,7 @@ class RemixRendererCameraFrameTest {
     void mediumErrorsStayLocalToTheMediumUpdate() throws Exception {
         RemixRenderer renderer = new RemixRenderer();
         Method update = RemixRenderer.class.getDeclaredMethod(
-                "updateCameraMedium", Camera.class, Vec3.class, float.class, float.class);
+                "updateCameraMedium", Camera.class, Vec3.class, float.class, float.class, float.class);
         update.setAccessible(true);
         for (RuntimeException error : new RuntimeException[] {
                 new RemixException("medium failed"), new IllegalStateException("medium failed")}) {
@@ -60,7 +60,7 @@ class RemixRendererCameraFrameTest {
                 }
             };
 
-            assertDoesNotThrow(() -> update.invoke(renderer, camera, Vec3.ZERO, 0.0f, 0.0f));
+            assertDoesNotThrow(() -> update.invoke(renderer, camera, Vec3.ZERO, 0.0f, 0.0f, 0.0f));
         }
     }
 }
