@@ -300,8 +300,10 @@ swaps proceed) and overrides LOD shading to `DISABLED` and transparency to
 skips its vanilla fade passes; `LodBufferContainerMixin` completes
 `uploadBuffersAsync` without uploading, so Distant Horizons keeps no GPU copy;
 `MinecraftClientWrapperMixin` keeps vanilla's cloud setting. Stopping restores
-both options and clears Distant Horizons' render cache, so it rebuilds with real
-buffers. `LodTerrain` builds meshes on low-priority threads, nearest
+both options. Distant Horizons reloads every section itself about two seconds
+after either option changes, so a start resends the sections built before it
+and a stop rebuilds them with real buffers.
+`LodTerrain` builds meshes on low-priority threads, nearest
 the camera first (`LodMeshBuilder`: vertex colour over a white texel as albedo,
 water as its own surface with the water material, normals from the face index),
 and installs them under a frame budget. `LodClip` removes exactly the chunk
@@ -444,12 +446,20 @@ diluting the sampler's candidate pool.
   together, so without the supported version installed, or with
   `rtxremix.lod.distantHorizons=false`, the mod behaves as if it were absent
   (`DistantHorizonsMixinPlugin`, `DistantHorizonsLod`).
-- LOD terrain never draws over a column Minecraft's terrain draws: its clip
-  follows `ChunkManager.drawnColumnGeneration` and `isColumnDrawn`, so any change
-  to when or how a column counts as published bumps the generation
-  (`ChunkManager`, `LodTerrain`).
+- The LOD clip removes the columns `ChunkManager.isColumnDrawn` reports (near the
+  camera, `isColumnPublished`) and follows `drawnColumnGeneration` at most
+  `CLIP_INTERVAL_FRAMES` frames late, so any change to when or how a column
+  counts as published or drawn bumps the generation. A section's mesh catches up
+  with its clip a build later, and a mesh built against a clip that has since
+  moved on is installed anyway; whatever overlaps Minecraft's terrain in between
+  sits `LodMeshBuilder.SINK` below its surfaces, so neither the clip nor the sink
+  may be removed (`ChunkManager`, `LodTerrain`, `LodMeshBuilder`).
 - A shown LOD section is hidden or replaced only in the frame what replaces it
-  is ready, or after its maximum linger (`LodSwapTracker`).
+  is ready, or after its maximum linger, except where ground is given up rather
+  than swapped: a mesh the budget evicts, the meshes a material release, a level
+  change or the end of capture drops, and a lingering or starved mesh that may
+  lie over columns Minecraft's terrain now draws (`LodSwapTracker`, `LodBudget`,
+  `LodTerrain.install`, `LodTerrain.starve`).
 - The game runs on the OpenGL backend. The GL interop, the composite, the
   weather overlay, and the sky generator's raw GL depend on it; on any other
   backend the renderer refuses to initialize rather than half-work

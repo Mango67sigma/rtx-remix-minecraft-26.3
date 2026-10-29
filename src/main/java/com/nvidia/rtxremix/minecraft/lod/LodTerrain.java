@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 the rtx-remix-minecraft-26.3 contributors.
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -62,8 +63,9 @@ import java.util.function.Predicate;
  * capped by {@link LodBudget}, and the clip follows the columns {@link ChunkManager}
  * publishes, rebuilding only the sections whose share of it changed.
  *
- * <p>Capture runs only while Remix draws the world; {@link #suspend} hands the terrain
- * back to the mod, which then draws it itself. Render thread only.
+ * <p>Capture runs only while Remix draws the world; {@link #suspend}, and {@link #clear}
+ * when the world goes, hand the terrain back to the mod, which then draws it itself.
+ * Render thread only.
  */
 public final class LodTerrain {
 
@@ -205,18 +207,14 @@ public final class LodTerrain {
     }
 
     /**
-     * Drops every mirrored section when the world goes. Runs from the client's task queue,
-     * so it lands before the next world's first frame. Sections of the next world arrive
+     * Ends the capture session when the world goes, as {@link #suspend} does, since no frame
+     * suspends it until another world is drawn: every mirrored section is dropped and the
+     * mod is left to itself. Runs from the client's task queue, so it lands before the next
+     * world's first frame, which starts a new session; sections of the next world arrive
      * afresh.
      */
     public void clear() {
-        if (!capturing) return;
-        epoch++;
-        dropEverything();
-        level = null;
-        budget = new LodBudget(budget.limitBytes());
-        resetClip();
-        LOGGER.info("LOD terrain cleared");
+        suspend();
     }
 
     /**
@@ -511,7 +509,7 @@ public final class LodTerrain {
         }
     }
 
-    /** Whether a lingering section's mesh was clipped for columns other than those drawn now. */
+    /** Whether a section's mesh was clipped for columns other than those drawn now. */
     private boolean liesOverDrawnTerrain(LodSection section) {
         long signature = clip.signature(section);
         return signature != 0 && signature != section.clipSignature;
@@ -529,9 +527,12 @@ public final class LodTerrain {
 
     // --- budget ---
 
-    /** Leaves a section unbuilt past the budget's radius, with nothing for a swap to wait on. */
+    /**
+     * Leaves a section past the budget's radius unbuilt, with nothing for a swap to wait on.
+     * A mesh it already has stays drawn unless it may lie over terrain Minecraft now draws.
+     */
     private void starve(LodSection section) {
-        dropMesh(section);
+        if (section.hasMesh() && liesOverDrawnTerrain(section)) dropMesh(section);
         section.starved = true;
         section.ready = true;
         swaps.update(section, frame);
@@ -709,7 +710,11 @@ public final class LodTerrain {
                 starve(section);
                 return false;
             }
-            for (int i = 0; i < giveUp; i++) starve(farther.get(i));
+            for (int i = 0; i < giveUp; i++) {
+                LodSection evicted = farther.get(i);
+                dropMesh(evicted);
+                starve(evicted);
+            }
             farthestScratch.clear();
         }
 

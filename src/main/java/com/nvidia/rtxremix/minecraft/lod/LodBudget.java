@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 the rtx-remix-minecraft-26.3 contributors.
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -13,8 +14,9 @@ import java.util.List;
  * take several times the mod's own bytes once Remix has built its buffers and acceleration
  * structures. A section that would overflow the cap gives way to nothing nearer than
  * itself: farther meshes are given up, farthest first, and if that is not enough the new
- * one is not installed. Either way the budget's radius shrinks to the nearest section left
- * out, and sections past it wait unbuilt until the radius grows back.
+ * one is not installed, the section keeping any mesh it had. Either way the budget's radius
+ * shrinks to the nearest section left out, and sections past it are not built again until
+ * the radius grows back, each keeping any mesh it still has.
  *
  * <p>Render thread only. The shrinking radius and its growing back follow
  * {@code LodTerrain.makeRoom} and {@code revisitStarved} in

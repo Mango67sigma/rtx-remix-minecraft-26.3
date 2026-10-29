@@ -53,10 +53,12 @@ class LodBuildQueueTest {
         LodBuildQueue queue = new LodBuildQueue();
         LodSection east = section(1024, 0);
         LodSection west = section(-1024, 0);
+        LodSection middle = section(0, 0);
         queue.add(east, false);
         queue.add(west, false);
+        queue.add(middle, false);
+        // Taking the east leaves the other two sorted for this camera, the middle next.
         assertSame(east, queue.poll(900, 0));
-        queue.add(east, false);
 
         queue.reorder();
 

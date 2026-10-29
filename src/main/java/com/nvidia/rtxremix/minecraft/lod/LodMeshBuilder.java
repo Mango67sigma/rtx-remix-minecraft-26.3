@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 the rtx-remix-minecraft-26.3 contributors.
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -45,8 +46,8 @@ final class LodMeshBuilder {
     static final int WATER_MATERIAL = 12;
     /** How far every LOD surface sits below where the mod puts it. */
     static final float SINK = 1f / 32f;
-    /** LOD water fills its block; a still water surface lies this much lower. */
-    static final float WATER_SINK = 0.125f;
+    /** How far a still water surface, 8/9 of a block high, lies below the top of the block LOD water fills. */
+    static final float WATER_SINK = 1f / 9f;
 
     static final int DOWN = 0;
     static final int UP = 1;

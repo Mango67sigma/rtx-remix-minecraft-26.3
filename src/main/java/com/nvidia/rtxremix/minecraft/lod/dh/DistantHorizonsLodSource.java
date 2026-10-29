@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 the rtx-remix-minecraft-26.3 contributors.
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -28,10 +29,13 @@ import org.slf4j.LoggerFactory;
  * overridden for as long, in its own API-override layer that its menu shows and that
  * leaves the player's choice in place: it stops baking face shading into its colours,
  * since Remix lights the terrain, and it keeps transparency complete, since only then does
- * it build the ground under water, which Remix sees through. Either change, and the end of
- * capture, rebuilds every section, which is how sections built before capture began reach
- * it. Distant Horizons' API calls are only valid once it has initialized and loaded a
- * world, so what start cannot do yet is retried every frame. Render thread only.
+ * it build the ground under water, which Remix sees through. Distant Horizons reloads
+ * every section itself about two seconds after either option changes, so each start and
+ * each stop rebuilds every section once: that is how sections built before capture began
+ * reach it, and how those built during it get real buffers again. Where neither option
+ * changes, because it refused both overrides, it is asked to rebuild instead. Distant
+ * Horizons' API calls are only valid once it has initialized and loaded a world, so what
+ * start cannot do yet is retried every frame. Render thread only.
  *
  * <p>The API calls follow {@code DistantHorizonsCompat} in
  * kazumasa200/rtx-remix-minecraft-26-3 (Apache-2.0).
@@ -68,8 +72,12 @@ final class DistantHorizonsLodSource implements LodSource {
     @Override
     public void update() {
         if (!capturing) return;
-        // The rebuild waits for the overrides, or it would rebuild with the player's options.
-        if (!configOverridden && !overrideConfig()) return;
+        if (!configOverridden) {
+            // The rebuild waits for the overrides, or it would rebuild with the player's options.
+            if (!overrideConfig()) return;
+            // An accepted override makes Distant Horizons rebuild every section itself.
+            if (shadingOverrideAccepted || transparencyOverrideAccepted) resendPending = false;
+        }
         if (resendPending && clearRenderData()) resendPending = false;
     }
 
@@ -77,15 +85,17 @@ final class DistantHorizonsLodSource implements LodSource {
     public void stopCapture() {
         capturing = false;
         resendPending = false;
+        boolean restored = false;
         IDhApiConfig configs = DhApi.Delayed.configs;
         if (configs != null) {
-            if (shadingOverrideAccepted) configs.graphics().lodShading().clearValue();
-            if (transparencyOverrideAccepted) configs.graphics().transparency().clearValue();
+            if (shadingOverrideAccepted && configs.graphics().lodShading().clearValue()) restored = true;
+            if (transparencyOverrideAccepted && configs.graphics().transparency().clearValue()) restored = true;
         }
         configOverridden = false;
         shadingOverrideAccepted = false;
         transparencyOverrideAccepted = false;
-        clearRenderData();
+        // A restored option makes Distant Horizons rebuild every section itself, with real buffers.
+        if (!restored) clearRenderData();
     }
 
     @Override

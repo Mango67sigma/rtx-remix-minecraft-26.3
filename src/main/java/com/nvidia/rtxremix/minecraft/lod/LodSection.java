@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 the rtx-remix-minecraft-26.3 contributors.
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -48,9 +49,9 @@ public final class LodSection {
     int liveIndex = -1;
     /** Whether the mod draws the section, as of the last change the render thread applied. */
     boolean wanted;
-    /** Whether a mesh of the current geometry is installed or none is needed: empty, clipped away, starved. */
+    /** Whether a mesh of the current geometry is installed or none is to be built: empty, clipped away, starved. */
     boolean ready;
-    /** Whether the section lies past what the mesh budget draws, so it waits unbuilt. */
+    /** Whether the section lies past what the mesh budget builds, so it is not rebuilt and keeps any mesh it has. */
     boolean starved;
     /** The installed mesh's instance, or null. Kept while a newer mesh builds, so nothing goes missing. */
     RemixInstance instance;

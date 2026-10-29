@@ -189,10 +189,11 @@ path-traced image covers, so that terrain shows only with path tracing off.
 
 Past the cap the farthest sections wait unbuilt: a new mesh first gives up
 meshes farther from the camera than itself, farthest first, and is left out if
-that is not enough. The radius at which that happened stops the building, and
-grows back once the camera moves while at most three quarters of the cap is in
-use. The view fade and the camera's far plane follow the smaller of Distant
-Horizons' radius and that one.
+that is not enough, while a section being rebuilt keeps the mesh it had. The
+radius at which that happened stops the building, and grows back once the
+camera moves while at most three quarters of the cap is in use. The view fade
+and the camera's far plane follow the smaller of Distant Horizons' radius and
+that one.
 
 The performance report counts the LOD terrain under `Lod`, a timing section for
 its render-thread work, and these per-frame counters:
@@ -208,7 +209,7 @@ its render-thread work, and these per-frame counters:
 | `Lod.Awaited` | Sections Distant Horizons draws whose mesh is not installed yet |
 | `Lod.Lingering` | Sections Distant Horizons stopped drawing, still shown while their replacement is built |
 | `Lod.Held` | Installed sections kept hidden while a section they overlap lingers |
-| `Lod.Starved` | Sections past the cap's radius, left unbuilt |
+| `Lod.Starved` | Sections past the cap's radius, not rebuilt; each keeps any mesh it had |
 
 The log reports each change of state:
 
@@ -221,7 +222,9 @@ LOD terrain capture stopped; Distant Horizons 3.3.4 draws its own terrain again
 
 Capture stops whenever Remix stops drawing the world (path tracing or world
 capture toggled off, no world loaded) and starts again with the next world
-frame; each start makes Distant Horizons rebuild every section once.
+frame. Each start overrides the two options, and Distant Horizons reloads every
+section itself about two seconds later; each stop restores them, which reloads
+every section again.
 
 ## Entities, Textures, And Particles
 

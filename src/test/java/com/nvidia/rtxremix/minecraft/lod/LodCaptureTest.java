@@ -4,6 +4,7 @@
  */
 package com.nvidia.rtxremix.minecraft.lod;
 
+import com.nvidia.rtxremix.minecraft.profiling.PerformanceTimer;
 import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
@@ -127,9 +128,11 @@ class LodCaptureTest {
     void theRendererIsAttachedForAsLongAsItExists() {
         LodCapture capture = new LodCapture();
         assertFalse(capture.isAttached());
-        capture.setAttached(true);
-        assertTrue(capture.isAttached());
-        capture.setAttached(false);
+
+        LodTerrain terrain = new LodTerrain(new PerformanceTimer(), capture, new IdleSource());
+        assertTrue(capture.isAttached(), "attached before any world is drawn");
+
+        terrain.destroy();
         assertFalse(capture.isAttached());
     }
 
@@ -149,5 +152,27 @@ class LodCaptureTest {
 
     private static void release(LodGeometry geometry) {
         if (geometry != null) geometry.release();
+    }
+
+    /** An LOD mod that never starts, so the renderer exists without capturing anything. */
+    private static final class IdleSource implements LodSource {
+        @Override
+        public void startCapture() {}
+
+        @Override
+        public void update() {}
+
+        @Override
+        public void stopCapture() {}
+
+        @Override
+        public int radiusChunks() {
+            return 0;
+        }
+
+        @Override
+        public String describe() {
+            return "an idle LOD mod";
+        }
     }
 }
