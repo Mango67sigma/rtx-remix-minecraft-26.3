@@ -223,6 +223,10 @@ dependencies {
     // Optional at runtime and never packaged: the LOD capture compiles against Distant
     // Horizons' API and the classes its mixins target, and applies only when it is installed.
     compileOnly "maven.modrinth:distanthorizons:3.3.4-26.3"
+    // Optional at runtime and never packaged: the entity capture reads Entity Culling's
+    // culling flags through its Cullable interface, and only when it is installed. Named by
+    // Modrinth version id, since its NeoForge build shares the version number 1.11.3.
+    compileOnly "maven.modrinth:entityculling:X1g3VhTx"
 
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
