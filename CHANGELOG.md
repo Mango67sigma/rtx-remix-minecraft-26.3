@@ -9,6 +9,19 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is the `mod_version` in `gradle.properties`, and it is
 also part of every mod file name.
 
+## Unreleased
+
+### Added
+
+- Entity Culling works alongside the path tracer: what it hides from the camera
+  stays in the path-traced scene for shadows and reflections. A block entity it
+  hides keeps the model it was last drawn with, where before it vanished, and an
+  entity it hides replays its last pose while moving with its live position,
+  rather than being captured afresh every frame, which keeps most of Entity
+  Culling's saving. A Copper Beacon it hides leaves the scene as before, since
+  its light follows its live pose. `-Drtxremix.entity.entityCulling=false`
+  captures as if Entity Culling were absent.
+
 ## 0.1.1 - 2026-10-29
 
 ### Added

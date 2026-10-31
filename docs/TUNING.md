@@ -250,6 +250,36 @@ every section again.
 | `rtxremix.particles.fastAirCollision` | Take a fast path through particle collision when every swept cell is air. Set to false to disable the fast path | `ParticleStateMixin` |
 | `rtxremix.particles.fastAirCollisionMaxBlocks` | Largest sweep, in cells, that the fast path handles | `ParticleStateMixin` |
 
+## Entity Culling
+
+With Entity Culling installed, in any version, what it hides from vanilla's
+render stays in the path-traced scene, where it still casts shadows and shows
+in reflections. An entity it culls, one no ray from the camera reaches, replays
+the pose recorded on its first culled frame, refreshed every 120 frames, and
+moves with its live position, so its gait and heading hold still; one carrying
+an item cannot replay a pose and is captured afresh every frame, as without
+Entity Culling. A block entity it withholds keeps the model it had when it was
+last drawn, and one never drawn has nothing to keep until vanilla draws it. A
+placed Copper Beacon leaves the scene as before, since its light follows its
+live pose.
+
+| Key | Effect | Owner |
+|---|---|---|
+| `rtxremix.entity.entityCulling` | Follow Entity Culling when it is installed. Set to false to capture as if it were absent: an entity it culls is then captured afresh every frame, and a block entity it withholds leaves the scene | `EntityCullingSupport` |
+
+The performance report counts what it kept, per frame:
+
+| Counter | Meaning |
+|---|---|
+| `Ent.Culled` | Entities the off-screen sweep reached that Entity Culling culled, kept in the scene by a replayed pose or one recorded this frame; part of `Ent.OffFrustum` |
+| `BE.Culled` | Block entities Entity Culling withheld whose parts stayed in the scene; part of `BE.Count`, which counts every block entity in the frame's scene, drawn or kept |
+
+The log says once whether the capture follows it:
+
+```text
+Entity Culling 1.11.3 found; what it culls keeps its last pose in the Remix scene
+```
+
 ## Profiling And Diagnostics
 
 | Key | Effect | Owner |

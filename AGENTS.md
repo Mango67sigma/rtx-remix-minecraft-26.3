@@ -370,6 +370,20 @@ shadow, so the outline post-process still draws. Entities outside vanilla's
 frustum are swept up closest-first under a budget, because a path tracer needs
 them for shadows and reflections, and an entity that owns a Remix light this
 frame is swept at any distance so its light never arrives without its housing.
+With Entity Culling installed (Fabric id `entityculling`, any version; a
+compile-only dependency, never packaged), what it hides stays in the scene at
+little cost. It hands vanilla's traversal an empty state for an entity no ray
+from the camera reaches, which leaves the entity to the sweep; one it reports
+culled replays the pose recorded on its first culled frame, at any distance and
+refreshed every 120 sweep frames, under a transform taken fresh each frame
+(`RemixEntityPass`). It cancels
+`BlockEntityRenderDispatcher.tryExtractRenderState` at its head, where no RETURN
+injector sees the cancel, so `BlockEntityRenderDispatcherMixin` wraps the method:
+a block entity left without a state although vanilla's own early returns pass
+keeps its retained parts as last captured (`RemixBlockEntityPass`,
+`RemixEntitySubmitter.keepOwner`), unless it is a placed Copper Beacon, whose
+light follows its live pose, or holds a streamed mesh. `EntityCullingSupport`
+gates both halves.
 `GameRendererMixin` diverts the first-person
 `FirstPersonHandsAndItemsRenderer.submitHandsWithItems` into the capture.
 Rigid occurrences retain instances keyed by owner, category, layer, and part;
@@ -446,6 +460,13 @@ diluting the sampler's candidate pool.
   together, so without the supported version installed, or with
   `rtxremix.lod.distantHorizons=false`, the mod behaves as if it were absent
   (`DistantHorizonsMixinPlugin`, `DistantHorizonsLod`).
+- Nothing outside `entity/ec/` names an Entity Culling type, and inside it only
+  `EntityCullingFlags` does; `EntityCullingSupport` gates every use, so without
+  the mod, or with `rtxremix.entity.entityCulling=false`, the capture behaves as
+  if it were absent (`EntityCullingBoundaryTest`). An entity Entity Culling culls
+  keeps its last pose under a live transform, and a block entity it withholds
+  keeps its retained parts, rather than leaving the scene (`RemixEntityPass`,
+  `RemixBlockEntityPass`).
 - The LOD clip removes the columns `ChunkManager.isColumnDrawn` reports (near the
   camera, `isColumnPublished`) and follows `drawnColumnGeneration` at most
   `CLIP_INTERVAL_FRAMES` frames late, so any change to when or how a column
