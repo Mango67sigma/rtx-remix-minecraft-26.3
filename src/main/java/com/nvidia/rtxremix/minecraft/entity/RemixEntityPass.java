@@ -8,6 +8,7 @@ import com.nvidia.rtxremix.minecraft.util.ClosestKHeap;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.nvidia.rtxremix.minecraft.ClientViewDistance;
+import com.nvidia.rtxremix.minecraft.entity.ec.EntityCullingSupport;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import org.slf4j.Logger;
@@ -46,9 +47,12 @@ import net.minecraft.world.phys.Vec3;
  *
  * <p>Both paths submit through the vanilla {@link EntityRenderDispatcher} into a
  * {@link RemixSubmitNodeCollector}, so Minecraft keeps ownership of animation, render
- * layers, multi-layer models and modded entities. Distant off-screen entities may replay a
- * cached pose instead of re-running the dispatcher; the world transform is still recomputed
- * every frame, so a reused pose lags an animation but never misplaces an entity.
+ * layers, multi-layer models and modded entities. Distant off-screen entities, and any that
+ * Entity Culling culled, may replay a cached pose instead of re-running the dispatcher; the
+ * world transform is still recomputed every frame, so a reused pose lags an animation but
+ * never misplaces an entity. Entity Culling hands vanilla's traversal an empty state for an
+ * entity no ray from the camera reaches, so such an entity is never captured in place and
+ * reaches the closing sweep even inside the frustum.
  *
  * <p>Native Remix calls belong to the submitter, not to this class.
  */
@@ -75,14 +79,21 @@ public class RemixEntityPass {
     private static final int DEFAULT_ENTITY_CULL_BLOCKS = DEFAULT_ENTITY_CULL_CHUNKS * 16;
 
     /**
-     * Off-screen entities closer than this always get a freshly evaluated pose.
-     * Near enough that their limbs can be a large part of a reflection, so a few
-     * frames of stale animation would be visible.
+     * Off-screen entities closer than this always get a freshly evaluated pose, unless
+     * Entity Culling culled them. Near enough that their limbs can be a large part of a
+     * reflection, so a few frames of stale animation would be visible.
      */
     private static final double POSE_REUSE_MIN_BLOCKS = 64.0;
     private static final double POSE_REUSE_MIN_SQ = POSE_REUSE_MIN_BLOCKS * POSE_REUSE_MIN_BLOCKS;
 
-    private static final int POSE_REFRESH_FRAMES = 4;
+    static final int POSE_REFRESH_FRAMES = 4;
+    /**
+     * How long, in sweep frames, an entity Entity Culling culled replays one recorded pose.
+     * No ray from the camera reaches it, so only its shadow and its reflections show it,
+     * and replaying is what keeps Entity Culling's saving: the culled entity is not
+     * extracted and evaluated again every frame. Its position is still taken fresh.
+     */
+    static final int CULLED_POSE_REFRESH_FRAMES = 120;
 
     private static final int TYPE_LOG_INTERVAL = 300;
 
@@ -110,7 +121,7 @@ public class RemixEntityPass {
     // native, and so the off-frustum sweep can be judged against the entities
     // the camera can actually see.
     private long frameCaptureNanos, frameSubmitNanos, frameOffSweepNanos;
-    private int frameOffCount, frameOffDraws, frameOffReused;
+    private int frameOffCount, frameOffDraws, frameOffReused, frameCulled;
     private Vec3 firstPersonShadowModelOffset = Vec3.ZERO;
     // Deltas of the submitter's running totals taken around this pass's own submits,
     // so what the submitter's other owners draw in the same frame stays out of them.
@@ -145,10 +156,12 @@ public class RemixEntityPass {
     }
 
     /**
-     * A captured animation pose, held so a distant off-screen entity can be
+     * A captured animation pose, held so a distant or culled off-screen entity can be
      * resubmitted without re-evaluating its model. The world transform is NOT part
      * of it: that is recomputed from the entity every frame, so a reused pose never
-     * puts the entity in the wrong place, it only lets its limbs lag.
+     * puts the entity in the wrong place, it only lets its limbs lag. The model's
+     * rotation is part of the pose, so a replayed entity also keeps the heading it
+     * was recorded with.
      *
      * <p>Rewritten in place on each refresh: an entity's snapshot is read only on the
      * frames between its own refreshes, so the storage can be reused instead of
@@ -160,7 +173,10 @@ public class RemixEntityPass {
         float[] boneData = new float[0];
         int boneCount;
         String typeKey;
-        long frame;
+        /** Sweep frame the pose was recorded in; its age bounds how stale a replay can be. */
+        long recordedFrame;
+        /** Sweep frame the pose was last recorded or replayed in; what eviction ages it by. */
+        long usedFrame;
 
         void resizeLayers(int count) {
             if (layers.length < count) {
@@ -196,13 +212,16 @@ public class RemixEntityPass {
         this.lightOwners = lightOwners;
     }
 
-    /** Drops poses for entities that have not been submitted for a while. */
+    /**
+     * Drops poses for entities that have not been submitted for a while. A culled entity
+     * replays one pose for many frames, so a pose ages by its last use, not its recording.
+     */
     private void evictStalePoseSnapshots() {
         if (poseSnapshots.size() <= MAX_ENTITIES) {
             return;
         }
         long oldest = sweepFrame - (long) POSE_REFRESH_FRAMES * 4L;
-        poseSnapshots.values().removeIf(snapshot -> snapshot.frame < oldest);
+        poseSnapshots.values().removeIf(snapshot -> snapshot.usedFrame < oldest);
     }
 
     /**
@@ -243,6 +262,7 @@ public class RemixEntityPass {
         frameOffCount = 0;
         frameOffDraws = 0;
         frameOffReused = 0;
+        frameCulled = 0;
         frameDraws = 0;
         frameMeshCreates = 0;
         transientBlockPass.beginFrame();
@@ -411,17 +431,18 @@ public class RemixEntityPass {
 
     /**
      * Totals for one frame's entity pass. Counts cover both in-place and off-frustum
-     * captures; the off-frustum fields are the subset from the closing sweep. Draw and
-     * mesh-create counts are this pass's own submits, not the submitter's frame totals,
-     * which also carry its other owners. Times are microseconds, sized for the
-     * counters they feed.
+     * captures; the off-frustum fields are the subset from the closing sweep, and
+     * {@code culled} is the part of that sweep Entity Culling culled that a replayed pose,
+     * or one recorded this frame, kept in the scene. Draw and mesh-create counts are this
+     * pass's own submits, not the submitter's frame totals, which also carry its other
+     * owners. Times are microseconds, sized for the counters they feed.
      */
     public record FrameStats(int entityCount, int layerCount, int boneCount,
                              int drawCount, int meshCreates, int capSkipped,
                              int captureMicros, int submitMicros,
                              int offFrustumCount, int offSweepMicros,
                              int offFrustumDraws, int offFrustumReused,
-                             int poolSize) {}
+                             int culled, int poolSize) {}
 
     /**
      * Closes the frame: sweeps up the nearby entities vanilla's frustum skipped,
@@ -475,7 +496,7 @@ public class RemixEntityPass {
                 frameCapSkipped,
                 (int) (frameCaptureNanos / 1000L), (int) (frameSubmitNanos / 1000L),
                 frameOffCount, (int) (frameOffSweepNanos / 1000L), frameOffDraws,
-                frameOffReused,
+                frameOffReused, frameCulled,
                 submitter.getPoolSize());
     }
 
@@ -617,30 +638,33 @@ public class RemixEntityPass {
     }
 
     /**
-     * Submits one off-frustum entity, reusing its recorded pose when it is far
-     * enough away and not due a refresh this frame.
+     * Submits one off-frustum entity, reusing its recorded pose when it may and the
+     * pose is not due a refresh this frame.
      *
-     * <p>Close entities are always evaluated: their limbs can be a large part of a
-     * reflection. Beyond that, a pose is reused for at most
-     * {@link #POSE_REFRESH_FRAMES} frames, and the entity's position is recomputed
-     * every frame regardless, so what lags is the animation and never the place.
+     * <p>A close entity Entity Culling did not cull is evaluated every frame: its limbs
+     * can be a large part of a reflection. Beyond that, a pose is reused for at most
+     * {@link #POSE_REFRESH_FRAMES} frames. An entity Entity Culling culled reuses one at
+     * any distance, for up to {@link #CULLED_POSE_REFRESH_FRAMES} frames, and its first
+     * culled frame is a full capture that records it. The entity's position is
+     * recomputed every frame regardless, so what lags is the animation and never the
+     * place.
      */
     private boolean submitOffFrustum(Entity entity, Vec3 cameraPos, float tickDelta,
                                      EntityRenderDispatcher dispatcher,
                                      RemixEntitySubmitter submitter) {
-        boolean far = entity.distanceToSqr(cameraPos) > POSE_REUSE_MIN_SQ;
-        if (far) {
+        boolean culled = EntityCullingSupport.isCulled(entity);
+        boolean reusesPose = reusesPose(culled, entity.distanceToSqr(cameraPos));
+        if (reusesPose) {
             PoseSnapshot snapshot = poseSnapshots.get(entity.getId());
-            // The stagger spreads refreshes across frames; the age test is what bounds
-            // the lag. In-place captures record no pose, so an entity that has been on
-            // screen for a while still holds the snapshot from before it entered the
-            // frustum, and the stagger alone would replay that for up to three frames.
-            boolean dueRefresh = snapshot == null
-                    || sweepFrame - snapshot.frame >= POSE_REFRESH_FRAMES
-                    || Math.floorMod(entity.getId() + sweepFrame, POSE_REFRESH_FRAMES) == 0;
-            if (!dueRefresh && capturedIds.add(entity.getId())) {
+            if (snapshot != null
+                    && !poseRefreshDue(culled, sweepFrame - snapshot.recordedFrame,
+                            entity.getId(), sweepFrame)
+                    && capturedIds.add(entity.getId())) {
                 if (replayPose(entity, snapshot, tickDelta, submitter)) {
                     frameOffReused++;
+                    if (culled) {
+                        frameCulled++;
+                    }
                     return true;
                 }
                 // Replay failed, so fall through to a full capture. The id is already
@@ -648,7 +672,43 @@ public class RemixEntityPass {
                 capturedIds.remove(entity.getId());
             }
         }
-        return captureAndSubmit(entity, dispatcher, tickDelta, submitter, far);
+        boolean claimed = captureAndSubmit(entity, dispatcher, tickDelta, submitter, reusesPose);
+        if (culled && poseRecordedThisFrame(entity.getId())) {
+            frameCulled++;
+        }
+        return claimed;
+    }
+
+    /**
+     * Whether an off-screen entity may replay a recorded pose instead of being captured
+     * afresh: Entity Culling culled it, so no ray from the camera reaches it, or it stands
+     * beyond {@link #POSE_REUSE_MIN_BLOCKS}.
+     */
+    static boolean reusesPose(boolean culled, double distSq) {
+        return culled || distSq > POSE_REUSE_MIN_SQ;
+    }
+
+    /**
+     * Whether a recorded pose is due a fresh capture this sweep frame. A culled entity's
+     * pose is refreshed every {@link #CULLED_POSE_REFRESH_FRAMES} frames, any other's
+     * every {@link #POSE_REFRESH_FRAMES}.
+     *
+     * <p>The stagger by entity id spreads the refreshes of many entities across frames;
+     * the age test is what bounds the lag. In-place captures record no pose, so an entity
+     * that has been on screen for a while still holds the pose from before it entered the
+     * frustum, and the stagger alone would replay that until its next stagger frame.
+     *
+     * @param poseAge sweep frames since the pose was recorded
+     */
+    static boolean poseRefreshDue(boolean culled, long poseAge, int entityId, long sweepFrame) {
+        int refreshFrames = culled ? CULLED_POSE_REFRESH_FRAMES : POSE_REFRESH_FRAMES;
+        return poseAge >= refreshFrames || Math.floorMod(entityId + sweepFrame, refreshFrames) == 0;
+    }
+
+    /** Whether this sweep frame's capture recorded the entity's pose; one carrying baked parts records none. */
+    private boolean poseRecordedThisFrame(int entityId) {
+        PoseSnapshot snapshot = poseSnapshots.get(entityId);
+        return snapshot != null && snapshot.recordedFrame == sweepFrame;
     }
 
     /**
@@ -709,7 +769,8 @@ public class RemixEntityPass {
         System.arraycopy(result.boneData(), 0, snapshot.boneData, 0, boneFloats);
         snapshot.boneCount = result.boneCount();
         snapshot.typeKey = result.entityTypeKey();
-        snapshot.frame = sweepFrame;
+        snapshot.recordedFrame = sweepFrame;
+        snapshot.usedFrame = sweepFrame;
     }
 
     /**
@@ -744,6 +805,7 @@ public class RemixEntityPass {
         if (layers.isEmpty()) {
             return false;
         }
+        snapshot.usedFrame = sweepFrame;
         EntityCaptureResult result = new EntityCaptureResult(
                 entity,
                 entity.getPosition(tickDelta),

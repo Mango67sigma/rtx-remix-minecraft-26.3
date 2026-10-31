@@ -217,6 +217,7 @@ public class RemixRenderer {
     private int cntEntOffFrustum = -1;
     private int cntEntOffDraws = -1;
     private int cntEntOffReused = -1;
+    private int cntEntCulled = -1;
     private int cntEntPoolSize = -1;
     private int perfBlockEntityCapture = -1;
     private int perfBlockEntitySubmit = -1;
@@ -415,6 +416,9 @@ public class RemixRenderer {
             cntEntOffFrustum = perfTimer.registerCounter("Ent.OffFrustum");
             cntEntOffDraws = perfTimer.registerCounter("Ent.OffDraws");
             cntEntOffReused = perfTimer.registerCounter("Ent.OffReused");
+            // Swept entities Entity Culling culled that a replayed or freshly recorded
+            // pose kept in the scene; a subset of Ent.OffFrustum.
+            cntEntCulled = perfTimer.registerCounter("Ent.Culled");
             cntEntPoolSize = perfTimer.registerCounter("Ent.PoolSize");
             // Block entities are captured and submitted in place during vanilla's
             // world render, so both halves are timed there and injected here.
@@ -904,6 +908,7 @@ public class RemixRenderer {
                         perfTimer.injectNanos(perfEntOffSweep, stats.offSweepMicros() * 1000L);
                         perfTimer.count(cntEntOffDraws, stats.offFrustumDraws());
                         perfTimer.count(cntEntOffReused, stats.offFrustumReused());
+                        perfTimer.count(cntEntCulled, stats.culled());
                         perfTimer.count(cntEntPoolSize, stats.poolSize());
                     } catch (Exception e) {
                         LOGGER.error("Error rendering entities", e);
