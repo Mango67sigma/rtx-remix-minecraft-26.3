@@ -622,6 +622,7 @@ public class RemixEntitySubmitter {
     private RemixMesh pendingPartMesh;
     private RigidMeshKey pendingPartKey;
     private final Supplier<RetainedEntityPart> PENDING_PART_FACTORY = this::createPendingRetainedPart;
+    private final Predicate<RetainedEntityPart> POOLED_MESH_CLAIM = this::claimPooledMesh;
     private final EntityMaterialLookupKey materialLookupKey = new EntityMaterialLookupKey();
     private final Map<EntityMaterialKey, RemixMaterial> materialCache = new HashMap<>();
     /**
@@ -791,6 +792,40 @@ public class RemixEntitySubmitter {
         } finally {
             frameOpen = false;
         }
+    }
+
+    /**
+     * Keeps every retained part of an owner the frame does not submit in the scene as it
+     * stands: each instance keeps its mesh and its last transform, and {@link #endFrame}
+     * does not retire it. Makes no native call and allocates nothing. Only parts on pooled
+     * meshes can be kept, see {@link #claimPooledMesh}; an owner holding any other part is
+     * not kept, and retires whole at endFrame like any owner the frame did not reach.
+     *
+     * @return whether the owner's parts were kept; false when no frame is open, the owner
+     *         holds no parts, or one of them cannot be kept
+     */
+    boolean keepOwner(Object owner) {
+        return frameOpen && retainedEntityParts.keepOwner(owner, POOLED_MESH_CLAIM);
+    }
+
+    /**
+     * Whether a part's mesh outlives this frame without the part being drawn, claiming it
+     * for the frame when it does: a mesh still pooled under the part's key is marked used,
+     * so {@link #evictColdRigidMeshesIfNeeded} passes it over. A mesh streamed for one
+     * frame, a beam or a strip, is destroyed a frame after it was built, and a placed
+     * beacon's lens mesh lives and dies with that beacon's lens assets; neither is pooled.
+     */
+    private boolean claimPooledMesh(RetainedEntityPart part) {
+        if (part.instance.isDeletedFast()) {
+            return false;
+        }
+        RemixMesh mesh = part.instance.getMesh();
+        PooledMesh pooled = rigidMeshPool.get(part.meshKey);
+        if (pooled == null || pooled.mesh != mesh || mesh.isDeletedFast()) {
+            return false;
+        }
+        pooled.lastUsedFrame = frameIndex();
+        return true;
     }
 
     /**

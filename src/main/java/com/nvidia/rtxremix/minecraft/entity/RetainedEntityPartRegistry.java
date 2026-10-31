@@ -66,11 +66,26 @@ final class RetainedEntityPartRegistry<O, V> {
         }
     }
 
+    /** Offers each part of one owner to {@link #keepOwner}'s predicate, noting a refusal. */
+    private static final class KeepVisitor<V> implements Consumer<Entry<V>> {
+        Predicate<? super V> keepable;
+        boolean refused;
+
+        @Override
+        public void accept(Entry<V> entry) {
+            if (!refused && !keepable.test(entry.value)) {
+                refused = true;
+            }
+        }
+    }
+
     private final IdentityHashMap<O, Map<Slot, Entry<V>>> owners = new IdentityHashMap<>();
     private final SlotProbe slotProbe = new SlotProbe();
     private long frameIndex;
     private boolean frameOpen;
     private int size;
+    private final KeepVisitor<V> keepVisitor = new KeepVisitor<>();
+    private final Consumer<Entry<V>> markSeen = entry -> entry.lastSeenFrame = frameIndex;
 
     void beginFrame() {
         if (frameOpen) {
@@ -129,6 +144,29 @@ final class RetainedEntityPartRegistry<O, V> {
         for (Entry<V> entry : parts.values()) {
             retire.accept(entry.value);
         }
+    }
+
+    /**
+     * Carries every part {@code owner} holds into the open frame as it stands, as though
+     * each had been retained again unchanged, so {@link #endFrame} keeps it. {@code keepable}
+     * is offered the parts before any is carried and may claim what a part needs to outlive
+     * the frame; when it refuses one, none is carried and endFrame retires the owner whole.
+     * The parts are visited through reusable visitors, so a call allocates nothing.
+     *
+     * @return whether the owner's parts were carried; false when it holds none or one was refused
+     */
+    boolean keepOwner(O owner, Predicate<? super V> keepable) {
+        requireOpenFrame();
+        Map<Slot, Entry<V>> parts = owners.get(owner);
+        if (parts == null) return false;
+
+        keepVisitor.keepable = keepable;
+        keepVisitor.refused = false;
+        parts.values().forEach(keepVisitor);
+        if (keepVisitor.refused) return false;
+
+        parts.values().forEach(markSeen);
+        return true;
     }
 
     void discardIf(Predicate<? super V> predicate, Consumer<? super V> retire) {

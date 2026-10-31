@@ -222,6 +222,7 @@ public class RemixRenderer {
     private int perfBlockEntityCapture = -1;
     private int perfBlockEntitySubmit = -1;
     private int cntBlockEntities = -1;
+    private int cntBlockEntityCulled = -1;
     private int cntBlockEntityParts = -1;
     private int cntBlockEntityMeshCreates = -1;
     private long lastCameraMediumHandle = Long.MIN_VALUE;
@@ -426,6 +427,9 @@ public class RemixRenderer {
             perfBlockEntitySubmit = perfTimer.registerSection("BE.Submit");
             perfSubmit = perfTimer.registerSection("Submit");
             cntBlockEntities = perfTimer.registerCounter("BE.Count");
+            // Block entities Entity Culling withheld whose parts stayed in the scene; a
+            // subset of BE.Count.
+            cntBlockEntityCulled = perfTimer.registerCounter("BE.Culled");
             cntBlockEntityParts = perfTimer.registerCounter("BE.Parts");
             cntBlockEntityMeshCreates = perfTimer.registerCounter("BE.MeshCreates");
             perfAtlas = perfTimer.registerSection("Atlas");
@@ -755,6 +759,25 @@ public class RemixRenderer {
     }
 
     /**
+     * Keeps a block entity Entity Culling withheld from this frame's extraction in the
+     * scene as it was last captured, rather than retiring it with the block entities
+     * vanilla left out.
+     *
+     * <p>Called from {@code BlockEntityRenderDispatcherMixin} while vanilla extracts the
+     * frame, which is before the capture window opens, so the pass notes the block entity
+     * here and keeps its parts when {@link #closeEntityFrame} closes the window.
+     */
+    public void keepWithheldBlockEntity(BlockEntity be) {
+        if (!initialized || remixApi == null || blockEntityPass == null || entitySubmitter == null) {
+            return;
+        }
+        if (!RtxRemixMod.isRtxEnabled() || !RtxRemixMod.isBlockEntitiesEnabled()) {
+            return;
+        }
+        blockEntityPass.noteWithheld(be);
+    }
+
+    /**
      * Captures one block's breaking crack at vanilla's own render point, in place of
      * the render that would have gone to OpenGL.
      *
@@ -1064,19 +1087,23 @@ public class RemixRenderer {
     }
 
     /**
-     * Retires entity parts and closes the block-entity frame, publishing its counters
-     * while the block-entity toggle is on so a disabled frame contributes no zero sample.
-     * Block entities are captured and submitted in place during vanilla's world render,
-     * inside the entity frame this closes. Retirement runs before Submit: an instance
-     * destroyed after the submit is still in that frame's scene.
+     * Keeps the block entities Entity Culling withheld, retires entity parts and closes
+     * the block-entity frame, publishing its counters while the block-entity toggle is on
+     * so a disabled frame contributes no zero sample. Block entities are captured and
+     * submitted in place during vanilla's world render, inside the entity frame this
+     * closes; the withheld ones are kept first, or the retirement would take them.
+     * Retirement runs before Submit: an instance destroyed after the submit is still in
+     * that frame's scene.
      */
     private void closeEntityFrame() {
+        blockEntityPass.keepWithheld(entitySubmitter);
         entitySubmitter.endFrame();
         RemixBlockEntityPass.FrameStats stats = blockEntityPass.finishFrame();
         if (!RtxRemixMod.isBlockEntitiesEnabled()) {
             return;
         }
         perfTimer.count(cntBlockEntities, stats.count());
+        perfTimer.count(cntBlockEntityCulled, stats.culled());
         perfTimer.count(cntBlockEntityParts, stats.parts());
         perfTimer.count(cntBlockEntityMeshCreates, stats.meshCreates());
         perfTimer.injectNanos(perfBlockEntityCapture, stats.captureMicros() * 1000L);

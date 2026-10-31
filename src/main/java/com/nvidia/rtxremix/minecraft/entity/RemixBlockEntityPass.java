@@ -6,9 +6,11 @@ package com.nvidia.rtxremix.minecraft.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.nvidia.rtxremix.InstanceCategoryBit;
+import com.nvidia.rtxremix.minecraft.block.CopperBeaconBlockEntity;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
 import net.minecraft.client.renderer.SubmitNodeCollector;
@@ -36,11 +38,14 @@ import net.minecraft.world.phys.Vec3;
  * <p>Block entities share the submitter's retained registry, mesh pool and material
  * cache with entities, so this pass holds no native state. A block entity vanilla does
  * not submit in a frame, because it is culled, out of range or unloaded, is simply
- * absent, and the submitter's {@code endFrame} retires its parts. There is no frame
- * bracket of its own: capture runs inside the submitter's open frame, and
- * {@link #finishFrame} only reports the frame's counters. Shadows of a spawner's
- * display entity never reach the scene: the capture collector drops shadow submits,
- * and Remix traces the real one.
+ * absent, and the submitter's {@code endFrame} retires its parts. The exception is a
+ * block entity Entity Culling withheld where vanilla would have extracted it: one no ray
+ * from the camera reaches, and by default one outside the view. It still casts shadows
+ * and shows in reflections, so {@link #keepWithheld} keeps its parts as they were when
+ * it was last captured. There is no frame bracket of its own: capture runs inside the
+ * submitter's open frame, and {@link #finishFrame} only reports the frame's counters.
+ * Shadows of a spawner's display entity never reach the scene: the capture collector
+ * drops shadow submits, and Remix traces the real one.
  */
 public final class RemixBlockEntityPass {
 
@@ -67,12 +72,14 @@ public final class RemixBlockEntityPass {
     }
 
     /**
-     * Totals for one frame's block-entity captures. Part and mesh-create counts are
-     * this pass's own submits, taken as deltas of the submitter's running totals,
-     * which also carry entities. Times are microseconds, sized for the counters they
-     * feed.
+     * Totals for one frame's block entities. {@code count} is the block entities in the
+     * frame's scene, captured or kept, and {@code culled} those of them kept because
+     * Entity Culling withheld them. Part and mesh-create counts are this pass's own
+     * submits, taken as deltas of the submitter's running totals, which also carry
+     * entities; a kept block entity submits nothing. Times are microseconds, sized for
+     * the counters they feed.
      */
-    public record FrameStats(int count, int parts, int meshCreates,
+    public record FrameStats(int count, int culled, int parts, int meshCreates,
                              int captureMicros, int submitMicros) {}
 
     private final RecyclingMatrixStack matrices = new RecyclingMatrixStack();
@@ -84,7 +91,13 @@ public final class RemixBlockEntityPass {
     // overwrites them.
     private float[] reusableBoneData = new float[0];
 
-    private int frameCount, frameParts, frameMeshCreates;
+    /**
+     * Block entities Entity Culling withheld from this frame's extraction. Vanilla extracts
+     * before the frame's capture window opens, so they wait here for {@link #keepWithheld}.
+     */
+    private final List<BlockEntity> withheld = new ArrayList<>();
+
+    private int frameCount, frameCulled, frameParts, frameMeshCreates;
     private long frameCaptureNanos, frameSubmitNanos;
 
     /**
@@ -159,15 +172,58 @@ public final class RemixBlockEntityPass {
     }
 
     /**
+     * Notes a block entity Entity Culling withheld from this frame's extraction, so that
+     * {@link #keepWithheld} keeps its parts in the scene. A kept block entity shows the
+     * pose it had when it was last extracted. See {@link #keepsWithheld} for which are
+     * noted.
+     */
+    public void noteWithheld(BlockEntity be) {
+        if (keepsWithheld(be.hasLevel(), be.isRemoved(), be instanceof CopperBeaconBlockEntity)) {
+            withheld.add(be);
+        }
+    }
+
+    /**
+     * Whether a block entity Entity Culling withheld keeps its parts: it must still be in
+     * its level, and its pose must not steer a light. A placed Copper Beacon's light
+     * follows its live pose every frame, and a head held at an older angle would stand in
+     * its own beam, so a withheld beacon retires like any block entity the frame did not
+     * reach.
+     */
+    static boolean keepsWithheld(boolean hasLevel, boolean removed, boolean posesLight) {
+        return hasLevel && !removed && !posesLight;
+    }
+
+    /**
+     * Keeps the parts of the block entities noted this frame in the submitter's open
+     * frame, then forgets them; see {@link RemixEntitySubmitter#keepOwner}. Called as the
+     * entity frame closes, before the submitter's {@code endFrame} would retire them. One
+     * never captured holds no parts, and one holding a part that cannot be kept retires;
+     * neither counts.
+     */
+    public void keepWithheld(RemixEntitySubmitter submitter) {
+        for (int i = 0, n = withheld.size(); i < n; i++) {
+            if (submitter.keepOwner(withheld.get(i))) {
+                frameCount++;
+                frameCulled++;
+            }
+        }
+        // Released at once: a world switch between frames would otherwise keep the
+        // unloaded level reachable through them.
+        withheld.clear();
+    }
+
+    /**
      * Reports and zeroes the frame's totals. Called once per frame from
      * {@code renderAndSubmitFrame}; retiring the block entities vanilla did not
      * submit belongs to the submitter's {@code endFrame}.
      */
     public FrameStats finishFrame() {
         failures.endFrame();
-        FrameStats stats = new FrameStats(frameCount, frameParts, frameMeshCreates,
+        FrameStats stats = new FrameStats(frameCount, frameCulled, frameParts, frameMeshCreates,
                 (int) (frameCaptureNanos / 1000L), (int) (frameSubmitNanos / 1000L));
         frameCount = 0;
+        frameCulled = 0;
         frameParts = 0;
         frameMeshCreates = 0;
         frameCaptureNanos = 0L;

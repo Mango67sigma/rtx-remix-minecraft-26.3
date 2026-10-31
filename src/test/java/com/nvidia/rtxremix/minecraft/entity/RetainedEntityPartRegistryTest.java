@@ -7,10 +7,13 @@ package com.nvidia.rtxremix.minecraft.entity;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -138,6 +141,90 @@ class RetainedEntityPartRegistryTest {
 
         assertEquals(List.of(stringPart), retired);
         assertEquals(1, registry.size());
+    }
+
+    @Test
+    void keepOwnerCarriesEveryPartThroughAFrameThatDoesNotSubmitThem() {
+        RetainedEntityPartRegistry<Object, String> registry = new RetainedEntityPartRegistry<>();
+        Object chest = new Object();
+        List<String> retired = new ArrayList<>();
+
+        registry.beginFrame();
+        registry.retain(chest, 0, 0, 0, value -> true, () -> "lid", retired::add);
+        registry.retain(chest, 0, 0, 1, value -> true, () -> "base", retired::add);
+        registry.endFrame(retired::add);
+
+        registry.beginFrame();
+        List<String> offered = new ArrayList<>();
+        assertTrue(registry.keepOwner(chest, offered::add));
+        registry.endFrame(retired::add);
+
+        assertEquals(Set.of("lid", "base"), new HashSet<>(offered));
+        assertTrue(retired.isEmpty());
+        assertEquals(2, registry.size());
+
+        // Kept for one frame only: a frame that neither submits nor keeps it retires it.
+        registry.beginFrame();
+        registry.endFrame(retired::add);
+
+        assertEquals(Set.of("lid", "base"), new HashSet<>(retired));
+        assertEquals(0, registry.size());
+    }
+
+    @Test
+    void keepOwnerCarriesNoPartWhenOneIsRefused() {
+        RetainedEntityPartRegistry<Object, String> registry = new RetainedEntityPartRegistry<>();
+        Object gateway = new Object();
+        List<String> retired = new ArrayList<>();
+
+        registry.beginFrame();
+        registry.retain(gateway, 0, 0, 0, value -> true, () -> "frame", retired::add);
+        registry.retain(gateway, 0, 1, 0, value -> true, () -> "beam", retired::add);
+        registry.endFrame(retired::add);
+
+        registry.beginFrame();
+        assertFalse(registry.keepOwner(gateway, value -> !value.equals("beam")));
+        assertTrue(retired.isEmpty(), "a refused owner is left to endFrame");
+        registry.endFrame(retired::add);
+
+        assertEquals(Set.of("frame", "beam"), new HashSet<>(retired));
+        assertEquals(0, registry.size());
+    }
+
+    @Test
+    void keepOwnerKeepsNothingForAnOwnerWithoutParts() {
+        RetainedEntityPartRegistry<Object, String> registry = new RetainedEntityPartRegistry<>();
+
+        registry.beginFrame();
+        assertFalse(registry.keepOwner(new Object(), value -> fail("an owner without parts offers none")));
+        registry.endFrame(value -> fail("nothing was retained"));
+    }
+
+    @Test
+    void keepingOneOwnerLeavesTheOthersToRetire() {
+        RetainedEntityPartRegistry<Object, String> registry = new RetainedEntityPartRegistry<>();
+        Object kept = new Object();
+        Object gone = new Object();
+        List<String> retired = new ArrayList<>();
+
+        registry.beginFrame();
+        registry.retain(kept, 0, 0, 0, value -> true, () -> "kept", retired::add);
+        registry.retain(gone, 0, 0, 0, value -> true, () -> "gone", retired::add);
+        registry.endFrame(retired::add);
+
+        registry.beginFrame();
+        assertTrue(registry.keepOwner(kept, value -> true));
+        registry.endFrame(retired::add);
+
+        assertEquals(List.of("gone"), retired);
+        assertEquals(1, registry.size());
+    }
+
+    @Test
+    void keepOwnerNeedsAnOpenFrame() {
+        RetainedEntityPartRegistry<Object, String> registry = new RetainedEntityPartRegistry<>();
+
+        assertThrows(IllegalStateException.class, () -> registry.keepOwner(new Object(), value -> true));
     }
 
     @Test
