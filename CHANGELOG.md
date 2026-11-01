@@ -9,7 +9,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is the `mod_version` in `gradle.properties`, and it is
 also part of every mod file name.
 
-## Unreleased
+## 0.1.2 - 2026-11-01
 
 ### Added
 
