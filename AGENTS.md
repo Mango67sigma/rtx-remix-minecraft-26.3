@@ -370,20 +370,24 @@ shadow, so the outline post-process still draws. Entities outside vanilla's
 frustum are swept up closest-first under a budget, because a path tracer needs
 them for shadows and reflections, and an entity that owns a Remix light this
 frame is swept at any distance so its light never arrives without its housing.
-With Entity Culling installed (Fabric id `entityculling`, any version; a
-compile-only dependency, never packaged), what it hides stays in the scene at
-little cost. It hands vanilla's traversal an empty state for an entity no ray
-from the camera reaches, which leaves the entity to the sweep; one it reports
-culled replays the pose recorded on its first culled frame, at any distance and
-refreshed every 120 sweep frames, under a transform taken fresh each frame
-(`RemixEntityPass`). It cancels
-`BlockEntityRenderDispatcher.tryExtractRenderState` at its head, where no RETURN
-injector sees the cancel, so `BlockEntityRenderDispatcherMixin` wraps the method:
-a block entity left without a state although vanilla's own early returns pass
-keeps its retained parts as last captured (`RemixBlockEntityPass`,
-`RemixEntitySubmitter.keepOwner`), unless it is a placed Copper Beacon, whose
-light follows its live pose, or holds a streamed mesh. `EntityCullingSupport`
-gates both halves.
+With Entity Culling installed (Fabric id `entityculling`, any version whose
+culling flags the mod can read; a compile-only dependency, never packaged), what
+it hides stays in the scene at little cost. It hands vanilla's traversal an empty
+state for an entity no ray from the camera reaches, which leaves the entity to the
+sweep. The sweep admits such an entity as far as vanilla itself would render it,
+within the `MAX_ENTITIES` budget, and replays the pose recorded on its first
+culled frame under a transform taken fresh each frame: refreshed every 120 sweep
+frames, and only while the sweep reaches it on every frame (`RemixEntityPass`). It
+cancels `BlockEntityRenderDispatcher.tryExtractRenderState` at its head, where no
+RETURN injector sees the cancel, so the third mixin config, applied only while
+`EntityCullingMixinPlugin` finds the mod and its switch on, wraps the method
+(`mixin/entityculling/`): a block entity left without a state although vanilla's
+own early returns pass keeps its retained parts as last captured
+(`RemixBlockEntityPass`, `RemixEntitySubmitter.keepOwner`), unless it is a placed
+Copper Beacon, whose light follows its live pose, or holds a streamed mesh. One
+that holds no parts is asked back into view for the second of grace Entity
+Culling gives whatever comes back into view. `EntityCullingSupport` gates both
+halves.
 `GameRendererMixin` diverts the first-person
 `FirstPersonHandsAndItemsRenderer.submitHandsWithItems` into the capture.
 Rigid occurrences retain instances keyed by owner, category, layer, and part;
@@ -461,12 +465,15 @@ diluting the sampler's candidate pool.
   `rtxremix.lod.distantHorizons=false`, the mod behaves as if it were absent
   (`DistantHorizonsMixinPlugin`, `DistantHorizonsLod`).
 - Nothing outside `entity/ec/` names an Entity Culling type, and inside it only
-  `EntityCullingFlags` does; `EntityCullingSupport` gates every use, so without
-  the mod, or with `rtxremix.entity.entityCulling=false`, the capture behaves as
-  if it were absent (`EntityCullingBoundaryTest`). An entity Entity Culling culls
-  keeps its last pose under a live transform, and a block entity it withholds
-  keeps its retained parts, rather than leaving the scene (`RemixEntityPass`,
-  `RemixBlockEntityPass`).
+  `EntityCullingFlags` does; `EntityCullingSupport` gates every use and
+  `EntityCullingMixinPlugin` the hook, so without the mod, or with
+  `rtxremix.entity.entityCulling=false`, the capture behaves as if it were absent
+  (`EntityCullingBoundaryTest`). An entity Entity Culling culls keeps its last pose
+  under a live transform while the closing sweep admits it (as far as vanilla
+  would render it, within the `MAX_ENTITIES` budget), and a block entity it
+  withholds keeps its retained parts unless it is a placed Copper Beacon, holds a
+  streamed mesh, or holds none, never captured or cleared by a reload, in which
+  case it is asked back into view (`RemixEntityPass`, `RemixBlockEntityPass`).
 - The LOD clip removes the columns `ChunkManager.isColumnDrawn` reports (near the
   camera, `isColumnPublished`) and follows `drawnColumnGeneration` at most
   `CLIP_INTERVAL_FRAMES` frames late, so any change to when or how a column

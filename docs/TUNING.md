@@ -252,20 +252,27 @@ every section again.
 
 ## Entity Culling
 
-With Entity Culling installed, in any version, what it hides from vanilla's
-render stays in the path-traced scene, where it still casts shadows and shows
-in reflections. An entity it culls, one no ray from the camera reaches, replays
-the pose recorded on its first culled frame, refreshed every 120 frames, and
-moves with its live position, so its gait and heading hold still; one carrying
-an item cannot replay a pose and is captured afresh every frame, as without
-Entity Culling. A block entity it withholds keeps the model it had when it was
-last drawn, and one never drawn has nothing to keep until vanilla draws it. A
-placed Copper Beacon leaves the scene as before, since its light follows its
-live pose.
+With Entity Culling installed, in any version whose culling flags the mod can
+read, what it hides from vanilla's render stays in the path-traced scene, where
+it still casts shadows and shows in reflections. An entity it culls, one no ray
+from the camera reaches, stays as far as vanilla itself would render it, within
+the capture's budget of 256 entities. It replays the pose recorded on its first
+culled frame, refreshed every 120 frames, and moves with its live position, so
+its gait and heading hold still; one carrying an item cannot replay a pose and
+is captured afresh every frame, as without Entity Culling.
+
+A block entity it withholds keeps the model it had when it was last drawn. One
+with nothing to keep, never drawn since it came into range or cleared by a
+texture or material reload, is asked back into view: Entity Culling shows it for
+the second of grace it gives whatever comes back into view, which costs it that
+second of rendering the block entity, and the model drawn then is kept. One
+withheld for lying outside the view returns once it comes into view. A placed
+Copper Beacon keeps its light and its mount; only its yoke and lens leave the
+scene, since a head held at an older angle would stand in its own beam.
 
 | Key | Effect | Owner |
 |---|---|---|
-| `rtxremix.entity.entityCulling` | Follow Entity Culling when it is installed. Set to false to capture as if it were absent: an entity it culls is then captured afresh every frame, and a block entity it withholds leaves the scene | `EntityCullingSupport` |
+| `rtxremix.entity.entityCulling` | Follow Entity Culling when it is installed. Set to false to capture as if it were absent, with its hook on block-entity extraction not applied at all: an entity it culls is then captured afresh every frame, and a block entity it withholds leaves the scene | `EntityCullingSupport`, `EntityCullingMixinPlugin` |
 
 The performance report counts what it kept, per frame:
 

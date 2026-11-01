@@ -34,9 +34,9 @@ and there are bugs yet to be found. Two things to know before a long session:
   set by RTX Remix; turning path tracing off gives them back. It needs more
   memory than the mod alone: give the game a 6 GB heap, `-Xmx6G`, in place of
   the 2 GB the installer sets, or its terrain generation stalls the game in
-  garbage collection. Entity Culling, in any version, works alongside the mod:
-  what it hides from view still casts shadows and shows in reflections, held in
-  the pose it was last seen in.
+  garbage collection. With Entity Culling installed, what it hides from view
+  still casts shadows and shows in reflections, held in the pose it was last seen
+  in; a hidden Copper Beacon keeps only its light and its mount.
 - **Scope.** It targets Minecraft 26.3 only. Blocks, mobs, dimensions, and
   situations the showcase never reaches have had less care, and some will look
   wrong or run slowly.
