@@ -1,0 +1,13 @@
+{
+    "required": true,
+    "minVersion": "0.8",
+    "package": "com.nvidia.rtxremix.minecraft.mixin.entityculling",
+    "plugin": "com.nvidia.rtxremix.minecraft.entity.ec.EntityCullingMixinPlugin",
+    "compatibilityLevel": "JAVA_25",
+    "client": [
+        "BlockEntityRenderDispatcherMixin"
+    ],
+    "injectors": {
+        "defaultRequire": 1
+    }
+}

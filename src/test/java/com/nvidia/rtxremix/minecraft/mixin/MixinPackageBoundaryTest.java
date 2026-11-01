@@ -10,6 +10,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AnnotationNode;
@@ -42,8 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MixinPackageBoundaryTest {
     private static final String MIXIN_PACKAGE = "com.nvidia.rtxremix.minecraft.mixin";
     private static final String MIXIN_CONFIG = "rtx-remix-renderer.mixins.json";
-    private static final String DH_MIXIN_PACKAGE = MIXIN_PACKAGE + ".distanthorizons";
-    private static final String DH_MIXIN_CONFIG = "rtx-remix-renderer.distanthorizons.mixins.json";
+    private static final String MOD_JSON = "fabric.mod.json";
     private static final String MIXIN_ANNOTATION_PACKAGE = "org.spongepowered.asm.mixin";
     private static final String MEMBER_PREFIX = "rtxremix$";
 
@@ -89,20 +90,38 @@ class MixinPackageBoundaryTest {
                 "mixin-added members must be prefixed with " + MEMBER_PREFIX);
     }
 
-    /**
-     * The Distant Horizons mixins have a config, and a package inside the reserved one, of
-     * their own. Their plugin is an ordinary class, so it must live outside both packages.
-     */
+    /** A config fabric.mod.json does not register is never applied, so every one shipped must be. */
     @Test
-    void distantHorizonsMixinPackageContainsOnlyItsConfiguredMixins() throws Exception {
-        JsonObject config = readConfig(DH_MIXIN_CONFIG);
-        assertEquals(DH_MIXIN_PACKAGE, config.get("package").getAsString());
+    void everyShippedMixinConfigIsRegistered() throws Exception {
+        Set<String> shipped = new TreeSet<>();
+        try (Stream<Path> files = Files.list(resourcesRoot())) {
+            files.map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".mixins.json"))
+                    .forEach(shipped::add);
+        }
+
+        assertEquals(shipped, new TreeSet<>(registeredConfigs()),
+                "fabric.mod.json registers exactly the mixin configs the mod ships");
+    }
+
+    /**
+     * The mixins for another mod, Distant Horizons' or Entity Culling's, have a config, and a
+     * package inside the reserved one, of their own. Their plugin is an ordinary class, so
+     * it must live outside every mixin package.
+     */
+    @ParameterizedTest
+    @MethodSource("optionalModConfigs")
+    void optionalModMixinPackageContainsOnlyItsConfiguredMixins(String configName) throws Exception {
+        JsonObject config = readConfig(configName);
+        String mixinPackage = config.get("package").getAsString();
+        assertTrue(mixinPackage.startsWith(MIXIN_PACKAGE + "."),
+                configName + " keeps its mixins in a package inside the reserved one");
         String plugin = config.get("plugin").getAsString();
         assertFalse(plugin.startsWith(MIXIN_PACKAGE + "."), "the mixin plugin must not live in a mixin package");
 
-        Set<String> configured = configuredMixins(DH_MIXIN_CONFIG);
+        Set<String> configured = configuredMixins(configName);
         Set<String> present = new TreeSet<>();
-        try (Stream<Path> classes = Files.list(classesRoot().resolve(DH_MIXIN_PACKAGE.replace('.', '/')))) {
+        try (Stream<Path> classes = Files.list(classesRoot().resolve(mixinPackage.replace('.', '/')))) {
             classes.map(path -> path.getFileName().toString())
                     .filter(name -> name.endsWith(".class") && !name.contains("$"))
                     .map(name -> name.substring(0, name.length() - ".class".length()))
@@ -110,18 +129,20 @@ class MixinPackageBoundaryTest {
         }
 
         assertEquals(new TreeSet<>(configured), present,
-                "the Distant Horizons mixin package holds exactly its configured mixins");
+                mixinPackage + " holds exactly the mixins " + configName + " configures");
     }
 
     /**
-     * The prefix rule for the Distant Horizons mixins. Distant Horizons is not on the test
-     * classpath, so their class files are read rather than loaded.
+     * The prefix rule for the mixins for another mod. That mod is not on the test classpath,
+     * so their class files are read rather than loaded.
      */
-    @Test
-    void distantHorizonsMixinAddedMembersCarryTheModPrefix() throws Exception {
-        Path directory = classesRoot().resolve(DH_MIXIN_PACKAGE.replace('.', '/'));
+    @ParameterizedTest
+    @MethodSource("optionalModConfigs")
+    void optionalModMixinAddedMembersCarryTheModPrefix(String configName) throws Exception {
+        Path directory = classesRoot().resolve(
+                readConfig(configName).get("package").getAsString().replace('.', '/'));
         Set<String> offenders = new TreeSet<>();
-        for (String simpleName : configuredMixins(DH_MIXIN_CONFIG)) {
+        for (String simpleName : configuredMixins(configName)) {
             ClassNode mixin = new ClassNode();
             new ClassReader(Files.readAllBytes(directory.resolve(simpleName + ".class"))).accept(mixin, 0);
             assertTrue(mixin.interfaces.isEmpty(), simpleName + " implements an interface this check does not cover");
@@ -144,8 +165,38 @@ class MixinPackageBoundaryTest {
                 "mixin-added members must be prefixed with " + MEMBER_PREFIX);
     }
 
+    /** Every mixin config but the main one: those of the mods the renderer works alongside. */
+    static List<String> optionalModConfigs() throws Exception {
+        List<String> configs = registeredConfigs();
+        configs.remove(MIXIN_CONFIG);
+        return configs;
+    }
+
+    /** The mixin configs fabric.mod.json registers, in its order. */
+    private static List<String> registeredConfigs() throws Exception {
+        JsonObject mod;
+        try (var reader = Files.newBufferedReader(resourcesRoot().resolve(MOD_JSON), StandardCharsets.UTF_8)) {
+            mod = JsonParser.parseReader(reader).getAsJsonObject();
+        }
+        List<String> configs = new ArrayList<>();
+        for (JsonElement entry : mod.getAsJsonArray("mixins")) {
+            configs.add(entry.isJsonObject()
+                    ? entry.getAsJsonObject().get("config").getAsString()
+                    : entry.getAsString());
+        }
+        return configs;
+    }
+
     private static Path classesRoot() throws Exception {
         return Path.of(RtxRemixMod.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+    }
+
+    /**
+     * The mod's own resource directory, found through its main mixin config: every mod jar on
+     * the test classpath carries a fabric.mod.json of its own.
+     */
+    private static Path resourcesRoot() throws Exception {
+        return Path.of(RtxRemixMod.class.getClassLoader().getResource(MIXIN_CONFIG).toURI()).getParent();
     }
 
     private static JsonObject readConfig(String name) throws Exception {

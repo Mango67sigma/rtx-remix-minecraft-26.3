@@ -25,13 +25,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Entity Culling is optional, so one class alone may name its types: a reference anywhere
- * else would link against a mod that may be absent. Entity Culling is not on the test
- * classpath, so the compiled classes are read rather than loaded.
+ * else would link against a mod that may be absent. Its mixin plugin and its mixin name
+ * none either. Entity Culling is not on the test classpath, so the compiled classes are
+ * read rather than loaded.
  */
 class EntityCullingBoundaryTest {
 
     private static final String ENTITY_CULLING_PACKAGE = "dev.tr7zw";
-    private static final String CULLABLE = ENTITY_CULLING_PACKAGE + ".entityculling.access.Cullable";
+    private static final String MOD_PACKAGE = ENTITY_CULLING_PACKAGE + ".entityculling";
+    /** What the flags reader reads: the flags, the mod and its setting, and its culling test. */
+    private static final Set<String> READ_TYPES = Set.of(
+            MOD_PACKAGE + ".access.Cullable",
+            MOD_PACKAGE + ".EntityCullingModBase",
+            MOD_PACKAGE + ".NMSCullingHelper",
+            MOD_PACKAGE + ".versionless.Config");
     private static final String FLAGS_READER = "com.nvidia.rtxremix.minecraft.entity.ec.EntityCullingFlags";
 
     @Test
@@ -50,8 +57,10 @@ class EntityCullingBoundaryTest {
             }
         }
 
-        assertEquals(Map.of(internalName(FLAGS_READER), Set.of(internalName(CULLABLE))), namers,
-                "only the flags reader may name an Entity Culling type, and only its Cullable");
+        Set<String> readTypes = new TreeSet<>();
+        READ_TYPES.forEach(type -> readTypes.add(internalName(type)));
+        assertEquals(Map.of(internalName(FLAGS_READER), readTypes), namers,
+                "only the flags reader may name an Entity Culling type, and only those it reads");
     }
 
     /** Every Entity Culling type a class names: supertypes, members, signatures, code and annotations. */
