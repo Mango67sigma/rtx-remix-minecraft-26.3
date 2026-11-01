@@ -808,6 +808,11 @@ public class RemixEntitySubmitter {
         return frameOpen && retainedEntityParts.keepOwner(owner, POOLED_MESH_CLAIM);
     }
 
+    /** Whether an owner holds any retained part, kept or not. */
+    boolean holdsParts(Object owner) {
+        return retainedEntityParts.holdsParts(owner);
+    }
+
     /**
      * Whether a part's mesh outlives this frame without the part being drawn, claiming it
      * for the frame when it does: a mesh still pooled under the part's key is marked used,

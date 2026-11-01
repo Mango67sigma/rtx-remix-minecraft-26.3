@@ -7,6 +7,7 @@ package com.nvidia.rtxremix.minecraft.entity;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.nvidia.rtxremix.InstanceCategoryBit;
 import com.nvidia.rtxremix.minecraft.block.CopperBeaconBlockEntity;
+import com.nvidia.rtxremix.minecraft.entity.ec.EntityCullingSupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -175,37 +176,49 @@ public final class RemixBlockEntityPass {
      * Notes a block entity Entity Culling withheld from this frame's extraction, so that
      * {@link #keepWithheld} keeps its parts in the scene. A kept block entity shows the
      * pose it had when it was last extracted. See {@link #keepsWithheld} for which are
-     * noted.
+     * noted; the extraction hook notes only one that has a level.
      */
     public void noteWithheld(BlockEntity be) {
-        if (keepsWithheld(be.hasLevel(), be.isRemoved(), be instanceof CopperBeaconBlockEntity)) {
+        if (keepsWithheld(be.isRemoved(), be.getClass())) {
             withheld.add(be);
         }
     }
 
     /**
-     * Whether a block entity Entity Culling withheld keeps its parts: it must still be in
-     * its level, and its pose must not steer a light. A placed Copper Beacon's light
-     * follows its live pose every frame, and a head held at an older angle would stand in
-     * its own beam, so a withheld beacon retires like any block entity the frame did not
-     * reach.
+     * Whether a block entity Entity Culling withheld keeps its parts: it must not have been
+     * removed, and its pose must not steer a light. A placed Copper Beacon's light follows
+     * its live pose every frame, and a head held at an older angle would stand in its own
+     * beam, so a withheld beacon's yoke and lens retire while its light and its mount, which
+     * is terrain, stay.
+     *
+     * @param type the block entity's class
      */
-    static boolean keepsWithheld(boolean hasLevel, boolean removed, boolean posesLight) {
-        return hasLevel && !removed && !posesLight;
+    static boolean keepsWithheld(boolean removed, Class<?> type) {
+        return !removed && !CopperBeaconBlockEntity.class.isAssignableFrom(type);
     }
 
     /**
      * Keeps the parts of the block entities noted this frame in the submitter's open
      * frame, then forgets them; see {@link RemixEntitySubmitter#keepOwner}. Called as the
      * entity frame closes, before the submitter's {@code endFrame} would retire them. One
-     * never captured holds no parts, and one holding a part that cannot be kept retires;
-     * neither counts.
+     * holding a part that cannot be kept retires and does not count.
+     *
+     * <p>One that holds no parts at all, never captured since it came into range or
+     * cleared by a texture or material reload, has nothing to keep. It is asked back into
+     * view instead: Entity Culling shows it for the second of grace it gives whatever comes
+     * back into view, vanilla extracts it on the next frame, the capture takes it in place,
+     * and the frames after keep the fresh parts. That costs Entity Culling one second of
+     * rendering the block entity. One withheld for lying outside the view stays withheld
+     * until it comes into view, whatever its grace.
      */
     public void keepWithheld(RemixEntitySubmitter submitter) {
         for (int i = 0, n = withheld.size(); i < n; i++) {
-            if (submitter.keepOwner(withheld.get(i))) {
+            BlockEntity be = withheld.get(i);
+            if (submitter.keepOwner(be)) {
                 frameCount++;
                 frameCulled++;
+            } else if (!submitter.holdsParts(be)) {
+                EntityCullingSupport.forceVisible(be);
             }
         }
         // Released at once: a world switch between frames would otherwise keep the

@@ -135,6 +135,11 @@ final class RetainedEntityPartRegistry<O, V> {
         return entry.value;
     }
 
+    /** Whether this owner holds any part. */
+    boolean holdsParts(O owner) {
+        return owners.containsKey(owner);
+    }
+
     /** Retires every part this owner holds, so a partly submitted owner leaves nothing in the scene. */
     void discardOwner(O owner, Consumer<? super V> retire) {
         Map<Slot, Entry<V>> parts = owners.remove(owner);

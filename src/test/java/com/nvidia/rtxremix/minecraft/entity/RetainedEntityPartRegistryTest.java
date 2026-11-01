@@ -221,6 +221,23 @@ class RetainedEntityPartRegistryTest {
     }
 
     @Test
+    void holdsPartsFollowsAnOwnersPartsAcrossFrames() {
+        RetainedEntityPartRegistry<Object, String> registry = new RetainedEntityPartRegistry<>();
+        Object chest = new Object();
+
+        assertFalse(registry.holdsParts(chest));
+        registry.beginFrame();
+        registry.retain(chest, 0, 0, 0, value -> true, () -> "lid", value -> { });
+        assertTrue(registry.holdsParts(chest));
+        registry.endFrame(value -> fail("the lid was seen this frame"));
+        assertTrue(registry.holdsParts(chest));
+
+        registry.beginFrame();
+        registry.endFrame(value -> { });
+        assertFalse(registry.holdsParts(chest), "an owner whose parts all retired holds none");
+    }
+
+    @Test
     void keepOwnerNeedsAnOpenFrame() {
         RetainedEntityPartRegistry<Object, String> registry = new RetainedEntityPartRegistry<>();
 
