@@ -9,7 +9,7 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is the `mod_version` in `gradle.properties`, and it is
 also part of every mod file name.
 
-## Unreleased
+## 0.1.3 - 2026-11-06
 
 NVIDIA's changes to the 1.21.1 project through 2026-11-05 are merged and
 carried over to 26.3.
