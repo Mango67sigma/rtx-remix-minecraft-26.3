@@ -140,14 +140,15 @@ final class RenderLayerUtils {
      * Returns the texture a captured layer is submitted under, or empty when Remix has
      * nothing to draw for the layer. Results are cached by layer identity.
      *
-     * <p>Empty covers four cases. Untextured layers (shadow, debug, lines) carry no
+     * <p>Empty covers three cases. Untextured layers (shadow, debug, lines) carry no
      * material identity at all. Layers that pass the depth test unconditionally, the
      * see-through text of a name tag, are drawn over the whole scene in vanilla; no
      * placement in a ray-traced scene reproduces that, and vanilla draws the
      * depth-tested copy of the same text beside them, so their quads would only double
-     * it. The end portal and gateway, whose two textures feed a screen-space effect
-     * rather than a surface, have no texture Remix could paint them with. And vanilla's
-     * separate glint passes, see {@link #isGlintPass}, have no surface of their own.
+     * it. And vanilla's separate glint passes, see {@link #isGlintPass}, have no surface
+     * of their own. The end portal and gateway, whose two textures feed a screen-space
+     * effect rather than a surface, are captured under the texture
+     * {@link EndPortalSurface} bakes from them.
      *
      * @param layer the render type (typically from an entity renderer)
      * @return the texture identifier to capture under, or empty to skip the layer
@@ -160,8 +161,7 @@ final class RenderLayerUtils {
         RenderPipeline pipeline = layer.pipeline();
         // An outline render type is vanilla's glow silhouette of a model, drawn into
         // the outline target over the whole scene; it carries no surface.
-        if (layer.isOutline() || !depthTested(pipeline) || isScreenSpaceEffect(pipeline)
-                || isGlintPass(pipeline)) {
+        if (layer.isOutline() || !depthTested(pipeline) || isGlintPass(pipeline)) {
             return Optional.empty();
         }
         return extractTexture(layer);
@@ -171,8 +171,19 @@ final class RenderLayerUtils {
      * The texture bound to the layer's primary sampler. A single-pass glint layer binds
      * the glint texture to a second sampler as well, which is not this layer's texture
      * but the glint it adds over it, see {@link #glint}.
+     *
+     * <p>The end portal and gateway pipelines combine the sky on their primary sampler
+     * with the portal texture on a second one in screen space, and their vertices carry
+     * position only; they draw with the texture {@link EndPortalSurface} bakes instead.
      */
     private static Optional<Identifier> extractTexture(RenderType layer) {
+        RenderPipeline pipeline = layer.pipeline();
+        if (pipeline == RenderPipelines.END_PORTAL) {
+            return EndPortalSurface.PORTAL_TEXTURE;
+        }
+        if (pipeline == RenderPipelines.END_GATEWAY) {
+            return EndPortalSurface.GATEWAY_TEXTURE;
+        }
         return boundTexture(layer, PRIMARY_SAMPLER);
     }
 
@@ -228,7 +239,8 @@ final class RenderLayerUtils {
         return depth != null && depth.depthTest() != CompareOp.ALWAYS_PASS;
     }
 
-    private static boolean isScreenSpaceEffect(RenderPipeline pipeline) {
+    /** The end portal and end gateway pipelines, which draw with a baked texture; see {@link #extractTexture}. */
+    static boolean isEndPortalPipeline(RenderPipeline pipeline) {
         return pipeline == RenderPipelines.END_PORTAL || pipeline == RenderPipelines.END_GATEWAY;
     }
 
@@ -324,6 +336,11 @@ final class RenderLayerUtils {
      */
     static SurfaceMode surfaceMode(RenderType layer) {
         RenderPipeline pipeline = layer.pipeline();
+        // The baked end portal tile is opaque everywhere, so an alpha test would
+        // only cost a texture read per hit.
+        if (isEndPortalPipeline(pipeline)) {
+            return SurfaceMode.OPAQUE;
+        }
         BlendFunction blend = blendFunction(pipeline);
         return classifySurfaceMode(
                 isEmissivePipeline(pipeline),

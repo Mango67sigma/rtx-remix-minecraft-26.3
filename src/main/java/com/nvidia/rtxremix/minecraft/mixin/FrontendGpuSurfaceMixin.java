@@ -24,11 +24,14 @@ import org.spongepowered.asm.mixin.injection.At;
  * the backend, so the frontend's acquired/blitted bookkeeping still flips and the
  * next frame's {@code acquireNextTexture} is accepted. On the GL backend the
  * replaced call is {@code SDL_GL_SwapWindow}: the same point the 1.21.1 port
- * redirected {@code glfwSwapBuffers} in {@code RenderSystem.flipFrame}. The
- * composited GL frame has already been blitted to the default framebuffer by
- * {@code blitFromTexture}, which is where {@link RemixRenderer#presentFrameVk()}
- * copies it from. While RTX is switched off the renderer still presents, which is
- * what keeps the GL-Vulkan semaphore pair in step across the toggle.
+ * redirected {@code glfwSwapBuffers} in {@code RenderSystem.flipFrame}. Remix
+ * presents into a child window it owns over the game window, so the host's
+ * default framebuffer fails the pixel-ownership test and holds nothing usable;
+ * {@link RemixRenderer#presentFrameVk()} copies the composited frame from the
+ * main render target's colour texture instead, the same image
+ * {@code blitFromTexture} would have blitted there. While RTX is switched off the
+ * renderer still presents, which is what keeps the GL-Vulkan semaphore pair in
+ * step across the toggle.
  */
 @Mixin(FrontendGpuSurface.class)
 public abstract class FrontendGpuSurfaceMixin {

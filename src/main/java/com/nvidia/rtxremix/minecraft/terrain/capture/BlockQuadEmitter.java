@@ -34,7 +34,6 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
 import net.minecraft.resources.Identifier;
 import net.minecraft.tags.FluidTags;
-import net.minecraft.util.ARGB;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
@@ -533,8 +532,9 @@ public final class BlockQuadEmitter {
         int color = quad.color(0);
         int tintIndex = quad.tintIndex();
         if (tintIndex >= 0 && blockColors != null) {
-            color = ARGB.multiply(color, 0xFF000000 | getBlockTint(emitState, emitWorld, tintIndex));
+            color = tintFrapiColor(color, getBlockTint(emitState, emitWorld, tintIndex));
         }
+        // Staged opaque, whatever alpha the model gave its vertices.
         color |= 0xFF000000;
 
         String layerName = emitGlass ? "glass" : layerName(quad.chunkLayer());
@@ -1121,6 +1121,22 @@ public final class BlockQuadEmitter {
     /** A collected factory tint, or white past the end, as vanilla indexes its tint sources. */
     static int factoryTint(IntArrayList tints, int colorIndex) {
         return colorIndex >= 0 && colorIndex < tints.size() ? tints.getInt(colorIndex) : -1;
+    }
+
+    /**
+     * A quad's vertex color under its block tint, as vanilla's
+     * {@code ModelBlockRenderer.putQuadWithTint} and Indigo's {@code AltModelBlockRendererImpl}
+     * compute it with {@code ARGB.multiply}: each channel multiplied, rounding down. The tint
+     * is treated as opaque, as vanilla's tint sources are, so the vertex alpha is kept even
+     * when a modded source answers a bare RGB value. A tint index past the block's tint
+     * sources has the tint -1, which is white and changes nothing. Every block quad, vanilla
+     * or drawn through Fabric's renderer API, is staged through this one tint.
+     */
+    static int tintFrapiColor(int vertexColor, int tint) {
+        int red = ((vertexColor >>> 16) & 0xFF) * ((tint >>> 16) & 0xFF) / 0xFF;
+        int green = ((vertexColor >>> 8) & 0xFF) * ((tint >>> 8) & 0xFF) / 0xFF;
+        int blue = (vertexColor & 0xFF) * (tint & 0xFF) / 0xFF;
+        return (vertexColor & 0xFF000000) | (red << 16) | (green << 8) | blue;
     }
 
     /** Clear glass takes the mod's own refractive layer; see {@link #classifyBlockLayer}. */

@@ -50,6 +50,16 @@ missing runtime, and stages it, so even `test` needs the C++ toolchain.
 the runtime and payload in `build/distributions/`. It verifies inclusion of
 every `packaging/licenses/` file and excludes Python interpreter and binding
 payloads. Staged and packaged contents must agree with `NativeExtractor`.
+A release carries four files, which `stageReleaseAssets` collects: the JAR;
+the RTX Remix Materials and RTX Remix Showcase World zips, which
+`materialsArchive` and `worldArchive` build from what `fetchReleaseContent`
+pulls for the `resourcePack` and `world` pins in `tools/config.json`; and the
+installer bundle `releaseArchive` makes from those three and the installer.
+`build`, `test`, and `package` never fetch the pack or world. Both were made
+for 1.21.1: `materialsPackMeta` declares 26.3's resource pack format
+(`materialsPackFormat`) in the pack zip, because 26.3 drops a pack declaring
+only an older `pack_format` from `options.txt`, and 26.3 upgrades the world
+when a player first opens it.
 See [Getting Started](docs/GETTING_STARTED.md) and
 [`build.gradle`](build.gradle) for the staging inventory.
 
@@ -76,9 +86,13 @@ the mod-owned `remix-sdk/`, `rtx.conf`, and the shipped runtime textures in
 without the release installer is complete. With a matching marker and runtime
 present, launch restores a missing `rtx.conf`, a missing runtime texture, and
 any missing shipped files under `rtx-remix/` without replacing existing files. The `rtx-remix/` payload
-is author-owned: existing files, including edited confs, are never overwritten,
-even during full extraction. Deleting a shipped conf restores its default on
-the next launch. A present conf that fails to acquire still prevents renderer
+is author-owned: an existing file is replaced only when its content is a
+version of that file that has shipped, so an untouched old default takes the
+current one and edited confs are never overwritten, even during full
+extraction. `src/main/resources/rtx-remix-shipped-payload.sha256` records
+every shipped version; a payload change appends its line and never removes
+one, and `ShippedPayloadHistoryTest` fails with the missing line. Deleting a
+shipped conf restores its default on the next launch. A present conf that fails to acquire still prevents renderer
 initialization; the error identifies the file.
 
 Baseline LabPBR textures live in `src/main/resources/assets/` and load through
@@ -109,7 +123,10 @@ world ready to submit. `GameRendererMixin` submits the Remix frame in
 effects and the GUI. `TextureOverlay` composites the traced image onto the main
 render target through a `RenderPass`, and `RemixWeatherRenderer` draws weather
 over it the same way. Present goes through Remix by wrapping the backend call in
-`FrontendGpuSurface.present` (`FrontendGpuSurfaceMixin`). Vanilla skips the
+`FrontendGpuSurface.present` (`FrontendGpuSurfaceMixin`). Remix presents into a
+child window it owns over Minecraft's window, so the host's default framebuffer
+holds nothing usable and the present copies the main render target's colour
+texture (`GlInterop.copyFromTexture`). Vanilla skips the
 present while the window is iconified, so `MinecraftClientMixin` presents then
 too and every Remix submit stays paired with a present. The GL interop needs
 the OpenGL backend. `MinecraftClientMixin` starts the game on OpenGL when the
@@ -650,7 +667,9 @@ even though the Gradle wrapper and native compiler entry points are batch script
 
 Runtime payloads live in `remix-runtime/{win64|arm64}/`, outside `build/` so
 Gradle `clean` cannot traverse Packman junctions into the shared package cache.
-The runtime textures' junction, `remix-runtime/textures/`, sits beside them.
+The junctions for the runtime textures, `remix-runtime/textures/`, and for the
+release's Materials pack and showcase world, `remix-runtime/art-pack/` and
+`remix-runtime/world/`, sit beside them.
 Treat these junctions as read-only, and keep every Packman link under
 `remix-runtime/`, which git has never tracked: a checkout of a commit that
 tracks files under a junction writes and deletes them in the shared cache. Staging and packaging combine the selected
@@ -676,6 +695,18 @@ are left alone. Run source-management commands from the repository root:
   `--force` is passed.
 - Bridge-only builds use `gradlew.bat compileNativeWin64 compileNativeArm64`,
   or `rtxremix-java/native/build_native.bat x64` or `arm64`.
+
+Every call from the bridge into the runtime, the Remix C API, its D3D9
+objects, and its Tracy exports, goes through `remixCall`. The exceptions are
+`LoadLibraryW` and `FreeLibrary` of `d3d9.dll`, which run its `DllMain` under
+the loader lock. Remix calls run on Java threads, where on x64 HotSpot catches
+a native fault before any unhandled-exception filter; there the guard hands a
+fatal fault in the runtime to the runtime's crash reporter first and leaves
+faults in `jvm.dll`, stack overflows, and floating-point exceptions to
+HotSpot. Other architectures leave every fault to HotSpot until forwarding is
+checked on them, and `-Drtxremix.forwardRemixFaults=false` does the same on
+x64. Keep the guarded body to the call itself: marshalling, string lengths,
+and vtable loads stay outside it.
 
 The C API is reached only through JNI, never a JNA interface table. Java-side
 handles stay raw `long` values, not JNA `Pointer`s or wrapper objects. Native

@@ -4,6 +4,7 @@
  */
 
 import javax.inject.Inject
+import org.apache.tools.ant.filters.ReplaceTokens
 import org.gradle.process.ExecOperations
 
 plugins {
@@ -212,11 +213,18 @@ loom {
 // which is what gets installed at runtime on the user's machine). One literal
 // serves both the compile dependency and stageFabricApi.
 def fabricApiCoordinate = "net.fabricmc.fabric-api:fabric-api:0.165.0+26.3"
+def fabricLoaderVersion = "0.20.1"
+
+configurations {
+    fabricTestRuntime {
+        extendsFrom testRuntimeClasspath
+    }
+}
 
 dependencies {
     // Minecraft and Fabric
     minecraft "com.mojang:minecraft:26.3"
-    implementation "net.fabricmc:fabric-loader:0.20.1"
+    implementation "net.fabricmc:fabric-loader:${fabricLoaderVersion}"
 
     implementation fabricApiCoordinate
 
@@ -231,10 +239,28 @@ dependencies {
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    fabricTestRuntime "net.fabricmc:fabric-loader-junit:${fabricLoaderVersion}"
+}
+
+// Indigo needs Minecraft registries and Fabric's runtime access transformations.
+// Keep those separate from the plain JVM tests, which inspect untransformed classes.
+def fabricTest = tasks.register('fabricTest', Test) {
+    group = 'verification'
+    description = 'Runs renderer integration tests under Fabric Loader.'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath - configurations.testRuntimeClasspath +
+            configurations.fabricTestRuntime
+    useJUnitPlatform {
+        includeTags 'fabric'
+    }
+    systemProperty 'fabric.side', 'client'
 }
 
 test {
-    useJUnitPlatform()
+    dependsOn fabricTest
+    useJUnitPlatform {
+        excludeTags 'fabric'
+    }
     // Pin the per-frame install cap so tests don't depend on the CPU count
     systemProperty 'rtxremix.chunk.maxInstalledColumnsPerFrame', '8'
 }
@@ -591,7 +617,9 @@ def verifyPackageJarTask = tasks.register('verifyPackageJar') {
         def archive = packageJarArchive.get().asFile
         def zip = new java.util.zip.ZipFile(archive)
         try {
-            def required = ['META-INF/MANIFEST.MF', 'fabric.mod.json', 'native/rtx.conf']
+            // NativeExtractor refuses to extract without the shipped payload history.
+            def required = ['META-INF/MANIFEST.MF', 'fabric.mod.json', 'native/rtx.conf',
+                            'rtx-remix-shipped-payload.sha256']
             buildArches.each { arch ->
                 required.add("native/remix-sdk-${arch}/d3d9.dll")
                 required.add("native/remix-sdk-${arch}/remixbridge.dll")
@@ -645,8 +673,168 @@ tasks.register('package') {
     dependsOn 'build', verifyPackageJarTask
 }
 
+// --- Release content -----------------------------------------------------
+// The RTX Remix Materials resource pack and the RTX Remix Showcase World, which
+// the release carries. Both are the Packman packages tools/config.json pins for
+// development launches and benchmarks, so there is one pin and players and
+// developers see the same content. Only release staging depends on these tasks:
+// build, test and package never download the world.
+def releaseContentConfigFile = file('tools/config.json')
+def releaseContentConfig = new groovy.json.JsonSlurper().parse(releaseContentConfigFile)
+def materialsVersion = releaseContentConfig.resourcePack.version
+def worldVersion = releaseContentConfig.world.version
+// The links stay under remix-runtime/, where git has never tracked a file, so a
+// checkout cannot write or delete through them into the shared package cache.
+def artPackDir = 'remix-runtime/art-pack'
+def worldDir = 'remix-runtime/world'
+// What Minecraft's pack list shows under the pack's name.
+def materialsDescription = 'LabPBR textures by NVIDIA for RTX Remix'
+// 26.3's resource pack format: pack_version.resource_major in the version.json
+// of its client jar. The pinned pack was made for 1.21.1 and declares
+// pack_format 34 alone, and 26.3 drops such a pack from options.txt, so the zip
+// declares this format instead, as the developer tools do for the copy they
+// stage (FALLBACK_RESOURCE_PACK_MAJOR in tools/src/rtx_tools/benchmark/runner.py).
+def materialsPackFormat = 97
+
+def fetchReleaseContentTask = tasks.register('fetchReleaseContent') {
+    description = 'Pulls the pack and world pinned in tools/config.json into remix-runtime/'
+    group = 'build setup'
+    inputs.file(releaseContentConfigFile)
+    doFirst {
+        // installer.ps1 finds each zip by name, so a pin its patterns do not match
+        // would build a zip the installer silently ignores.
+        if (!(materialsVersion ==~ /\d+\.\d+\.\d+/) || !(worldVersion ==~ /v?\d+\.\d+\.\d+/)) {
+            throw new GradleException(
+                "tools/config.json pins resourcePack.version '${materialsVersion}' and world.version " +
+                "'${worldVersion}'. The installer finds the zips by name, so they must read 1.2.3 and " +
+                'v1.2.3 (the v is optional).')
+        }
+    }
+    doLast {
+        def manifest = new Node(null, 'project', [toolsVersion: '7.6'])
+        [
+            [name: 'art-pack', link: artPackDir, pkg: releaseContentConfig.resourcePack.package,
+                    version: materialsVersion],
+            [name: 'world', link: worldDir, pkg: "rtx_remix_minecraft_world_${releaseContentConfig.world.name}",
+                    version: worldVersion],
+        ].each { pin ->
+            // An absolute link path, as the runtime fetch gives, so Packman never
+            // resolves it through an existing junction into the cache.
+            def dependency = new Node(manifest, 'dependency',
+                    [name: pin.name, linkPath: file(pin.link).absolutePath.replace('\\', '/')])
+            new Node(dependency, 'package', [name: pin.pkg, version: pin.version])
+        }
+        def temporaryManifest = File.createTempFile('.packman-fetch-', '.tmp.xml', runtimeFetchDirectory)
+        try {
+            temporaryManifest.setText(groovy.xml.XmlUtil.serialize(manifest), 'UTF-8')
+            logger.lifecycle("Pulling the Materials pack ${materialsVersion} and the showcase world ${worldVersion}")
+            runtimeFetchServices.execOperations.exec {
+                // A relative script path from its own folder, as fetchRuntimeTextures
+                // runs it: cmd /c splits a quoted script path that contains spaces.
+                workingDir packmanDirectory
+                commandLine 'cmd', '/d', '/c', '.\\packman.cmd', 'pull', temporaryManifest.absolutePath
+            }
+        } finally {
+            temporaryManifest.delete()
+        }
+        // Minecraft lists a pack only when pack.mcmeta sits at the ZIP's root, and
+        // opens a save only when its folder holds a level.dat.
+        [[dir: artPackDir, required: 'pack.mcmeta', what: 'pack'],
+                [dir: worldDir, required: 'world/level.dat', what: 'world']].each { pin ->
+            def root = file(pin.dir)
+            if (!new File(root, pin.required).isFile()) {
+                def cache = root.exists() ? root.toPath().toRealPath().toString() : root.path
+                throw new GradleException("The ${pin.what} at ${cache} has no ${pin.required}. " +
+                        'Delete that folder and build again, and Packman downloads the package afresh.')
+            }
+        }
+    }
+}
+
+// The zip's pack.mcmeta carries the description above, whatever the pinned
+// pack's own says, and declares 26.3's resource pack format. Above format 64,
+// 26.3 reads the supported range from min_format and max_format alone and
+// refuses pack_format or supported_formats beside them, so both go. The same
+// major for both keys takes in every minor of it. Every other key stays.
+def materialsPackMetaTask = tasks.register('materialsPackMeta') {
+    description = 'Writes the pack.mcmeta the Materials zip carries'
+    group = 'build'
+    dependsOn fetchReleaseContentTask
+    def source = file("${artPackDir}/pack.mcmeta")
+    def target = layout.buildDirectory.file('release-content/materials-meta/pack.mcmeta')
+    inputs.file(source)
+    inputs.property('description', materialsDescription)
+    inputs.property('packFormat', materialsPackFormat)
+    outputs.file(target)
+    doLast {
+        def meta = new groovy.json.JsonSlurper().parse(source)
+        meta.pack.description = materialsDescription
+        meta.pack.remove('pack_format')
+        meta.pack.remove('supported_formats')
+        meta.pack.min_format = materialsPackFormat
+        meta.pack.max_format = materialsPackFormat
+        def output = target.get().asFile
+        output.parentFile.mkdirs()
+        output.setText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(meta)) + '\n', 'UTF-8')
+    }
+}
+
+// Minecraft loads a zipped pack without unpacking it. The README and license
+// sit beside pack.mcmeta, which must be at the root for the pack to be listed.
+def materialsArchiveTask = tasks.register('materialsArchive', Zip) {
+    description = 'Zips the pinned pack as the RTX Remix Materials resource pack'
+    group = 'build'
+    dependsOn fetchReleaseContentTask
+    from(materialsPackMetaTask)
+    from(artPackDir) {
+        exclude '.packman*'
+        exclude 'pack.mcmeta'
+        // The pack's README describes PDF guides the package does not carry, so
+        // the zip keeps the release's own README, with the license beside it.
+        exclude 'README.txt'
+        exclude 'LICENSE.txt'
+    }
+    from('packaging/content/materials/README.txt') {
+        filter(ReplaceTokens, tokens: [VERSION: materialsVersion])
+    }
+    from('packaging/content/LICENSE-CC-BY-4.0.txt') {
+        rename { 'LICENSE.txt' }
+    }
+    archiveFileName.set("RTX-Remix-Materials-${materialsVersion}.zip")
+    destinationDirectory.set(layout.buildDirectory.dir('release-content'))
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+// The save folder keeps the name a player sees in Minecraft's world list. Only
+// what a first visit needs goes in: the session lock, player data, stats,
+// advancements, datapacks, the previous level.dat and Paper's files stay behind.
+def worldArchiveTask = tasks.register('worldArchive', Zip) {
+    description = 'Zips the pinned world as the RTX Remix Showcase World save'
+    group = 'build'
+    dependsOn fetchReleaseContentTask
+    from("${worldDir}/world") {
+        include 'DIM-1/**', 'DIM1/**', 'data/**', 'entities/**', 'poi/**', 'region/**', 'icon.png', 'level.dat'
+        into 'NVIDIA RTX Demo'
+    }
+    from('packaging/content/world/README.txt') {
+        filter(ReplaceTokens, tokens: [VERSION: worldVersion])
+        into 'NVIDIA RTX Demo'
+    }
+    from('packaging/content/LICENSE-CC-BY-4.0.txt') {
+        rename { 'LICENSE.txt' }
+        into 'NVIDIA RTX Demo'
+    }
+    archiveFileName.set("RTX-Remix-Showcase-World-${worldVersion}.zip")
+    destinationDirectory.set(layout.buildDirectory.dir('release-content'))
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
 def stageReleaseArchiveTask = tasks.register('stageReleaseArchive', Sync) {
-    description = 'Stages the verified JAR and installer in build/release'
+    description = 'Stages the verified JAR, the pack and world zips, and the installer in build/release'
     group = 'build'
     dependsOn 'package'
     into layout.buildDirectory.dir('release')
@@ -654,6 +842,13 @@ def stageReleaseArchiveTask = tasks.register('stageReleaseArchive', Sync) {
 
     from(packageJarArchive) {
         into 'mods'
+    }
+    // Both zips stay whole. The installer unpacks the ones a player chooses.
+    from(materialsArchiveTask) {
+        into 'resourcepacks'
+    }
+    from(worldArchiveTask) {
+        into 'saves'
     }
     from 'packaging/install.bat', 'packaging/installer.ps1',
             'packaging/migrate_resource_packs.ps1', 'packaging/INSTALLER_REFERENCE.md'
@@ -668,14 +863,31 @@ def stageReleaseArchiveTask = tasks.register('stageReleaseArchive', Sync) {
     }
 }
 
-tasks.register('releaseArchive', Zip) {
-    description = 'Builds an installable release tree and ZIP with the selected platform SDKs'
+// The classifier keeps the bundle's name apart from the JAR's in the release.
+def releaseArchiveTask = tasks.register('releaseArchive', Zip) {
+    description = 'Builds the installer bundle: JAR, pack and world zips, and installer, with the selected platform SDKs'
     group = 'build'
     from(stageReleaseArchiveTask)
     archiveBaseName.set(projectArchiveName)
     archiveVersion.set(resolvedBuildVersion)
+    archiveClassifier.set('installer')
     destinationDirectory.set(layout.buildDirectory.dir('distributions'))
     duplicatesStrategy = DuplicatesStrategy.FAIL
     preserveFileTimestamps = false
     reproducibleFileOrder = true
+}
+
+// The four files a GitHub release carries, and nothing else, so the workflow
+// uploads build/release-assets/* without a list of names to keep in step.
+// Sync removes a file left behind by a previous version.
+tasks.register('stageReleaseAssets', Sync) {
+    description = 'Stages the four release files in build/release-assets'
+    group = 'build'
+    into layout.buildDirectory.dir('release-assets')
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+
+    from(packageJarArchive)
+    from(materialsArchiveTask)
+    from(worldArchiveTask)
+    from(releaseArchiveTask)
 }

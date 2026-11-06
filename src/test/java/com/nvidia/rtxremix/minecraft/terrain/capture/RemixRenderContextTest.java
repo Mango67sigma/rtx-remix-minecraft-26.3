@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 the rtx-remix-minecraft-26.3 contributors.
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -17,6 +18,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -25,7 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
  * The terrain capture's quad sink runs on the renderer's own emitter, which is what a model
  * part baked as a Fabric mesh needs: Indigo's {@code MeshViewImpl.outputTo} casts its target
  * to Indigo's {@code MutableQuadViewImpl}, so a hand-written {@code QuadEmitter} crashed the
- * section build on the first such block.
+ * section build on the first such block. The checks the 1.21.1 capture made of its own mesh
+ * copy carry over: a mesh quad reaches the sink with its vertex data intact, and a quad a
+ * model left half built never leaks into a mesh quad or into the next block.
  */
 class RemixRenderContextTest {
 
@@ -34,6 +38,8 @@ class RemixRenderContextTest {
         final Set<Direction> culled = EnumSet.noneOf(Direction.class);
         final List<Direction> cullQueries = new ArrayList<>();
         final List<float[]> staged = new ArrayList<>();
+        final List<float[]> stagedUvs = new ArrayList<>();
+        final List<int[]> stagedColors = new ArrayList<>();
         final List<Integer> stagedTints = new ArrayList<>();
 
         @Override
@@ -45,12 +51,19 @@ class RemixRenderContextTest {
         @Override
         public void stageEmittedQuad(QuadView quad) {
             float[] positions = new float[12];
+            float[] uvs = new float[8];
+            int[] colors = new int[4];
             for (int v = 0; v < 4; v++) {
                 positions[v * 3] = quad.x(v);
                 positions[v * 3 + 1] = quad.y(v);
                 positions[v * 3 + 2] = quad.z(v);
+                uvs[v * 2] = quad.u(v);
+                uvs[v * 2 + 1] = quad.v(v);
+                colors[v] = quad.color(v);
             }
             staged.add(positions);
+            stagedUvs.add(uvs);
+            stagedColors.add(colors);
             stagedTints.add(quad.tintIndex());
         }
     }
@@ -129,5 +142,58 @@ class RemixRenderContextTest {
                 "the second quad starts from the cleared defaults: no cull face");
         assertEquals(List.of(3, -1), sink.stagedTints);
         assertFalse(sink.culled.contains(Direction.EAST));
+    }
+
+    @Test
+    void aMeshQuadReachesTheSinkWithItsVertexDataIntact() {
+        MutableMesh builder = IndigoRenderer.INSTANCE.mutableMesh();
+        QuadEmitter source = builder.emitter();
+        source.pos(0, 0, 1, 0).pos(1, 0, 1, 1).pos(2, 1, 1, 1).pos(3, 1, 1, 0);
+        for (int v = 0; v < 4; v++) {
+            source.color(v, 0xFF123456 + v);
+            source.uv(v, v * 0.125f, v * 0.25f);
+        }
+        source.tintIndex(3);
+        source.emit();
+        Mesh mesh = builder.immutableCopy();
+        RecordingSink sink = new RecordingSink();
+        RemixRenderContext context = new RemixRenderContext(sink, IndigoRenderer.INSTANCE);
+
+        context.prepare();
+        mesh.outputTo(context.emitter());
+
+        assertEquals(1, sink.staged.size());
+        assertArrayEquals(new float[] {0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0}, sink.staged.get(0));
+        assertArrayEquals(new float[] {0, 0, 0.125f, 0.25f, 0.25f, 0.5f, 0.375f, 0.75f},
+                sink.stagedUvs.get(0));
+        assertArrayEquals(new int[] {0xFF123456, 0xFF123457, 0xFF123458, 0xFF123459},
+                sink.stagedColors.get(0));
+        assertEquals(List.of(3), sink.stagedTints);
+    }
+
+    @Test
+    void aHalfBuiltQuadNeverReachesAMeshQuadOrTheNextBlock() {
+        RecordingSink sink = new RecordingSink();
+        RemixRenderContext context = new RemixRenderContext(sink, IndigoRenderer.INSTANCE);
+        QuadEmitter emitter = context.emitter();
+        MutableMesh builder = IndigoRenderer.INSTANCE.mutableMesh();
+        builder.emitter().pos(0, 0, 0, 0).pos(1, 0, 0, 1).pos(2, 1, 0, 1).pos(3, 1, 0, 0).emit();
+        Mesh oneQuad = builder.immutableCopy();
+        Mesh empty = IndigoRenderer.INSTANCE.mutableMesh().immutableCopy();
+
+        // A model that set up a quad and then output a mesh instead of emitting it.
+        emitter.tintIndex(7).cullFace(Direction.NORTH);
+        oneQuad.outputTo(emitter);
+        // An empty mesh still leaves the emitter clear for the model's next quad.
+        emitter.tintIndex(7).cullFace(Direction.NORTH);
+        empty.outputTo(emitter);
+        emitter.pos(0, 0, 0, 0).pos(1, 0, 0, 1).pos(2, 1, 0, 1).pos(3, 1, 0, 0).emit();
+        // A block that left a quad half built does not hand it to the next block.
+        emitter.tintIndex(7).cullFace(Direction.NORTH);
+        context.prepare();
+        emitter.pos(0, 0, 0, 0).pos(1, 0, 0, 1).pos(2, 1, 0, 1).pos(3, 1, 0, 0).emit();
+
+        assertEquals(List.of(), sink.cullQueries, "no stale cull face is ever tested");
+        assertEquals(List.of(-1, -1, -1), sink.stagedTints);
     }
 }

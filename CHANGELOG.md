@@ -9,6 +9,62 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is the `mod_version` in `gradle.properties`, and it is
 also part of every mod file name.
 
+## Unreleased
+
+NVIDIA's changes to the 1.21.1 project through 2026-11-05 are merged and
+carried over to 26.3.
+
+### Changed
+
+- A release ships as an installer bundle,
+  `rtx-remix-renderer-<version>-installer.zip`, that also carries the RTX Remix
+  Materials texture pack and the RTX Remix Showcase World, both optional.
+  Install, Upgrade, and Repair offer the mod, the pack, and the
+  world as a checklist with all three ticked. The pack goes in turned on, above
+  the mod's built-in textures and below your own packs; the world goes into
+  `saves\NVIDIA RTX Demo` and never over a copy already there. The release also
+  lists the mod, the pack, and the world as files of their own. The pack was
+  made for 1.21.1, so its copy declares 26.3's resource pack format, and
+  Minecraft upgrades the world, saved in 1.21.1, the first time it is opened.
+- The installer runs on PCs that give every program administrator rights, such
+  as with User Account Control turned off or in the built-in Administrator
+  account; it still refuses administrator rights as an account other than the
+  one signed in. A Prism Launcher it does not find, such as a portable copy kept
+  anywhere, can be named at the launcher question with Use a Prism I already
+  have, and later runs remember it. A portable Prism it does find gets the
+  instance in its own folder rather than in `%APPDATA%\PrismLauncher`.
+- End portals and end gateways show their speckled surface, path traced, where
+  the frame showed what lay beneath. The pattern is fixed to the world and does
+  not drift with the time of day as vanilla's does.
+- DLSS Frame Generation is on by default and presents on a graphics queue, so
+  overlays that draw at present time, such as RivaTuner's, no longer lose the
+  graphics device. Benchmark runs keep it off, since they measure rendered
+  frames.
+- RTX Remix presents the picture through a window of its own inside Minecraft's
+  window, on a newer RTX Remix runtime, while Minecraft keeps its OpenGL window.
+- A native crash inside an RTX Remix call reaches RTX Remix's crash reporting,
+  when it is on, where the Java runtime used to close the game first and nothing
+  was sent. Before relaunching after a crash, copy `remix-dxvk.log`: its Sentry
+  session id finds the report.
+- The minidump the mod writes to `crash\` after a native crash no longer copies
+  the memory that thread stacks point at, which could include the Minecraft
+  sign-in token the launcher passes to the game. Dumps from 0.1.2 and earlier
+  can still hold it, so bug reports ask for the text crash files and leave the
+  `.dmp` files out. `-Drtxremix.crashDumpDetail=true` brings the full detail
+  back for dumps that stay private.
+- An upgrade delivers changed defaults for the shipped lighting profiles under
+  `rtx-remix/mods/minecraft-logic/`: a profile that still holds an earlier
+  release's default is updated on the next launch, and profiles you edited are
+  kept as before.
+- On a first launch, while another program such as an antivirus scanner holds
+  the freshly unpacked runtime, the mod retries putting it in place for about
+  ten seconds, where it used to run without path tracing until the next launch.
+
+### Fixed
+
+- In single player, loading a sky-light section below every one loaded before
+  no longer makes the integrated server's light engine throw.
+
 ## 0.1.2 - 2026-11-01
 
 ### Added

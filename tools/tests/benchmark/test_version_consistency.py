@@ -26,7 +26,14 @@ def gradle_dependency_version(group: str, artifact: str) -> str:
     match = re.search(rf'"{re.escape(group)}:{re.escape(artifact)}:([^\"]+)"', text)
     if not match:
         raise AssertionError(f"build.gradle has no {group}:{artifact} dependency")
-    return match.group(1)
+    version = match.group(1)
+    variable = re.fullmatch(r"\$\{(\w+)\}", version)
+    if variable:
+        assignment = re.search(rf'\bdef\s+{re.escape(variable.group(1))}\s*=\s*"([^"]+)"', text)
+        if not assignment:
+            raise AssertionError(f"build.gradle has no literal assignment for {variable.group(1)}")
+        version = assignment.group(1)
+    return version
 
 
 def powershell_literal(path: Path, variable: str) -> str:
@@ -74,9 +81,10 @@ def workflow_job_text(path: Path, job: str) -> str:
 
 def java_majors() -> dict[str, int]:
     """The Java major of every place that fixes one: the installer, the developer tools, the Gradle toolchain and
-    compiler release, the mod's metadata, the JDK of the CI job that builds the mod, and the mixin compatibility
-    level. The workflow's other jobs build the Java 8 legacy interop and the Forge 1.12.2 bootstrap and pin their own
-    JDK on purpose."""
+    compiler release, the mod's metadata, the JDK of the CI jobs that build the mod and the release files, and the
+    mixin compatibility level. The build workflow's other jobs build the Java 8 legacy interop and the Forge 1.12.2
+    bootstrap and pin their own JDK on purpose."""
+    workflows = REPO_ROOT / ".github" / "workflows"
     gradle = REPO_ROOT / "build.gradle"
     resources = REPO_ROOT / "src" / "main" / "resources"
     fabric_java = json.loads((resources / "fabric.mod.json").read_text(encoding="utf-8"))["depends"]["java"]
@@ -92,9 +100,14 @@ def java_majors() -> dict[str, int]:
         "build.gradle options.release": java_major_in(gradle, r"options\.release\s*=\s*(\d+)"),
         "fabric.mod.json depends.java": int(metadata_major.group(1)),
         "build.yml build job java-version": java_major_in_text(
-            workflow_job_text(REPO_ROOT / ".github" / "workflows" / "build.yml", "build"),
+            workflow_job_text(workflows / "build.yml", "build"),
             r'^\s*java-version:\s*"?(\d+)"?\s*$',
             "the build job of build.yml",
+        ),
+        "release.yml build job java-version": java_major_in_text(
+            workflow_job_text(workflows / "release.yml", "build"),
+            r'^\s*java-version:\s*"?(\d+)"?\s*$',
+            "the build job of release.yml",
         ),
         "mixins.json compatibilityLevel": java_major_in(
             resources / "rtx-remix-renderer.mixins.json", r'"compatibilityLevel":\s*"JAVA_(\d+)"'
@@ -107,6 +120,12 @@ class VersionConsistencyTests(unittest.TestCase):
         majors = java_majors()
 
         self.assertEqual(1, len(set(majors.values())), f"these disagree on the Java major: {majors}")
+
+    def test_fabric_test_loader_matches_runtime_loader(self):
+        self.assertEqual(
+            gradle_dependency_version("net.fabricmc", "fabric-loader"),
+            gradle_dependency_version("net.fabricmc", "fabric-loader-junit"),
+        )
 
     def test_packaging_version_defaults_match_gradle(self):
         expected = gradle_mod_version()
@@ -146,6 +165,14 @@ class VersionConsistencyTests(unittest.TestCase):
 
         self.assertEqual(world_version, runner.OPTIONS_DATA_VERSION)
 
+    def test_installer_options_data_version_is_the_one_the_tools_write(self):
+        # The options.txt the installer creates for the Materials pack carries the pinned game's data version, as the
+        # tools' does: test_options_data_version_is_the_one_of_the_pinned_game holds theirs to the game's jar.
+        installer = (REPO_ROOT / "packaging" / "installer.ps1").read_text(encoding="utf-8")
+        declared = re.findall(r"^\$script:MC_DATA_VERSION\s*=\s*(\d+)\s*$", installer, re.MULTILINE)
+
+        self.assertEqual([str(runner.OPTIONS_DATA_VERSION)], declared)
+
     def test_resource_pack_major_is_the_one_of_the_pinned_game(self):
         jar = minecraft_client_jar()
         if jar is None:
@@ -156,6 +183,14 @@ class VersionConsistencyTests(unittest.TestCase):
         # What the tools declare in the staged art pack, read from this jar or taken from the fallback constant.
         self.assertEqual(pack_major, runner.FALLBACK_RESOURCE_PACK_MAJOR)
         self.assertEqual(pack_major, runner.game_resource_pack_major())
+
+    def test_materials_zip_declares_the_resource_pack_major_the_tools_declare(self):
+        # The release's Materials zip and the art pack the tools stage are the same pack, so both declare one format,
+        # the pinned game's: test_resource_pack_major_is_the_one_of_the_pinned_game holds the tools' to its jar.
+        build = (REPO_ROOT / "build.gradle").read_text(encoding="utf-8")
+        declared = re.findall(r"^def materialsPackFormat = (\d+)\s*$", build, re.MULTILINE)
+
+        self.assertEqual([str(runner.FALLBACK_RESOURCE_PACK_MAJOR)], declared)
 
     def test_runtime_code_does_not_hardcode_mod_version(self):
         benchmark_controller = (
