@@ -174,7 +174,7 @@ this mod. Four places to find one:
 
 **Naming rules.** A zone file name is one word with no spaces and no leading
 `--`; `zones/lighthouse.conf` creates the channel `mc.zone.lighthouse`. A biome
-file name is the exact path part of a vanilla Minecraft 1.21.1 biome id, in
+file name is the exact path part of a vanilla Minecraft 26.3 biome id, in
 lowercase: `minecraft:desert` is `biomes/desert.conf`. A name the mod does not
 recognise is skipped with a warning in `logs/latest.log` and never appears in
 `/rtx conf status all`.
