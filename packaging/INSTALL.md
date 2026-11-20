@@ -215,7 +215,8 @@ preserved. To install into the other launcher instead, choose Install.
 An install made by an earlier release moves to Minecraft 26.3 with it, even
 one made by NVIDIA's Minecraft 1.21.1 installer. The earlier versioned
 `rtx-remix-renderer-*.jar` is replaced by `rtx-remix-renderer-fabric.jar`. In
-Prism, the instance's Minecraft and Fabric Loader become 26.3's, the
+Prism, the instance's Minecraft and Fabric Loader become 26.3's, Fabric
+Loader replacing a Forge or NeoForge one, the
 components Prism added for the old Minecraft (Intermediary Mappings, LWJGL)
 are dropped so Prism adds them again for 26.3, its Java version becomes 25,
 and on ARM64 a Java 21 pin is replaced by the managed Java 25.

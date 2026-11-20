@@ -99,9 +99,11 @@ It does not create a missing options file for that migration.
 Install, Upgrade, and Repair point the RTX Remix Prism instance at the
 selected target whatever made it, NVIDIA's Minecraft 1.21.1 installer or an
 earlier release of this fork. `mmc-pack.json` gets the target's Minecraft and
-loader components first, and keeps every other component, apart from the
-ones Prism added itself as dependencies of an older Minecraft, marked
-volatile: Intermediary Mappings and LWJGL. Prism adds those again at the
+loader components first, and keeps every other component, apart from
+another loader's component, such as the Forge or NeoForge one of NVIDIA's
+1.21.1 install, and the ones Prism added itself as dependencies of an older
+Minecraft, marked volatile: Intermediary Mappings and LWJGL. Prism adds those
+again at the
 versions the new Minecraft calls for the next time it loads the instance, and
 would refuse an instance whose Intermediary Mappings require the old
 Minecraft. The installer prints the Minecraft change and each component it
@@ -125,7 +127,9 @@ for the target's Minecraft version beside it. Both carry the display name
 `NVIDIA RTX Remix for Minecraft`, so tell them apart by version in the
 launcher's profile editor. A profile for the target's Minecraft version that
 launches another Fabric Loader build is pointed at the pinned one, by running
-the Fabric installer again.
+the Fabric installer again. A Forge or NeoForge profile NVIDIA's installer
+made is kept as well, without its mod: the shared `mods` folder now holds the
+26.3 Fabric JAR in place of its own.
 
 ## Choosing What To Install
 

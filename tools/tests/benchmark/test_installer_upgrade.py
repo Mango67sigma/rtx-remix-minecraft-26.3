@@ -368,6 +368,43 @@ def test_a_new_loader_alone_leaves_the_dependencies_prism_added_for_the_pinned_m
     assert "Updated the Prism instance's Minecraft" not in output
 
 
+# NVIDIA's 1.21.1 target, whose installer also made Prism instances with its Forge and NeoForge loaders.
+NVIDIA_TARGET = loader_registry.load_registry(minecraft_version=OLD_MC_VERSION)
+FOREIGN_LOADERS = [NVIDIA_TARGET.get(loader_id).prism for loader_id in ("forge", "neoforge")]
+
+
+@pytest.mark.parametrize("loader", FOREIGN_LOADERS, ids=[loader.name for loader in FOREIGN_LOADERS])
+def test_an_instance_nvidias_installer_made_with_another_loader_moves_to_fabric(
+    harness: Harness, tmp_path: Path, loader: loader_registry.PrismComponent
+):
+    original = {
+        "components": [
+            {
+                "cachedName": "LWJGL 3",
+                "cachedVersion": "3.3.3",
+                "cachedVolatile": True,
+                "dependencyOnly": True,
+                "uid": "org.lwjgl3",
+                "version": "3.3.3",
+            },
+            {"cachedName": "Minecraft", "important": True, "uid": MINECRAFT, "version": OLD_MC_VERSION},
+            {"cachedName": loader.name, "uid": loader.uid, "version": loader.version},
+            USER_COMPONENT,
+        ],
+        "formatVersion": 1,
+    }
+    instance = make_instance(tmp_path / "PrismLauncher", cfg=first_release_cfg(), pack=original)
+
+    output = harness("InitializeInstance", InstanceDir=instance)
+
+    # The other loader goes with the old Minecraft's dependencies, and a component the user added stays.
+    pack = read_pack(instance)
+    assert pack["components"][:2] == installer_written_pack(MC_VERSION, LOADER_VERSION)["components"]
+    assert pack["components"][2:] == [USER_COMPONENT]
+    assert f"Removed the Prism instance's {loader.name} {loader.version};" in output
+    assert "Removed the Prism instance's LWJGL 3 3.3.3;" in output
+
+
 def test_an_instance_the_installer_just_made_keeps_its_settings_on_the_next_run(harness: Harness, tmp_path: Path):
     instance = tmp_path / "PrismLauncher" / "instances" / INSTANCE_NAME
     created = harness("InitializeInstance", InstanceDir=instance)

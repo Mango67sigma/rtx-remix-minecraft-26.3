@@ -39,8 +39,9 @@ pluginManagement {
     ]
 
     repositories {
-        catalog.versions.values()
-                .collectMany { it.loaders.values() }
+        // Fork: the plugin repositories follow the selected loaders, so a
+        // 26.3 build resolves no plugin through another version's loader repositories.
+        selectedLoaders.values()
                 *.gradlePlugin*.repository
                 .findAll { it }
                 .unique()

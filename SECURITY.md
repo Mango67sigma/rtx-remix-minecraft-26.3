@@ -12,8 +12,9 @@ to NVIDIA, which does not maintain this repository.
 
 Please include the following information:
 
-- The mod file name from the `mods` folder, which carries the version and the
-  commit it was built from
+- The `RTX Remix Renderer v<version> initializing` line near the top of
+  `logs\latest.log`, whose version carries the build stamp and commit (or, for
+  a JAR installed by hand, its file name)
 - Type of vulnerability and its impact
 - Instructions to reproduce the vulnerability, and proof-of-concept or exploit
   code if you have it

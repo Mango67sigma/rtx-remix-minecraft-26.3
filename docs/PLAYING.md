@@ -48,8 +48,9 @@ fixed.
 ## Download
 
 Download the installer bundle,
-`rtx-remix-renderer-mc<minecraft-version>-<mod-version>-installer.zip`,
-from the
+`rtx-remix-renderer-mc<minecraft-version>-<version>-installer.zip`, where
+`<version>` is the mod version followed by a build timestamp and short commit
+hash, from the
 [Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest)
 and extract it. It holds the mod, the RTX Remix Materials texture pack, the
 RTX Remix Showcase World, and the installer that sets them up. The release

@@ -30,7 +30,7 @@ The 26.3 port lives in `versions/26.3/`:
   points (`RtxRemixMod`, `RtxRemixCommonMod`), `fabric.mod.json`, the access
   widener, and `WindowMixin` (`src/main`, `src/test`).
 - `renderer-core/`: the port's own copy of the core (`src`, `test`,
-  `main/resources`), file for file the counterpart of `renderer-core/`.
+  `main/resources`), the counterpart of `renderer-core/`.
 
 NVIDIA's architecture says a port does not copy the core. This fork still
 does, as a stated transitional state; converging onto the shared core is the
@@ -938,9 +938,12 @@ ahead of it.
 `.\gradlew.bat test` runs the 26.3 suite, `:versions:26.3:fabric:test`, from
 `versions/26.3/minecraft/test/java/`, `versions/26.3/renderer-core/test/`, and
 `versions/26.3/fabric/src/test/java/`, with the repository root as the working
-directory. A test tagged `@Tag("fabric")` runs instead in `fabricTest` under
-Fabric Loader's JUnit runner; none is tagged today. NVIDIA's tests under
-`renderer-core/` and `versions/1.21.1/` are carried and do not run here.
+directory. To run a subset, filter the module task,
+`.\gradlew.bat :versions:26.3:fabric:test --tests "<pattern>"`, because the
+root `test` task accepts no `--tests`. A test tagged `@Tag("fabric")` runs
+instead in `fabricTest` under Fabric Loader's JUnit runner; none is tagged
+today. NVIDIA's tests under `renderer-core/` and `versions/1.21.1/` are carried
+and do not run here.
 `TerrainStateTest` is the entry point for the JVM-side chunk-pipeline tests.
 The suite does not cross the JNI boundary or render, so a rendering change is
 verified by launching with `tools\rtx.bat launch` and looking. It also never

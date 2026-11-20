@@ -609,7 +609,7 @@ removes its stale registration.
 | `package` reports mixed sources | Stage both architectures from one kind of source, or package one with `-Parch=` |
 | Empty or partial scene on first launch | Shader compilation. Wait for it to settle before reporting a defect |
 | Frame-time spikes at high render distance | Garbage collection is one possible cause. Every launch gives the Prism instance the tuned JVM arguments and their heap limit; check that `launch.jvmArgs` does not override them |
-| A clone or checkout reports `Filename too long` | Enable `git config --global core.longpaths true` before cloning, or choose a shorter checkout path |
+| A clone, checkout, `git clean`, or worktree removal reports `Filename too long` | Enable `git config --global core.longpaths true` (before cloning, or before cleaning a checkout that has run the tests), or choose a shorter checkout path |
 | `No MSVC toolset ... has the ARM64 C++ libraries` | Add the MSVC ARM64 build tools in the Visual Studio Installer, or use `package -Parch=win64` for a single-architecture artifact |
 | Initialization reports `DRIVER_VERSION_BELOW_MINIMUM` | Update the driver. The minimum is a capability gate; lowering `dxvk.nvidiaMinDriver` can enable unsupported paths and cause GPU faults |
 | `Startup` unexpectedly returns `REMIX_DEVICE_WAS_NOT_REGISTERED` after an API change | Check header, bridge and runtime together for a mismatched `remixapi_Interface` layout before continuing native calls |

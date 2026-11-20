@@ -169,10 +169,12 @@ its counterpart to. The port's Fabric-specific code is not yet confined to
 ### The Transitional Copy Of The Core
 
 The guide above says a port does not copy `renderer-core/`. This port still
-does: `versions/26.3/renderer-core/` is, file for file, the 26.3 counterpart of
-`renderer-core/`, and it is not limited to Java 8. That is a deliberate,
-transitional state, and converging the port onto the shared core is the next
-project. Until then:
+does: `versions/26.3/renderer-core/` is the 26.3 counterpart of
+`renderer-core/`, and it is not limited to Java 8. Most of its files sit at
+their upstream counterpart's relative path, while the files upstream renamed or
+rewrote when it extracted the core keep the port's names or live in
+`versions/26.3/minecraft/`. That is a deliberate, transitional state, and
+converging the port onto the shared core is the next project. Until then:
 
 - A fix to shared renderer logic for 26.3 goes into the matching file under
   `versions/26.3/renderer-core/`. Never edit `renderer-core/` or
@@ -183,10 +185,11 @@ project. Until then:
   lose entries, never gain them. New 26.3 code and tests go in
   `versions/26.3/minecraft/` or `versions/26.3/fabric/`.
 - An upstream change that a merge brings into `renderer-core/` or
-  `versions/1.21.1/` is a porting to-do for the matching file under
-  `versions/26.3/`. [Syncing With
-  Upstream](../CONTRIBUTING.md#syncing-with-upstream) describes the merge and
-  how to list those changes with `git diff` over the two directories.
+  `versions/1.21.1/` is a porting to-do for its counterpart under
+  `versions/26.3/`, found by class and content rather than by path.
+  [Syncing With Upstream](../CONTRIBUTING.md#syncing-with-upstream) describes
+  the merge and how to list those changes with `git diff` over the two
+  directories.
 
 [`versions/26.3/renderer-core/README.md`](../versions/26.3/renderer-core/README.md)
 states the same rule beside the copy.

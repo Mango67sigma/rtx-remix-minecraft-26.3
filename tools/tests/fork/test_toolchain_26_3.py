@@ -87,6 +87,12 @@ def test_the_materials_zip_declares_the_targets_resource_pack_format():
     ):
         assert statement in build, statement
 
+    # The format is a task input, so a catalog bump rewrites the pack.mcmeta the Materials zip carries.
+    meta = re.search(r"(?ms)^def materialsPackMetaTask = tasks\.register\('materialsPackMeta'\) \{(.+?)^\}", build)
+    assert meta is not None, "build.gradle registers no materialsPackMeta task"
+    assert "inputs.property('resourcePackFormat', materialsPackFormat)" in meta.group(1)
+    assert "declareMaterialsPackFormat(meta)" in meta.group(1)
+
 
 def test_the_dev_client_runs_with_the_installers_recommended_jvm_arguments():
     # AGENTS.md: the unconditional vmArgs of the 26.3 Fabric run and RECOMMENDED_JVM_ARGS stay identical.

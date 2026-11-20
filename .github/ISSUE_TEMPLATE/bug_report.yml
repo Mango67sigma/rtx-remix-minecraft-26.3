@@ -45,11 +45,15 @@ body:
   - type: input
     id: mod-file
     attributes:
-      label: Mod file name
+      label: Mod build
       description: >-
-        The full file name from the mods folder in your game directory. It
-        carries the version and the build, and identifies the exact code.
-      placeholder: rtx-remix-renderer-0.1.0-<stamp>-<hash>.jar
+        The `RTX Remix Renderer v<version> initializing` line near the top of
+        `logs\latest.log` in your game directory. Its version ends in the build
+        stamp and commit. The installer names the mod
+        `rtx-remix-renderer-fabric.jar`, so that file name does not identify the
+        build. A JAR installed by hand keeps the release's name, which carries
+        the same stamp.
+      placeholder: RTX Remix Renderer v0.1.3-<stamp>-<hash> initializing
     validations:
       required: true
 

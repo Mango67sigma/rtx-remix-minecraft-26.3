@@ -37,9 +37,9 @@ The checkout follows NVIDIA's layout, in which the root `project-state.json`
 catalogs every Minecraft target, its support state, integration module, and
 loaders, and a version port adds one `versions/<version>/` subtree that uses
 the shared renderer core. The 26.3 port does not use the shared core yet: it
-compiles its own copy, `versions/26.3/renderer-core/`, file for file the
-counterpart of `renderer-core/`, as a stated transitional state. Moving it onto
-the shared core is the next project.
+compiles its own copy, `versions/26.3/renderer-core/`, the counterpart of
+`renderer-core/`, as a stated transitional state. Moving it onto the shared
+core is the next project.
 [Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md#this-fork-the-263-port)
 describes the layout and the rules for changing it.
 
@@ -369,8 +369,11 @@ remapped. Remove the diagnostic flag and export afterwards.
 With no `-PmcVersion`, the root task runs the 26.3 Fabric suite,
 `:versions:26.3:fabric:test`, which covers JVM-side behavior and data
 contracts. It runs with the repository root as its working directory, so a
-test reads `packaging/`, `docs/`, or `rtxremix-java/` by those paths. Before
-launch, verify the distributable artifact too:
+test reads `packaging/`, `docs/`, or `rtxremix-java/` by those paths. To run a
+subset, filter the module task,
+`.\gradlew.bat :versions:26.3:fabric:test --tests "<pattern>"`, because the
+root `test` task accepts no `--tests`. Before launch, verify the
+distributable artifact too:
 
 ```powershell
 .\gradlew.bat package -Parch=win64
@@ -530,9 +533,13 @@ git diff --stat HEAD MERGE_HEAD -- renderer-core versions/1.21.1
 
 while the merge is in progress, or `git diff --stat HEAD^1 HEAD -- renderer-core
 versions/1.21.1` once the merge commit exists. A file in `renderer-core/`
-has its counterpart at the same relative path under
-`versions/26.3/renderer-core/`; a file in `versions/1.21.1/minecraft/` has its
-counterpart under `versions/26.3/minecraft/` when the port has one. Read the
+usually has its counterpart at the same relative path under
+`versions/26.3/renderer-core/`. One that upstream renamed or rewrote when it
+extracted the core has it under another name there or in
+`versions/26.3/minecraft/`, so find it by class and content:
+`core/DirectoryRuntimePayload.java` is `minecraft/NativeExtractor.java` in the
+copy. A file in `versions/1.21.1/minecraft/` has its counterpart under
+`versions/26.3/minecraft/` when the port has one. Read the
 upstream commit messages for intent, port each change to the 26.3 API, and add
 its tests under `versions/26.3/minecraft/test/java/`. Changes to
 `rtxremix-java/`, `packaging/`, and the tools are shared and merge directly.

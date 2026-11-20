@@ -46,14 +46,15 @@ We hope the community helps fill it out. If something breaks,
 ## Download
 
 Download the installer bundle,
-`rtx-remix-renderer-mc<minecraft-version>-<mod-version>-installer.zip`,
-from the
+`rtx-remix-renderer-mc<minecraft-version>-<version>-installer.zip`, where
+`<version>` is the mod version followed by a build timestamp and short commit
+hash, from the
 [Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest);
-for this port it is `rtx-remix-renderer-mc26.3-<mod-version>-installer.zip`.
+for this port it is `rtx-remix-renderer-mc26.3-<version>-installer.zip`.
 It holds the self-contained mod JAR for Fabric under `mods/fabric/`, the
 [RTX Remix Materials pack and the RTX Remix Showcase World](#showcase-world-and-materials-pack),
 and the installer that sets them up. The same JAR is also on the Releases page
-as `rtx-remix-renderer-fabric-mc26.3-<mod-version>.jar` for manual installation.
+as `rtx-remix-renderer-fabric-mc26.3-<version>.jar` for manual installation.
 
 ## Install in four steps
 

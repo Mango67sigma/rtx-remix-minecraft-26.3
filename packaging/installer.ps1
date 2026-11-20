@@ -2651,7 +2651,16 @@ function Initialize-PrismInstance {
     if (Test-Path -LiteralPath $packPath -PathType Leaf) {
         try {
             $existing = [IO.File]::ReadAllText($packPath, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
-            $loaderUids = @($script:LOADER_CATALOG.Values | ForEach-Object PrismUid)
+            # Fork: the selected target's catalog does not know the loaders of
+            # the other declared versions, such as the Forge or NeoForge
+            # component of an instance NVIDIA's 1.21.1 installer made.
+            $loaderUids = @($script:PROJECT_CATALOG.Values | ForEach-Object { $_.Loaders.Values } | ForEach-Object PrismUid | Select-Object -Unique)
+            foreach ($component in @($existing.components | Where-Object {
+                $_.uid -in $loaderUids -and $_.uid -ne $provider.PrismUid
+            })) {
+                $name = if ($component.cachedName) { $component.cachedName } else { $component.uid }
+                Write-Info "Removed the Prism instance's $name $($component.version); the mod now loads with $ModLoader."
+            }
             $components = @($existing.components | Where-Object {
                 $_.uid -ne 'net.minecraft' -and $_.uid -notin $loaderUids
             })

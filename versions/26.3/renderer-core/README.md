@@ -1,9 +1,11 @@
 # The 26.3 Port's Copy Of The Renderer Core
 
-This directory is the Minecraft 26.3 port's own renderer core. File for file,
-it is the 26.3 counterpart of NVIDIA's shared [`renderer-core/`](../../../renderer-core/):
+This directory is the Minecraft 26.3 port's own renderer core. It is the 26.3
+counterpart of NVIDIA's shared [`renderer-core/`](../../../renderer-core/):
 `src/` holds the sources, `test/` the tests, and `main/resources/` the
-resources, at the same relative paths as their upstream counterparts. The
+resources. Most files sit at their upstream counterpart's relative path, while
+the files upstream renamed or rewrote when it extracted the core keep the
+port's names or live in `versions/26.3/minecraft/`. The
 catalog names it as the 26.3 target's `rendererCore` in
 [`project-state.json`](../../../project-state.json), and
 `gradle/loader-module.gradle` compiles it with `versions/26.3/minecraft/` and
@@ -28,7 +30,10 @@ gone.
 - A fix to shared renderer logic for 26.3 goes into the matching file here,
   never into `renderer-core/`.
 - When an upstream merge changes a file in `renderer-core/`, port that change
-  to the file at the same path here.
+  to its counterpart here, found by class and content rather than by path. For
+  example, under `src/com/nvidia/rtxremix/`, `core/DirectoryRuntimePayload.java`
+  is `minecraft/NativeExtractor.java` here, and
+  `minecraft/terrain/ChunkManager.java` is in `versions/26.3/minecraft/`.
 - When a file here is replaced by the shared core's, delete it and its line in
   `tools/tests/fork/renderer_core_copy_ledger.txt`.
 
