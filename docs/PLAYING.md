@@ -14,7 +14,8 @@ install Java, Fabric, or the RTX Remix runtime yourself.
 - An internet connection while the installer runs.
 - 16 GB of system memory is recommended.
 
-Java 25, Fabric, and the RTX Remix runtime are installed for you.
+Java 25, Fabric Loader, Fabric API, and the RTX Remix runtime are installed
+for you.
 
 ## Before You Start
 
@@ -46,7 +47,8 @@ fixed.
 
 ## Download
 
-Download the installer bundle, `rtx-remix-renderer-<version>-installer.zip`,
+Download the installer bundle,
+`rtx-remix-renderer-mc<minecraft-version>-<mod-version>-installer.zip`,
 from the
 [Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest)
 and extract it. It holds the mod, the RTX Remix Materials texture pack, the
@@ -84,9 +86,10 @@ Microsoft account.
    administrator under another account.
 3. The installer opens a menu and preselects the right action for what is
    already on your machine: Install, Upgrade, or Repair. Press Enter to accept
-   it. Answer the launcher question described above. Upgrade and Repair keep
-   the launcher that already has the mod and do not ask; to use the other
-   launcher, choose Install instead.
+   it. Answer the launcher question described above. Fabric is the only mod
+   loader this port offers, so the installer does not ask for one. Upgrade and
+   Repair keep the launcher that already has the mod and do not ask; to use the
+   other launcher, choose Install instead.
 4. Keep all three items ticked in the list that follows: RTX Remix Renderer,
    the mod; RTX Remix Materials, the texture pack the renderer was made with;
    and RTX Remix Showcase World, the world it was tuned against. The highlight
@@ -115,15 +118,16 @@ Microsoft account.
 ### Installing Without The Installer
 
 If you already run a Fabric instance for Minecraft 26.3 in a launcher of
-your choice, you can install by hand from the separate files on the
-[Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest).
-The instance needs Java 25, Fabric Loader 0.20.1 or newer, and Fabric API
-0.165.0+26.3 or newer. The installer bundle holds the same three files,
-under `mods\`, `resourcepacks\`, and `saves\`.
+your choice, you can install by hand from the release's standalone files on the
+[Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest)
+or from the same three files inside the installer bundle, under
+`mods\fabric\`, `resourcepacks\`, and `saves\`. The instance needs Java 25,
+Fabric Loader 0.20.1 or newer, and Fabric API 0.165.0+26.3 or newer.
 
-1. Copy the mod, `rtx-remix-renderer-<version>.jar`, into the instance's
-   `mods\` folder. It carries the runtime and its textures and unpacks them
-   into the game folder on first launch.
+1. Copy the mod, `rtx-remix-renderer-fabric-mc26.3-<version>.jar` from the
+   release or the bundle's `mods\fabric\` folder, into the instance's `mods\`
+   folder. It carries the runtime and its textures and unpacks them into the
+   game folder on first launch.
 2. Copy RTX Remix Materials, `RTX-Remix-Materials-<version>.zip`, into the
    instance's `resourcepacks\` folder without extracting it, start the game,
    and turn it on in Options, Resource Packs.
@@ -278,7 +282,7 @@ following:
 
 | What to include | Where to find it |
 |---|---|
-| The mod file name | The `mods\` folder in the game directory. The name ends in a build stamp, which identifies the exact build. |
+| The mod's build | The `RTX Remix Renderer v<version> initializing` line near the top of `latest.log`; the version ends in a build stamp, which identifies the exact build. The installer names the mod `rtx-remix-renderer-fabric.jar`, so the file name alone does not; a JAR installed by hand keeps the release's name, which carries the same stamp. |
 | Which launcher you used | Prism or Microsoft. |
 | Your GPU and driver version | The NVIDIA app, or `nvidia-smi` in a Command Prompt. |
 | Whether a laptop display is driven by the built-in graphics chip | Windows Settings, Display, Graphics. |
@@ -312,13 +316,14 @@ but still preserves existing profiles.
 ## Uninstalling
 
 Run `install.bat` and choose Uninstall. It removes the mod files, such as the
-mod, Fabric API, the runtime, RTX Remix Materials, and `rtx.conf`, and then
+mod, Fabric API, the runtime, RTX Remix Materials, and `rtx.conf`. It then
 offers to remove the Java, the Prism portable, and the Prism instance it
-installed for you. Basic uninstall leaves your worlds alone, the showcase world
-included, along with any lighting profiles you authored under `rtx-remix\`.
-The optional Prism instance or portable cleanup deletes everything inside
-those directories, including worlds and authored profiles. The full manual
-file list is in [packaging/INSTALL.md](../packaging/INSTALL.md).
+installed for you. Basic uninstall leaves your worlds alone, the showcase
+world included, along with any lighting profiles you authored under
+`rtx-remix\`. The optional Prism instance or portable cleanup deletes
+everything inside those directories, including worlds and authored profiles.
+The full manual file list is in
+[packaging/INSTALL.md](../packaging/INSTALL.md).
 
 ## Going Further
 

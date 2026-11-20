@@ -78,20 +78,37 @@ breaks, report it (see below); that is how it gets fixed.
 |---|---|
 | `install.bat` | The installer. This is the one to run |
 | `installer.ps1` | The installer itself. `install.bat` is a thin wrapper around it |
+| `project-state.json` | The release's loader, version, and artifact catalog, consumed by the installer |
 | `README.md` | This file |
 | `INSTALLER_REFERENCE.md` | The installer modes, every flag, headless and CI use, and what the installer verifies before it downloads anything. |
-| `mods\` | The mod, RTX Remix Renderer, one JAR |
+| `mods\fabric\` | The mod, RTX Remix Renderer, one self-contained Fabric JAR for Minecraft 26.3 |
 | `resourcepacks\` | RTX Remix Materials, the texture pack, one ZIP. The installer copies it as it is, and Minecraft loads it without unpacking |
 | `saves\` | RTX Remix Showcase World, one ZIP. The installer unpacks it into the game's `saves\NVIDIA RTX Demo\` |
 | `migrate_resource_packs.ps1` | Migrates legacy baseline packs and resource-pack ordering |
 | `LICENSE`, `NOTICE` | The project's Apache License 2.0 and its attribution notices |
 | `THIRD_PARTY_NOTICES.md`, `packaging\licenses\` | The third-party components the mod JAR carries, chiefly the RTX Remix runtime, and their license texts |
 
-The mod file name ends in the version, a build timestamp, and a short commit
-hash, which together identify the exact build. Keep the whole name for bug
-reports. A file name ending in `-win64` or `-arm64` carries one architecture;
-any other name carries both, and the matching runtime is unpacked on first
-launch.
+The packaged mod file name ends in the version, a build timestamp, and a short
+commit hash, which together identify the exact build. The installer copies it
+to the stable loader-specific name declared by `project-state.json`,
+`mods\rtx-remix-renderer-fabric.jar`, and removes the versioned
+`rtx-remix-renderer-*.jar` an earlier release installed; the
+`RTX Remix Renderer v<version> initializing` line near the top of
+`logs\latest.log` identifies the running build for bug reports. A packaged file name
+ending in `-win64` or `-arm64` carries one architecture; any other name carries
+both, and the matching runtime is unpacked on first launch.
+
+The installer reads `project-state.json` beside itself in a release bundle (or
+at the repository root when run from `packaging\`). It requires schema
+`multi-version/v1`; its keyed `versions` catalog owns Minecraft targets and
+each target's keyed `loaders` catalog owns display names, versions, artifacts,
+installed names, built-in resource packs, Gradle metadata, and Prism
+components. Loader-specific Microsoft setup and companion handling remain
+provider code in `installer.ps1`. A missing or invalid manifest, target, or
+provider declaration is a packaging error and stops before installation. The
+catalog also declares targets this archive does not carry, such as NVIDIA's
+Minecraft 1.21.1 editions; the installer offers only the version whose JAR is
+under `mods\`, here 26.3.
 
 ## Detailed installation
 
@@ -188,12 +205,21 @@ enabled. For a direct comparison, type `/rtx off`, look around, then `/rtx on`.
 ## Updating
 
 Download the new installer bundle,
-`rtx-remix-renderer-<version>-installer.zip`, from
+`rtx-remix-renderer-mc26.3-<version>-installer.zip`, from
 <https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest>,
 extract it, and run `install.bat` again. It
 preselects Upgrade and replaces the mod and its supporting files in the
-launcher that already has them. Launcher, Minecraft, Fabric, and other options
-are preserved. To install into the other launcher instead, choose Install.
+launcher that already has them. Launcher, Fabric, and other options are
+preserved. To install into the other launcher instead, choose Install.
+
+An install made by an earlier release moves to Minecraft 26.3 with it, even
+one made by NVIDIA's Minecraft 1.21.1 installer. The earlier versioned
+`rtx-remix-renderer-*.jar` is replaced by `rtx-remix-renderer-fabric.jar`. In
+Prism, the instance's Minecraft and Fabric Loader become 26.3's, the
+components Prism added for the old Minecraft (Intermediary Mappings, LWJGL)
+are dropped so Prism adds them again for 26.3, its Java version becomes 25,
+and on ARM64 a Java 21 pin is replaced by the managed Java 25.
+`INSTALLER_REFERENCE.md` gives the details.
 
 Installing the mod also removes an old generated `RtxRemix-LabPBR` pack
 identified by its metadata and texture inventory, leaving other packs alone.
@@ -250,8 +276,8 @@ The automated uninstall removes these:
 - `remix-sdk\`
 - `rtx.conf`
 - `.rtx-remix-version`
-- `textures\water_normals_flipbook.dds` and
-  `textures\overcast_thunderstorm_bc6u.dds`
+- the legacy `textures\water_normals_flipbook.dds`, if an earlier release left
+  it behind, and `textures\overcast_thunderstorm_bc6u.dds`
 - `resourcepacks\RTX-Remix-Materials-<version>.zip`, RTX Remix Materials, and
   its entry in the `resourcePacks:` line of `options.txt`
 - `resourcepacks\RtxRemix-LabPBR\`, if left by an earlier version
@@ -294,10 +320,12 @@ if you are wiping it anyway.
 | `Failed to extract JDK 25 archive:` followed by the error details | Check free disk space and the permissions on your temporary folder, then re-run the installer to download and extract a fresh archive |
 | The Fabric API download fails | `maven.fabricmc.net` has to be reachable. Check the firewall and re-run |
 | The installer refuses to choose a launcher | Both Prism and the Microsoft launcher are installed and the run was headless. Pass `-Launcher Prism` or `-Launcher Microsoft` |
+| An unattended run says that `-MinecraftVersion` is required | Pass the version the bundle carries: `-MinecraftVersion 26.3` |
 | `Install RTX Remix Renderer first` | RTX Remix Renderer was unticked, and the launcher has no RTX Remix game folder for the pack and the world to go into. Run the installer again with the mod ticked |
 | The RTX Remix Materials step says `Could not place` or `Could not remove the older` | Minecraft holds its resource packs open while it runs. Close it and run the installer again |
 | `Could not unpack the RTX Remix Showcase World` | Nothing of the world was left in `saves\`. Check the free space on that drive, or download the installer bundle again if the zip is damaged |
 | `Could not move the RTX Remix Showcase World` | Windows or antivirus software was still scanning the unpacked files. Nothing of the world was left in `saves\`. Run the installer again |
+| An unattended run says that `-ModLoader` is required | Pass the loader explicitly: `-ModLoader Fabric` |
 
 Problems inside the game rather than inside the installer, such as a black
 screen or a flat-looking world, are covered by the player guide at
@@ -324,7 +352,8 @@ sure which it is, report it on this project and it will be moved.
 Rendering problems are hard to act on without specifics, so include all of
 the following:
 
-1. The mod file name, from the `mods\` folder. It identifies the exact build.
+1. The mod's build: the `RTX Remix Renderer v<version> initializing` line near
+   the top of `logs\latest.log`. The installed file name no longer carries it.
 2. Which launcher you used, Prism or Microsoft.
 3. Your GPU and driver version, from the NVIDIA app or `nvidia-smi`.
 4. Whether a laptop display is driven by the built-in graphics chip, from

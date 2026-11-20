@@ -24,7 +24,8 @@ from typing import Any
 
 from PIL import Image
 
-from .. import client, sdk
+from .. import client, loader_registry, sdk
+from .. import config as tools_config
 from . import runner, util
 
 SHOT_SET = "docs"
@@ -268,8 +269,10 @@ def resolve_selection(config: dict) -> runner.BenchmarkSelection:
 
 
 def enabled_pack_names(config: dict) -> list[str]:
-    # The built-in baseline is the mod's own hidden pack, which Fabric API names for the mod id.
-    names = ["rtx-remix-renderer"]
+    registry = loader_registry.load_registry()
+    loader = registry.get(tools_config.mod_loader(config))
+    # A built-in pack options.txt never lists is the mod's own hidden pack, which Fabric API names for the mod id.
+    names = [loader.builtin_resource_pack if loader.builtin_resource_pack_listed else registry.mod_id]
     art = runner.configured_resource_pack(config)
     mode = str(art.get("mode") or "none").strip().lower()
     if mode == "pinned":

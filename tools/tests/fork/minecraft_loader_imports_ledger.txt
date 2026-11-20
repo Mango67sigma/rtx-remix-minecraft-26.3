@@ -1,0 +1,17 @@
+# The files under versions/26.3/minecraft/ that import a loader API (net.fabricmc and the like), which upstream keeps
+# out of a shared Minecraft module. Moving them to versions/26.3/fabric/ may only remove lines; nothing may add one.
+main/java/com/nvidia/rtxremix/minecraft/RemixRenderer.java
+main/java/com/nvidia/rtxremix/minecraft/WorkerPoolCap.java
+main/java/com/nvidia/rtxremix/minecraft/block/CopperBeaconBlockEntity.java
+main/java/com/nvidia/rtxremix/minecraft/block/CopperBeaconScreenHandler.java
+main/java/com/nvidia/rtxremix/minecraft/block/CopperBeaconUpdatePayload.java
+main/java/com/nvidia/rtxremix/minecraft/block/SpotLightBlock.java
+main/java/com/nvidia/rtxremix/minecraft/entity/RemixSubmitNodeCollector.java
+main/java/com/nvidia/rtxremix/minecraft/entity/ec/EntityCullingSupport.java
+main/java/com/nvidia/rtxremix/minecraft/lod/dh/DistantHorizonsSupport.java
+main/java/com/nvidia/rtxremix/minecraft/particle/rapids/RapidFoamDotParticle.java
+main/java/com/nvidia/rtxremix/minecraft/particle/rapids/RapidFoamParticle.java
+main/java/com/nvidia/rtxremix/minecraft/particle/rapids/RapidMistParticle.java
+main/java/com/nvidia/rtxremix/minecraft/screen/CopperBeaconScreen.java
+main/java/com/nvidia/rtxremix/minecraft/terrain/capture/BlockQuadEmitter.java
+test/java/com/nvidia/rtxremix/minecraft/RtxRemixModCommandTest.java

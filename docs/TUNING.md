@@ -1,7 +1,7 @@
 # Tuning
 
 Developer knobs: the JVM system properties the mod reads, the Gradle
-pass-throughs `build.gradle` understands, the JVM arguments a play install and
+pass-throughs the build understands, the JVM arguments a play install and
 a development launch get, and the files the mod owns in the game directory.
 
 None of this is needed to play. Everything a player should change is in the
@@ -324,12 +324,16 @@ opts out and keeps your value. `WorkerPoolCap` logs which of the two happened.
 
 ## Gradle Pass-Throughs
 
-`gradlew` accepts these `-P` properties. Architecture selection applies to any
-task; the rest apply to `runClient`, Fabric's standard Gradle task, and not to
-clients the developer tools launch.
+The repository's root `gradlew` accepts these `-P` properties. Architecture
+selection applies to every selected loader's build and package tasks; the
+runtime options apply to Fabric's selected `runClient` task and not to other
+loaders or to clients the developer tools launch.
 
 | Property | Effect |
 |---|---|
+| `-PmcVersion=<version>` | Select a Minecraft target from `project-state.json`. Defaults to 26.3; a version outside `builtVersions`, such as 1.21.1, is refused. Quote it in PowerShell |
+| `-Ploader=<loader-id>` | Configure and build only one loader for the selected Minecraft target; 26.3 declares only `fabric` |
+| `-PbuildUnlistedVersion=true` | Configure a declared version that `builtVersions` leaves out. 1.21.1 still does not build with this checkout's Gradle 9.8.2 wrapper |
 | `-Parch=win64` or `-Parch=arm64` | Build and package one architecture instead of both |
 | `-PrtxPreset=<low|medium|high|ultra>` | Sets `rtxremix.preset`, which selects Remix's graphics tier for that session only |
 | `-PmcQuickPlayServer=<host:port>` | Join a server on launch |
@@ -338,13 +342,14 @@ clients the developer tools launch.
 | `-PbenchmarkJfrThrowables=true` | Adds exception and error throw events to that recording |
 | `-PbenchmarkQuickPlayWorld=<name>` | Loads a single-player world on launch |
 
-`mod_version` lives in `gradle.properties`; the build appends a timestamp, the
-short commit hash, and a dirty marker to it.
+`mod.version` lives in `project-state.json`; the build appends a
+timestamp, the short commit hash, and a dirty marker to it.
 
 ## JVM Arguments
 
 A development client and a fresh install share the unconditional tuning
-arguments in `loom.runs.client.vmArgs` in [build.gradle](../build.gradle) and
+arguments in `loom.runs.client.vmArgs` in
+[versions/26.3/fabric/build.gradle](../versions/26.3/fabric/build.gradle) and
 `RECOMMENDED_JVM_ARGS` in
 [packaging/installer.ps1](../packaging/installer.ps1). The developer tools
 read `RECOMMENDED_JVM_ARGS` for every launch. Keep those unconditional

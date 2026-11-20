@@ -21,8 +21,10 @@ from unittest.mock import Mock, call, patch
 import pytest
 from conftest import FakeLauncher, FakeProcess
 
-from rtx_tools import cli, client
+from rtx_tools import cli, client, loader_registry
 from rtx_tools.benchmark import runner, util
+
+PROJECT_STATE = loader_registry.load_registry()
 
 pytestmark = pytest.mark.usefixtures("isolated_tools_config")
 
@@ -36,9 +38,9 @@ VALID_CAMERA_PATH_JSON = (
 def options_value(options: str, key: str) -> str | None:
     """The value written for `key`, or None when the key is absent.
 
-    An empty value is not an absent key in options.txt: Minecraft 26.3 reads
-    no fullscreenResolution as "Current" but warns about an empty one, so
-    substring assertions cannot tell "absent" from "present and empty"."""
+    An empty value is meaningful in options.txt (Minecraft reads an empty
+    fullscreenResolution as "Current"), so substring assertions cannot tell
+    "absent" from "present and empty"."""
     for line in options.splitlines():
         name, separator, value = line.partition(":")
         if separator and name == key:
@@ -247,6 +249,19 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(original["profiling"]["postResultExitDelaySeconds"], 10)
         self.assertIn("postResultExitDelayReason", config["profiling"])
 
+    def test_ci_config_skips_tracy_drain_for_release_runtime(self):
+        original = {
+            "profiling": {
+                "postResultExitDelaySeconds": 10,
+                "postResultProcessWaitSeconds": 180,
+            }
+        }
+        config = runner.config_for_run(original, ci=True, tracy_enabled=False)
+
+        self.assertEqual(config["profiling"]["postResultExitDelaySeconds"], 10)
+        self.assertEqual(config["profiling"]["postResultProcessWaitSeconds"], 180)
+        self.assertNotIn("tracyDrainWaitForIdle", config["profiling"])
+
     def test_ci_config_allows_depth_override(self):
         original = {"profiling": {"tracyJavaMaxDepth": 5}}
         with patch.dict(os.environ, {"BENCHMARK_CI_TRACY_JAVA_MAX_DEPTH": "0"}):
@@ -290,6 +305,14 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(original["warmupLap"])
         self.assertNotIn("overrideWidth", original["render"])
 
+    def test_config_for_run_records_effective_loader_override(self):
+        original = {"modLoader": "fabric"}
+        with patch.dict(os.environ, {"RTXREMIX_MOD_LOADER": "forge"}):
+            config = runner.config_for_run(original, ci=True)
+
+        self.assertEqual(config["modLoader"], "forge")
+        self.assertEqual(original["modLoader"], "fabric")
+
     def test_post_result_process_wait_covers_profiler_delay(self):
         config = {"profiling": {"postResultExitDelaySeconds": 300, "postResultProcessWaitSeconds": 180}}
 
@@ -325,57 +348,7 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("onboardAccessibility:false", options)
             self.assertIn("tutorialStep:none", options)
             self.assertIn("skipMultiplayerWarning:true", options)
-
-    def test_write_options_leaves_out_the_options_26_3_dropped(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
-            runner.write_options({"render": {}})
-
-            options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
-            # hideBundleTutorial is gone from Options, and graphicsPreset replaced graphicsMode.
-            self.assertIsNone(options_value(options, "hideBundleTutorial"))
-            self.assertIsNone(options_value(options, "graphicsMode"))
-            self.assertEqual(options_value(options, "graphicsPreset"), '"fancy"')
-
-    def test_write_options_stamps_a_new_file_with_the_games_data_version(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
-            runner.write_options({"render": {}})
-
-            options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
-            # world_version in 26.3's version.json, which the game stamps into the options.txt it saves.
-            self.assertEqual(options.splitlines()[0], "version:5023")
-            self.assertEqual(runner.OPTIONS_DATA_VERSION, 5023)
-
-    def test_write_options_restamps_an_existing_file_older_than_the_games_data_version(self):
-        # 3955 is 1.21.1's. A file with no stamp reads as version 0, and an unreadable one is no better.
-        for first_line in ("version:3955", "", "version:soon"):
-            with self.subTest(first_line=first_line), tempfile.TemporaryDirectory() as tmp:
-                options_path = Path(tmp) / "options.txt"
-                options_path.write_text(
-                    "\n".join(filter(None, [first_line, "graphicsMode:2", "key_key.jump:key.keyboard.space"])) + "\n",
-                    encoding="utf-8",
-                )
-                with patch.object(runner.util, "RUN_DIR", Path(tmp)):
-                    runner.write_options({"render": {}})
-
-                options = options_path.read_text(encoding="utf-8")
-                self.assertEqual(options.splitlines()[0], "version:5023")
-                self.assertEqual(options.count("\nversion:") + options.startswith("version:"), 1)
-                # The data fixers would have overwritten the preset of a file this old, so it is written beside the
-                # stamp. Lines the harness does not own stay.
-                self.assertEqual(options_value(options, "graphicsPreset"), '"fancy"')
-                self.assertEqual(options_value(options, "key_key.jump"), "key.keyboard.space")
-
-    def test_write_options_leaves_a_data_version_the_game_wrote_alone(self):
-        for version in ("5023", "5100"):
-            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
-                options_path = Path(tmp) / "options.txt"
-                options_path.write_text(f'version:{version}\ngraphicsPreset:"custom"\n', encoding="utf-8")
-                with patch.object(runner.util, "RUN_DIR", Path(tmp)):
-                    runner.write_options({"render": {}})
-
-                options = options_path.read_text(encoding="utf-8")
-                self.assertEqual(options.splitlines()[0], f"version:{version}")
-                self.assertEqual(options_value(options, "graphicsPreset"), '"fancy"')
+            self.assertIn("hideBundleTutorial:true", options)
 
     def test_write_options_converts_fov_degrees_to_minecraft_option_value(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
@@ -384,64 +357,33 @@ class RunnerTests(unittest.TestCase):
             options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
             self.assertIn("fov:0.5", options)
 
-    def test_write_options_leaves_fullscreen_resolution_out_by_default(self):
+    def test_write_options_leaves_fullscreen_resolution_on_current_by_default(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
             runner.write_options({"render": {"overrideWidth": 1920, "overrideHeight": 1080}})
 
             options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
             self.assertIn("overrideWidth:1920", options)
             self.assertIn("overrideHeight:1080", options)
-            # No line is how 26.3 is told to prefer no mode. An empty value is a mode to parse, which fails and logs
-            # "Failed to parse video mode ''".
-            self.assertNotIn("fullscreenResolution", options)
+            self.assertEqual(options_value(options, "fullscreenResolution"), "")
 
     def test_write_options_pins_fullscreen_resolution_when_the_display_is_pinned(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
             runner.write_options({"render": {"overrideWidth": 1920, "overrideHeight": 1080}}, pin_display=True)
 
             options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
-            # What 26.3's VideoMode.write produces: a JSON object, where 1.21.1 wrote 1920x1080@60:24.
-            self.assertEqual(
-                options_value(options, "fullscreenResolution"),
-                '{"width":1920,"height":1080,"red_bits":8,"green_bits":8,"blue_bits":8,"refresh_rate":60.0}',
-            )
+            self.assertEqual(options_value(options, "fullscreenResolution"), "1920x1080@60:24")
 
-    def test_write_options_clears_a_stale_fullscreen_resolution(self):
-        # A pin from an earlier run, and the empty value that earlier tools wrote for no pin.
-        for stale in (
-            'fullscreenResolution:{"width":2560,"height":1440,"red_bits":8,"green_bits":8,"blue_bits":8,'
-            '"refresh_rate":144.0}',
-            "fullscreenResolution:",
-        ):
-            with (
-                self.subTest(stale=stale),
-                tempfile.TemporaryDirectory() as tmp,
-                patch.object(runner.util, "RUN_DIR", Path(tmp)),
-            ):
-                options_path = Path(tmp) / "options.txt"
-                options_path.write_text(f"{stale}\nkey_key.jump:key.keyboard.space\n", encoding="utf-8")
-
-                # The window size is set, so no line can only come from an unpinned display; pinning would rewrite
-                # it to 1920x1080.
-                runner.write_options({"render": {"overrideWidth": 1920, "overrideHeight": 1080}})
-
-                options = options_path.read_text(encoding="utf-8")
-                self.assertNotIn("fullscreenResolution", options)
-                self.assertEqual(options_value(options, "key_key.jump"), "key.keyboard.space")
-
-    def test_write_options_replaces_a_stale_fullscreen_resolution_when_the_display_is_pinned(self):
+    def test_write_options_clears_a_stale_pinned_fullscreen_resolution(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
             options_path = Path(tmp) / "options.txt"
-            options_path.write_text("fullscreenResolution:\n", encoding="utf-8")
+            options_path.write_text("fullscreenResolution:2560x1440@144:24\n", encoding="utf-8")
 
-            runner.write_options({"render": {"overrideWidth": 1920, "overrideHeight": 1080}}, pin_display=True)
+            # The window size is set, so an empty value can only come from an
+            # unpinned display; pinning would rewrite it to 1920x1080.
+            runner.write_options({"render": {"overrideWidth": 1920, "overrideHeight": 1080}})
 
             options = options_path.read_text(encoding="utf-8")
-            self.assertEqual(options.count("fullscreenResolution:"), 1)
-            self.assertEqual(
-                options_value(options, "fullscreenResolution"),
-                '{"width":1920,"height":1080,"red_bits":8,"green_bits":8,"blue_bits":8,"refresh_rate":60.0}',
-            )
+            self.assertEqual(options_value(options, "fullscreenResolution"), "")
 
     def test_write_options_rejects_pinning_the_display_without_a_window_size(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
@@ -489,34 +431,30 @@ class RunnerTests(unittest.TestCase):
                     benchmark_json,
                 )
 
-    def test_write_options_lists_no_fabric_pack_and_no_incompatible_pack(self):
-        # Fabric API 26.x loads the mod's resources as a pack of its own named for the mod, so there is no `fabric`
-        # pack to list, and the game removes an entry for one with a warning. The art pack declares the game's format,
-        # so nothing is listed as incompatible either.
-        with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
-            options_path = Path(tmp) / "options.txt"
-            runner.write_options({"render": {}}, resource_pack_files=["rtx-remix-art"])
-            fresh = options_path.read_text(encoding="utf-8")
-
-            options_path.write_text(
-                'resourcePacks:["vanilla","fabric","file/rtx-remix-art"]\nincompatibleResourcePacks:[]\n',
-                encoding="utf-8",
-            )
-            runner.write_options({"render": {}}, resource_pack_files=["rtx-remix-art"])
-            rewritten = options_path.read_text(encoding="utf-8")
-
-        self.assertEqual(options_value(fresh, "resourcePacks"), '["vanilla","file/rtx-remix-art"]')
-        self.assertIsNone(options_value(fresh, "incompatibleResourcePacks"))
-        self.assertEqual(options_value(rewritten, "resourcePacks"), '["vanilla","file/rtx-remix-art"]')
-        # The game keeps that line itself, so a file that has one keeps it.
-        self.assertEqual(options_value(rewritten, "incompatibleResourcePacks"), "[]")
-
     def test_write_options_uses_configured_resource_pack_order(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
             runner.write_options({"render": {}, "resourcePacks": ["world-demo-pbr"]})
 
             options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
-            self.assertIn('resourcePacks:["vanilla","file/world-demo-pbr"]', options)
+            self.assertIn('resourcePacks:["vanilla","fabric","file/world-demo-pbr"]', options)
+
+    def test_write_options_uses_forge_mod_resources(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(runner.util, "RUN_DIR", Path(tmp)):
+            runner.write_options({"modLoader": "forge", "render": {}})
+
+            options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
+            self.assertIn('resourcePacks:["vanilla","mod_resources"]', options)
+
+    def test_write_options_applies_loader_environment_override(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(runner.util, "RUN_DIR", Path(tmp)),
+            patch.dict(os.environ, {"RTXREMIX_MOD_LOADER": "forge"}),
+        ):
+            runner.write_options({"modLoader": "fabric", "render": {}})
+
+            options = (Path(tmp) / "options.txt").read_text(encoding="utf-8")
+            self.assertIn('resourcePacks:["vanilla","mod_resources"]', options)
 
     def test_fov_option_value_preserves_legacy_slider_values(self):
         self.assertEqual(runner.minecraft_fov_option_value(1.0), "1")
@@ -923,7 +861,7 @@ class RunnerTests(unittest.TestCase):
             self.assertFalse((run_dir / "resourcepacks" / "RtxRemix-LabPBR").exists())
             self.assertTrue((run_dir / "resourcepacks" / "world-demo-pbr" / "pack.mcmeta").exists())
             options = (run_dir / "options.txt").read_text(encoding="utf-8")
-            self.assertIn('resourcePacks:["vanilla","file/world-demo-pbr"]', options)
+            self.assertIn('resourcePacks:["vanilla","fabric","file/world-demo-pbr"]', options)
 
     def test_only_an_interactive_install_survives_a_failed_pinned_art_pack_fetch(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -959,7 +897,7 @@ class RunnerTests(unittest.TestCase):
 
             self.assertTrue((run_dir / "saves" / "rtx-benchmark" / "level.dat").exists())
             options = (run_dir / "options.txt").read_text(encoding="utf-8")
-            self.assertIn('resourcePacks:["vanilla"]', options)
+            self.assertIn('resourcePacks:["vanilla","fabric"]', options)
             self.assertIn("texture@0.56.0", stderr.getvalue())
 
     def test_install_fixtures_stages_configured_world_resource_pack_zip(self):
@@ -990,7 +928,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual((run_dir / "resourcepacks" / "world-demo-pbr.zip").read_bytes(), b"zip")
             self.assertFalse((run_dir / "resourcepacks" / "rtx-remix").exists())
             options = (run_dir / "options.txt").read_text(encoding="utf-8")
-            self.assertIn('resourcePacks:["vanilla","file/world-demo-pbr.zip"]', options)
+            self.assertIn('resourcePacks:["vanilla","fabric","file/world-demo-pbr.zip"]', options)
 
     def test_install_fixtures_drops_retired_baseline_from_legacy_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1014,7 +952,7 @@ class RunnerTests(unittest.TestCase):
                 runner.install_fixtures(config, runner.configure_benchmark_selection(config))
 
             self.assertIn(
-                'resourcePacks:["vanilla","file/world-demo-pbr"]',
+                'resourcePacks:["vanilla","fabric","file/world-demo-pbr"]',
                 (run_dir / "options.txt").read_text(encoding="utf-8"),
             )
             migration_logs = [call for call in log.call_args_list if "retired baseline" in str(call)]
@@ -1082,7 +1020,7 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue((staged.parent / ".rtx-remix-world-pack").is_file())
             self.assertFalse((pack / ".rtx-remix-world-pack").exists())
             options = (run_dir / "options.txt").read_text(encoding="utf-8")
-            self.assertIn('resourcePacks:["vanilla","file/rtx-remix"]', options)
+            self.assertIn('resourcePacks:["vanilla","fabric","file/rtx-remix"]', options)
 
     def test_install_fixtures_accepts_world_resource_pack_zip_named_rtx_remix(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1107,7 +1045,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual((run_dir / "resourcepacks" / "rtx-remix.zip").read_bytes(), b"world zip")
             self.assertNotIn("retired baseline", stderr.getvalue())
             options = (run_dir / "options.txt").read_text(encoding="utf-8")
-            self.assertIn('resourcePacks:["vanilla","file/rtx-remix.zip"]', options)
+            self.assertIn('resourcePacks:["vanilla","fabric","file/rtx-remix.zip"]', options)
 
     def test_install_fixtures_rejects_missing_configured_world_resource_pack(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1394,6 +1332,45 @@ class RunnerTests(unittest.TestCase):
         self.assertTrue(plan["sdk"]["wouldFetch"])
         self.assertFalse((raw / "world").exists())
         self.assertFalse((run_dir / "saves").exists())
+
+    def test_benchmark_run_plan_names_the_forge_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bench = root / "benchmark"
+            project = root / "project"
+            self._write_benchmark_world(bench, "DemoWorld", "simple")
+            (bench / "config.json").write_text(
+                '{"modLoader": "forge", "world": {"name": "DemoWorld", "camera": "simple"}}',
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                world=None,
+                camera=None,
+                ci=False,
+                runs=0,
+                strip_entities=False,
+                sdk_variant="release",
+                no_build=False,
+                dry_run=True,
+            )
+            with (
+                patch.object(runner.util, "BENCHMARK_DIR", bench),
+                patch.object(runner.util, "ASSETS_DIR", bench),
+                patch.object(runner.util, "SHARED_CONFIG_PATH", bench / "config.json"),
+                patch.object(runner.util, "PROJECT_DIR", project),
+                patch.object(runner, "host_arch", return_value="win64"),
+            ):
+                plan = runner.benchmark_run_plan(args)
+
+        self.assertEqual(plan["modLoader"], "forge")
+        self.assertEqual(plan["minecraftVersion"], PROJECT_STATE.minecraft_version)
+        self.assertEqual(plan["build"]["project"], str(project))
+        forge = PROJECT_STATE.get("forge")
+        self.assertEqual(plan["build"]["task"], forge.package_task)
+        self.assertEqual(
+            plan["build"]["args"][:5],
+            [forge.package_task, "-x", forge.test_task, *PROJECT_STATE.gradle_arguments("forge")],
+        )
 
     def test_run_benchmark_dry_run_does_not_fetch_build_or_create_result(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3935,6 +3912,39 @@ def test_run_benchmark_installs_the_build_after_gradle_makes_it(
         runner.run_benchmark(args)
     assert [name for name, _, _ in order.mock_calls] == ["run_gradle_build", "prepare"]
     assert order.prepare.call_args == call("win64", build=False)
+
+
+@pytest.mark.parametrize(
+    ("mod_loader", "task"),
+    [(loader.id, loader.build_task) for loader in PROJECT_STATE.loaders],
+)
+def test_run_gradle_build_targets_selected_loader(
+    mod_loader: str, task: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    project = tmp_path / "checkout"
+    monkeypatch.setattr(util, "PROJECT_DIR", project)
+    run = Mock()
+    monkeypatch.setattr(util, "run", run)
+
+    runner.run_gradle_build("arm64", ci=True, mod_loader=mod_loader)
+
+    run.assert_called_once()
+    assert run.call_args.args[0][:2] == [str(project / "gradlew.bat"), task]
+    assert run.call_args.args[0][2:4] == ["-x", PROJECT_STATE.get(mod_loader).test_task]
+    assert run.call_args.kwargs["cwd"] == project
+    assert "-Parch=arm64" in run.call_args.args[0]
+
+
+@pytest.mark.parametrize("mod_loader", PROJECT_STATE.ids)
+def test_run_gradle_package_targets_selected_loader(mod_loader: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    project = tmp_path / "checkout"
+    monkeypatch.setattr(util, "PROJECT_DIR", project)
+    run = Mock()
+    monkeypatch.setattr(util, "run", run)
+
+    runner.run_gradle_build("win64", ci=False, mod_loader=mod_loader)
+
+    assert run.call_args.args[0][:2] == [str(project / "gradlew.bat"), PROJECT_STATE.get(mod_loader).package_task]
 
 
 def test_doctor_reports_launcher_status_without_opening_sign_in(fake_launcher: FakeLauncher):

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 import re
 import struct
 import subprocess
@@ -13,10 +14,21 @@ from rtx_tools import client
 from rtx_tools.benchmark import util
 from rtx_tools.client import LaunchBlocked, LaunchRequest
 
+# Fork: the suite NVIDIA wrote assumes the 1.21.1 target with Fabric, Forge and NeoForge, while this checkout's
+# catalog defaults to 26.3. Its module-level load_registry() calls run at collection, after this import, so 1.21.1 is
+# set here as the ambient reference target; tests/fork selects 26.3 explicitly.
+UPSTREAM_REFERENCE_VERSION = "1.21.1"
+os.environ["RTXREMIX_MINECRAFT_VERSION"] = UPSTREAM_REFERENCE_VERSION
+
 
 @pytest.fixture(autouse=True)
 def no_cached_launcher(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test starts without a cached client launcher, so none reaches a real one an earlier test built."""
+    monkeypatch.setenv(
+        "RTXREMIX_PROJECT_STATE",
+        str(util.PROJECT_DIR / "project-state.json"),
+    )
+    monkeypatch.setenv("RTXREMIX_MINECRAFT_VERSION", UPSTREAM_REFERENCE_VERSION)
     monkeypatch.setattr(client, "_active", None)
     monkeypatch.setattr(
         util,
@@ -85,7 +97,7 @@ def recommended_heap_mib() -> int:
     return -(-int(number) * unit_bytes // 1024**2)
 
 
-def write_jdk(home: Path, *, version: str = "25.0.1", machine: int = 0x8664) -> Path:
+def write_jdk(home: Path, *, version: str = "21.0.5", machine: int = 0x8664) -> Path:
     """A JDK home as the launcher reads one: its release file and a bin/javaw.exe whose PE header names `machine`
     (0x8664 x64, 0xAA64 ARM64)."""
     (home / "bin").mkdir(parents=True, exist_ok=True)

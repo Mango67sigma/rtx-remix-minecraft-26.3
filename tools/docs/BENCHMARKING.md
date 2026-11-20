@@ -422,7 +422,10 @@ game's own data fixer derives from an old `graphicsMode`: `cutoutLeaves`,
 line holds the game's DataVersion, 5023 for 26.3. An existing file with no such
 line or an older one is restamped, because the game's data fixers would
 otherwise set its `graphicsPreset` back to `custom`; every other line of it
-stays.
+stays. Which layout the runner writes follows the selected version's
+`dataVersion` in `project-state.json`: from 4651, where Minecraft split the
+graphics option, it writes the 26.3 layout described here; below it, as for
+upstream's 1.21.1, it writes `graphicsMode` itself, as upstream does.
 
 `modSettings` maps mod setting ids to values. They are merged into the settings
 file: the ids it names win and every other entry the file holds is kept. A file
@@ -582,6 +585,14 @@ packs. Minecraft 26.3 has no `fabric` pack. It removes an entry for one from
 `options.txt` with a warning, as it does any pack that is missing or
 incompatible.
 
+Whether the loader's built-in pack is listed is catalog data,
+`builtinResourcePackListed` on the loader in `project-state.json` (default
+`true`). For 26.3 on Fabric it is `false`, which gives the layout above. Where
+it is `true`, as for upstream's 1.21.1 loaders, the runner lists `vanilla`, then
+the loader's `builtinResourcePack` (`fabric` on Fabric or `mod_resources` on
+Forge and NeoForge), below every `file/` pack, because omitting that entry
+would let the loader place built-in resources above user packs.
+
 Per-world resource packs override the mod's built-in baseline in their
 configured order. An optional selected art pack is enabled last, so it
 overrides both the baseline and per-world packs. For a folder pack,
@@ -597,11 +608,13 @@ therefore amends `pack.mcmeta` in the staged art pack, a copy it replaces at
 every launch, to declare `min_format` and `max_format` as the game's resource
 pack format major (97 for 26.3) and neither `pack_format` nor
 `supported_formats`, which 26.3 refuses beside that range. The description and
-every other key stay. The major comes from `pack_version.resource_major` in the
-`version.json` of the client jar that Loom caches in Gradle's user home
-(`GRADLE_USER_HOME`, else `~/.gradle`) for the pinned Minecraft, so a new game
-version needs no edit; until Gradle has cached the jar, the runner uses
-`FALLBACK_RESOURCE_PACK_MAJOR`. The fetched pack under
+every other key stay. The format comes from `minecraft.resourcePackFormat` of
+the selected version in `project-state.json`, the same value the root build
+writes into the RTX Remix Materials zip; a version without that field, such as
+upstream's 1.21.1, stages the art pack as published. A fork test
+(`tests/fork/test_toolchain_26_3.py`) checks the catalog value against
+`pack_version.resource_major` in the client jar Loom caches, when Gradle has
+cached it. The fetched pack under
 `tools/assets/resourcepacks/` stays as published, and a `pack.mcmeta` that cannot
 be amended fails the launch with the pack's path. World packs are copied as
 authored, so one that declares an older format is left out by the game with the

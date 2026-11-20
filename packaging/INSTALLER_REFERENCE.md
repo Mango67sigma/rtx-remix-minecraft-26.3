@@ -39,6 +39,30 @@ records its data folder in
 Prism too. A run that is cancelled or fails before then records nothing, and
 removing the RTX Remix Prism instance at uninstall removes the record.
 
+When a bundle carries more than one Minecraft version, the installer asks for
+the version first; a bundle with one packaged version selects it automatically.
+Install then asks for the mod loader when the target declares more than one;
+this release's Minecraft 26.3 target declares Fabric alone, so it is used
+without asking. Upgrade and Repair preserve an unambiguous loader already
+installed in the selected launcher; choose Install to switch loaders. The loader choice selects the packaged JAR, launcher
+component or profile, built-in resource-pack ordering, and whether Fabric API
+is installed. `-MinecraftVersion` and `-ModLoader` name both parts explicitly.
+
+The available choices come from the `multi-version/v1`
+`project-state.json`, staged beside the installer in a release bundle (or at
+the repository root for a source-tree run). Its `defaultMinecraftVersion` and
+keyed `versions` object select a target; that target's `defaultLoader` and
+`loaders` object own display names, provider names, modules, development
+artifacts, installed JAR names, built-in resource packs, Gradle tasks, Prism
+components, loader versions, and optional APIs. `installer.ps1` supplies narrow
+provider behavior for each declared loader. The current providers are Fabric,
+Forge, and NeoForge. A missing or invalid manifest, target, or provider
+declaration fails before the installer writes anything. A release only offers
+versions with staged mod subtrees. This fork's catalog also declares NVIDIA's
+Minecraft 1.21.1 targets, carried as source; a 26.3 release stages only
+`mods\fabric\rtx-remix-renderer-fabric-mc26.3-<build>.jar`, so it offers 26.3
+alone.
+
 A run chosen from the menu ends by waiting for a key, so the window a
 double-clicked `install.bat` opens stays up to show the result or the error.
 Quit closes at once, and a run given `-Mode` never waits.
@@ -47,8 +71,8 @@ Quit closes at once, and a run given `-Mode` never waits.
 
 | Mode | What it does |
 |---|---|
-| Install | A fresh install, or a deliberate reinstall of the packaged files over an existing one. Installs the items ticked under Choosing What To Install: the mod with its launcher setup and Fabric API, RTX Remix Materials, and the RTX Remix Showcase World. Baseline PBR textures are built into the JAR, and the mod unpacks its runtime textures on first launch. Safe to re-run: it does not wipe an already-extracted runtime or your conf payload |
-| Upgrade | Replaces the mod JAR and Fabric API, and, with RTX Remix Materials ticked, an installed pack. The new mod version refreshes `remix-sdk\`, `rtx.conf`, and the runtime textures on the next launch and adds conf profiles you do not have. Launcher config, JVM arguments, and options other than resource-pack ordering are preserved, and differing JVM arguments prompt before they are replaced. JVM arguments an earlier installer wrote are replaced without asking, in either launcher |
+| Install | A fresh install, or a deliberate reinstall of the packaged files over an existing one. Installs the items ticked under Choosing What To Install: the selected loader and matching mod JAR, RTX Remix Materials, and RTX Remix Showcase World. Fabric API is installed only for Fabric. Baseline PBR textures are built into each JAR, and the mod unpacks its runtime textures on first launch. Safe to re-run: it does not wipe an already-extracted runtime or your conf payload |
+| Upgrade | Replaces the selected loader's mod JAR and, for Fabric, Fabric API; with RTX Remix Materials ticked, it also replaces an installed pack. The new mod version refreshes `remix-sdk\`, `rtx.conf`, and the runtime textures on the next launch and adds conf profiles you do not have. Launcher config, JVM arguments, and options other than resource-pack ordering are preserved, and differing JVM arguments prompt before they are replaced. JVM arguments an earlier installer wrote are replaced without asking, in either launcher |
 | Repair | Reinstalls the packaged files through the same path as Install and Upgrade. If the `.rtx-remix-version` marker matches, it does not re-extract the runtime or conf payload, but a missing `rtx.conf` is restored on launch. Delete the marker and relaunch to force full extraction |
 | Uninstall | Removes the mod files listed in `README.md`, RTX Remix Materials among them, then offers to remove the installer-managed Java, the Prism portable, and the Prism instance, listing only those that exist. It keeps the RTX Remix Showcase World, as it keeps every world. With both launchers holding the mod it asks Prism, Microsoft, or Both |
 | Export | Prism only. Zips the Prism instance into an archive another machine can drop into its own Prism `instances\` folder, stripping the paths listed under Privacy below |
@@ -62,38 +86,44 @@ launcher.
 Installing the mod also migrates the retired generated `RtxRemix-LabPBR`
 pack. It identifies the pack by metadata and texture inventory and leaves
 other packs alone. In an existing `options.txt`, only `resourcePacks` changes:
-vanilla, then user packs in their existing order, without the retired baseline
-entry or a leftover `fabric` entry. It does not create a missing options file
-for that.
+vanilla, then the selected loader's built-in resources when the target's
+options list names them, then user packs in their existing order, without the
+retired baseline entry. 26.3 lists no loader pack: Fabric API keeps the mod's
+built-in resources in a hidden pack above vanilla and below every listed pack,
+so the list is vanilla and then user packs, and a `fabric` entry left from
+1.21.1 is dropped (`builtinResourcePackListed` false in `project-state.json`).
+It does not create a missing options file for that migration.
 
 ## Moving An Earlier Release's Install To The Pinned Game
 
-A Prism instance an earlier release made names its own Minecraft and Fabric
-Loader versions and Java version, and Install, Upgrade, and Repair move them to
-the pinned ones along with the mod JAR and Fabric API. In `mmc-pack.json` they
-rewrite the Minecraft and Fabric Loader components when their versions differ,
-drop the version and requirements Prism cached for the old ones, and keep every
-other component, apart from the ones Prism added itself as dependencies of the
-old Minecraft: Intermediary Mappings and LWJGL. Prism adds those again at the
+Install, Upgrade, and Repair point the RTX Remix Prism instance at the
+selected target whatever made it, NVIDIA's Minecraft 1.21.1 installer or an
+earlier release of this fork. `mmc-pack.json` gets the target's Minecraft and
+loader components first, and keeps every other component, apart from the
+ones Prism added itself as dependencies of an older Minecraft, marked
+volatile: Intermediary Mappings and LWJGL. Prism adds those again at the
 versions the new Minecraft calls for the next time it loads the instance, and
-would refuse an instance whose Intermediary Mappings require the old Minecraft.
-The previous file is kept as `mmc-pack.json.bak`.
-`JavaVersion` in `instance.cfg` follows the Java the pinned Minecraft needs.
-The installer prints each change, and an instance that already matches is not
-written to. A `mmc-pack.json` that cannot be read is left alone with a
-warning. Fabric API of another version is removed from the instance's `mods`
-folder once the pinned one is in place.
+would refuse an instance whose Intermediary Mappings require the old
+Minecraft. The installer prints the Minecraft change and each component it
+drops, and keeps the previous file as `mmc-pack.json.bak`. A `mmc-pack.json`
+that cannot be read stops the install before the mod is touched.
+`JavaVersion` in `instance.cfg` follows the target's Java (25 for 26.3), and
+the installer prints the change. The mod JAR an earlier release installed
+under a versioned `rtx-remix-renderer-*.jar` name is replaced by the target's
+installed name, `rtx-remix-renderer-fabric.jar`, and Fabric API of another
+version is removed from the instance's `mods` folder once the pinned one is in
+place.
 
 On ARM64, a Java pin on the instance has to be a native ARM64 Java of the
-pinned major. One that is not, such as the Java 21 JDK the first release
+target's major. One that is not, such as the Java 21 JDK the 1.21.1 installer
 pinned, is replaced by the managed JDK, or cleared when the installer found a
 suitable Java on the PATH and installed no managed one, so that Prism chooses
 its own.
 
 The Microsoft launcher keeps the earlier release's profile and gets a profile
-for the pinned Minecraft version beside it. Both carry the display name
+for the target's Minecraft version beside it. Both carry the display name
 `NVIDIA RTX Remix for Minecraft`, so tell them apart by version in the
-launcher's profile editor. A profile for the pinned Minecraft version that
+launcher's profile editor. A profile for the target's Minecraft version that
 launches another Fabric Loader build is pointed at the pinned one, by running
 the Fabric installer again.
 
@@ -103,7 +133,7 @@ Install, Upgrade, and Repair install three items, and each can be left out:
 
 | Item | What the archive holds | Flag |
 |---|---|---|
-| RTX Remix Renderer | The mod, `mods\rtx-remix-renderer-<version>.jar`. Ticking it also sets up Java, the launcher, and Fabric API | `-Mod` |
+| RTX Remix Renderer | The matching mod from `mods\<loader-id>\`. Ticking it also sets up Java, the launcher, the selected loader, and Fabric API when Fabric is selected | `-Mod` |
 | RTX Remix Materials | The texture pack, `resourcepacks\RTX-Remix-Materials-<version>.zip` | `-ArtPack` |
 | RTX Remix Showcase World | The demo world, `saves\RTX-Remix-Showcase-World-<version>.zip` | `-World` |
 
@@ -147,13 +177,15 @@ starts, so the archive's copy declares 26.3's resource pack format.
 - **A pack already installed** is replaced with the archive's, and older
   versions are removed. Its entry in `resourcePacks` is renamed in place, so a
   pack you turned off stays off, and the installer says where to turn it on.
-- **No pack installed:** the new pack is turned on just above vanilla and
-  below your own packs, so they still override it. 26.3 has no `fabric` pack:
-  Fabric API keeps the mod's built-in baseline in a hidden pack above vanilla
-  and below every listed pack, so the new pack overrides the baseline. With no
-  `options.txt` yet, as in a new Prism instance, the installer creates one
-  holding only the game's data version and the pack list, and the game fills
-  in every other option with its default.
+- **No pack installed:** the new pack is turned on just above the selected
+  loader's built-in resources, which hold the mod's baseline, and below your
+  own packs, so they still override it. A target whose options list names no
+  loader pack, 26.3 among them, gets it just above vanilla: Fabric API keeps
+  the baseline in a hidden pack above vanilla and below every listed pack, so
+  the new pack overrides the baseline, and a leftover `fabric` entry is
+  removed. With no `options.txt` yet, as in a new Prism instance, the
+  installer creates one holding only the target's data version and the pack
+  list, and the game fills in every other option with its default.
 - **With the Microsoft launcher**, the pack is also on when you play without
   the mod, because both share one game folder and one `options.txt`. The
   checklist says so beside the item.
@@ -249,34 +281,36 @@ installer from opening the launcher afterwards and from waiting for a running
 Microsoft launcher to close.
 
 ```powershell
-# Fresh install with the usual defaults: the mod only
-install.bat -Mode Install -Unattended -Launcher Prism
+# Fresh install with the usual defaults
+install.bat -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric
 
 # The mod, RTX Remix Materials turned on, and the RTX Remix Showcase World
-install.bat -Mode Install -Unattended -Launcher Prism -ArtPack Install -World Install
+install.bat -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -ArtPack Install -World Install
 
 # Upgrade the mod and bring an installed RTX Remix Materials pack up to date
-install.bat -Mode Upgrade -Unattended -Launcher Prism -ArtPack Install
+install.bat -Mode Upgrade -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -ArtPack Install
 
 # Add only the world to the RTX Remix Prism instance an earlier run made
-install.bat -Mode Install -Unattended -Launcher Prism -Mod Skip -World Install
+install.bat -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -Mod Skip -World Install
 
 # Pin the Prism version, which avoids the GitHub "latest" lookup entirely
-install.bat -Mode Install -Unattended -Launcher Prism -PrismVersion 9.1
+install.bat -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -PrismVersion 9.1
 
 # Uninstall. -AcknowledgeDataLoss is mandatory here
-install.bat -Mode Uninstall -Unattended -Launcher Prism -AcknowledgeDataLoss
+install.bat -Mode Uninstall -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -AcknowledgeDataLoss
 
 # Export an existing Prism instance
-install.bat -Mode Export -Unattended -Launcher Prism -OutputPath C:\artifacts\rtx-remix.zip
+install.bat -Mode Export -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -OutputPath C:\artifacts\rtx-remix.zip
 
 # Point at a Prism data directory that is not the detected one
-install.bat -Mode Install -Unattended -Launcher Prism -PrismDataDir D:\PrismData
+install.bat -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -PrismDataDir D:\PrismData
 ```
 
 `-Launcher` is required in unattended mode when both Prism and the Microsoft
 launcher are present. The installer refuses to pick one silently, and the run
-fails with exit code `1`.
+fails with exit code `1`. `-MinecraftVersion` and `-ModLoader` must name a
+target declared by the bundle's `project-state.json` for every unattended
+operation.
 
 Exit codes: `0` success, `1` the operation failed, `2` the arguments were
 invalid. A `2` covers `-Unattended` without `-Mode`, an unattended uninstall
@@ -299,6 +333,8 @@ and the instance could not launch before the run either.
 |---|---|---|
 | `-Mode` | `Install`, `Upgrade`, `Repair`, `Uninstall`, `Export` | The operation. Omit for the menu |
 | `-Launcher` | `Prism`, `Microsoft` | Skip the launcher question. Required in `-Unattended` when both are present |
+| `-MinecraftVersion` | A Minecraft version declared by `project-state.json` | Select the Minecraft target. Required for every unattended operation |
+| `-ModLoader` | A loader display name declared by `project-state.json` (`Fabric` for this release's 26.3 target) | Select the mod loader and packaged JAR. Required for every unattended operation |
 | `-Unattended` | switch | No prompts, and the launcher is not opened afterwards. Errors instead of questions |
 | `-AcknowledgeDataLoss` | switch | Required alongside `-Unattended -Mode Uninstall` |
 | `-OutputPath` | path ending in `.zip` | Target archive for `-Mode Export`. Required in an unattended export |
@@ -318,7 +354,8 @@ Useful when you want to redirect output or call it from another script:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\installer.ps1 `
-  -Mode Install -Unattended -Launcher Prism -Verbose 2>&1 | Tee-Object installer.log
+  -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 `
+  -ModLoader Fabric -Verbose 2>&1 | Tee-Object installer.log
 ```
 
 The script carries comment-based help:
@@ -331,24 +368,27 @@ Get-Help .\installer.ps1 -Examples
 
 ## Java Resolution Order
 
-The installer needs a Java only to run the Fabric installer, and the game needs
-one to run. Which it uses depends on the architecture and the launcher.
+The installer needs Java to run the selected loader's Microsoft-launcher
+installer, and the game needs one to run. Which Java it uses depends on the
+architecture, launcher, and loader.
 
 - **x64 with Prism.** No Java step at all. Prism downloads Mojang's own Java on
   the first launch of the instance.
 - **x64 with the Microsoft launcher.** `java` on the PATH, then the managed JDK
-  at `%LOCALAPPDATA%\RtxRemixMinecraft\jdk-25`, then a Java bundled with the
-  Microsoft launcher, then a downloaded Adoptium Temurin 25. Any version 8 or
-  newer runs the Fabric installer, so no architecture match is required. The
-  game itself then runs on the launcher's own Java.
-- **ARM64.** `java` on the PATH only when it is version 25 and natively ARM64,
-  then the managed JDK under the same test, then a downloaded Microsoft Build
-  of OpenJDK 25 for ARM64. Eclipse Temurin publishes no Windows ARM64 build of
-  Java 25, so the Adoptium download is not used here. Mojang publishes no ARM64
-  Windows Java, and an emulated x64 Java breaks the native bridge, so the
-  managed install is normally used. Its SHA-256 is the checksum file Microsoft
-  publishes beside the archive, which the installer reads before it downloads
-  the archive; when that file cannot be fetched, an unattended run stops. A
+  at `%LOCALAPPDATA%\RtxRemixMinecraft\jdk-<java>` (`jdk-25` for 26.3), then a
+  Java bundled with the Microsoft launcher, then a downloaded Adoptium Temurin
+  of the target's Java. Any version 8 or newer runs the Fabric installer; the
+  Forge and NeoForge installers require Java 21. No architecture match is
+  required on x64. The game itself then runs on the launcher's own Java.
+- **ARM64.** `java` on the PATH only when it is the target's Java (25 for
+  26.3) and natively ARM64, then the managed JDK under the same test, then a
+  downloaded Microsoft Build of OpenJDK of that version for ARM64. Eclipse
+  Temurin publishes no Windows ARM64 build of Java 25, so the Adoptium
+  download is not used here. Mojang publishes no ARM64 Windows Java, and an
+  emulated x64 Java breaks the native bridge, so the managed install is
+  normally used. Its SHA-256 is the checksum file Microsoft publishes beside
+  the archive, which the installer reads before it downloads the archive;
+  when that file cannot be fetched, an unattended run stops. A new
   Prism instance on ARM64 is pinned to that JDK so Prism cannot substitute an
   x64 one.
 
@@ -356,7 +396,7 @@ one to run. Which it uses depends on the architecture and the launcher.
 
 Downloads are checked against a SHA-256 before use, using a checksum pinned by
 the installer or published by the dependency provider. This covers the JDK,
-Prism portable, Fabric installer, and Fabric API.
+Prism portable, Fabric installer, Forge installer, NeoForge installer, and Fabric API.
 
 If neither source yields a hash, an unattended run refuses to continue. An
 interactive run asks if an offered checksum file is unreachable or malformed;

@@ -21,12 +21,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fork.installer_reference import reference_catalog  # noqa: F401  (fork: the 1.21.1 catalog)
 
+from rtx_tools import loader_registry
 from rtx_tools.benchmark import util
 
-pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer")
+pytestmark = [
+    pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer"),
+    pytest.mark.usefixtures("reference_catalog"),
+]
 
 INSTALLER = util.PROJECT_DIR / "packaging" / "installer.ps1"
+PROJECT_STATE = loader_registry.load_registry()
 # Prism's global MinMemAlloc, and its global MaxMemAlloc on a machine with 6 GiB of RAM or more
 # (Application::Application in launcher/Application.cpp, SysInfo::defaultMaxJvmMem in launcher/SysInfo.cpp).
 PRISM_DEFAULT_MIN_MIB = 512
@@ -42,7 +48,7 @@ PRISM_DEFAULT_MAX_MIB = 4096
 # RemoveInstance removes the instance from the Prism data directory -Dest as Uninstall does.
 HARNESS = r"""
 param([string]$Installer, [string]$Loaded, [string]$Cfg, [string]$Answer, [switch]$Unattended,
-      [string]$Action, [string]$ManagedJdk, [string]$Dest)
+      [string]$Action, [string]$ManagedJdk, [string]$Dest, [string]$Loader)
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$null, [ref]$null)
 $entryPoint = $ast.EndBlock.Statements[-1]
 if ($entryPoint -isnot [System.Management.Automation.Language.TryStatementAst]) {
@@ -63,7 +69,10 @@ if ($env:PRISM_TEST_NEXT_JVM_ARGS) {
 }
 switch ($Action) {
     'Sync' { Sync-JvmArgs -For Prism -PrismCfg $Cfg -Unattended:$Unattended }
-    'SyncMicrosoft' { Sync-JvmArgs -For Microsoft -Unattended:$Unattended }
+    'SyncMicrosoft' {
+        Sync-JvmArgs -For Microsoft -ModLoader $(if ($Loader) { $Loader } else { 'Fabric' }) `
+            -Unattended:$Unattended
+    }
     'JavaPin' {
         function Test-HostIsArm64 { return $true }
         $script:MANAGED_JDK_DIR = $ManagedJdk
@@ -90,7 +99,7 @@ switch ($Action) {
 PROMPTED = "Confirm-YesNo:"
 INSTANCE_NAME = "NVIDIA RTX Remix for Minecraft"
 # instance.cfg as Initialize-PrismInstance creates it.
-NEW_INSTANCE = f"InstanceType=OneSix\r\nname={INSTANCE_NAME}\r\nJavaVersion=25"
+NEW_INSTANCE = f"InstanceType=OneSix\r\nname={INSTANCE_NAME}\r\nJavaVersion=21"
 USER_MEMORY = "OverrideMemory=true\r\nMinMemAlloc=1024\r\nMaxMemAlloc=8192\r\n"
 # What Prism saves when the instance's Java settings are applied with Memory unticked: Prism's global memory, and no
 # MinMemAlloc or MaxMemAlloc of the instance's own (JavaSettingsWidget::saveSettings in
@@ -124,7 +133,7 @@ def prism_form(jvm_args: str) -> str:
 
 RECOMMENDED = installer_literal("RECOMMENDED_JVM_ARGS")
 RECOMMENDED_FOR_PRISM = prism_form(RECOMMENDED)
-MS_PROFILE_KEY = f"fabric-loader-{installer_literal('MC_VERSION')}"
+MS_PROFILE_KEY = f"fabric-loader-{PROJECT_STATE.minecraft_version}"
 
 
 def heap_mib(jvm_args: list[str]) -> int:
@@ -200,7 +209,7 @@ def saved_by_prism(jvm_args: str | None, memory: str = "", *, name: str = INSTAN
     `jvm_args` of None leaves the key out."""
     jvm_line = "" if jvm_args is None else f'JvmArgs="{jvm_args}"\r\n'
     return (
-        f"[General]\r\nConfigVersion=1.3\r\nInstanceType=OneSix\r\n{java}JavaVersion=25\r\n"
+        f"[General]\r\nConfigVersion=1.3\r\nInstanceType=OneSix\r\n{java}JavaVersion=21\r\n"
         f"{jvm_line}{memory}OverrideJavaArgs=true\r\nname={name}\r\n"
     )
 
@@ -775,7 +784,7 @@ def test_upgrade_keeps_unicode_and_changes_only_the_memory_keys(sync: Sync, newl
     original = saved_by_prism(
         RECOMMENDED_FOR_PRISM,
         name="RTX Remix für Zoë – 光",
-        java="JavaPath=D:/Spiele/Zoë/RtxRemixMinecraft/jdk-25/bin/javaw.exe\r\nOverrideJavaLocation=true\r\n",
+        java="JavaPath=D:/Spiele/Zoë/RtxRemixMinecraft/jdk-21/bin/javaw.exe\r\nOverrideJavaLocation=true\r\n",
     ).replace("\r\n", newline)
 
     text, _ = sync(original, unattended=True)
@@ -787,7 +796,7 @@ def test_upgrade_keeps_unicode_and_changes_only_the_memory_keys(sync: Sync, newl
 
 
 def test_arm64_java_pin_keeps_unicode(sync: Sync, tmp_path: Path):
-    managed_jdk = tmp_path / "Zoë" / "jdk-25"
+    managed_jdk = tmp_path / "Zoë" / "jdk-21"
     javaw = managed_jdk / "bin" / "javaw.exe"
     javaw.parent.mkdir(parents=True)
     javaw.touch()
@@ -815,6 +824,36 @@ def test_microsoft_launcher_profile_with_the_full_recommended_args_is_left_alone
     assert profile["javaArgs"] == RECOMMENDED
     assert "already match" in output
     assert PROMPTED not in output
+
+
+def test_microsoft_forge_profile_gets_jvm_args_without_touching_fabric(tmp_path: Path):
+    app_data = tmp_path / "AppData"
+    profiles_path = app_data / ".minecraft" / "launcher_profiles.json"
+    mc_version = PROJECT_STATE.minecraft_version
+    forge_release = PROJECT_STATE.get("forge").version
+    forge_key = "existing-custom-forge-profile"
+    forge_version = f"{mc_version}-forge-{forge_release}"
+    profiles = {
+        "profiles": {
+            MS_PROFILE_KEY: {
+                "lastVersionId": (
+                    f"fabric-loader-{PROJECT_STATE.get('fabric').version}-{PROJECT_STATE.minecraft_version}"
+                ),
+                "javaArgs": "-Dfabric=kept",
+            },
+            forge_key: {"lastVersionId": forge_version, "name": "Forge"},
+        },
+        "version": 3,
+    }
+    profiles_path.parent.mkdir(parents=True)
+    profiles_path.write_text(json.dumps(profiles), encoding="utf-8")
+    env = {**os.environ, "APPDATA": str(app_data)}
+
+    run_harness(tmp_path, "-Action", "SyncMicrosoft", "-Loader", "Forge", "-Unattended", env=env)
+
+    written = json.loads(profiles_path.read_text(encoding="utf-8"))["profiles"]
+    assert written[forge_key]["javaArgs"] == RECOMMENDED
+    assert written[MS_PROFILE_KEY]["javaArgs"] == "-Dfabric=kept"
 
 
 def test_replacing_microsoft_launcher_args_gives_the_full_recommended_args(sync_microsoft: SyncMicrosoft):

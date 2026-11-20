@@ -17,8 +17,10 @@ covers the rest. `README.md` owns the directory map and path anchors.
 
 ## Source Of Truth
 
-Use `src/rtx_tools/`, the root `build.gradle`, and the Java instrumentation as
-behavioral authority. The guides organize that contract:
+Use `src/rtx_tools/`, root `project-state.json`, the neutral root
+`build.gradle`, declared loader modules, and Java instrumentation as behavioral
+authority. The guides
+organize that contract:
 
 1. `README.md` for entry points and the documentation map
 2. `docs/BENCHMARKING.md` for benchmark behavior, counters, and diagnostics
@@ -57,12 +59,38 @@ launcher's description. There is no player-name option. Besides the root
 type, profile name, ownership, and active flag from `accounts.json`, never its
 tokens.
 
+Loader selection is one launch concern, not a separate workflow. The typed
+registry reads the `project-state.json` loader mapping; CLI choices, dashboard,
+Gradle tasks, Prism components, installed JARs, companion dependencies, and
+built-in pack names come from it. Keep provider hooks narrow: Fabric companion
+API handling and Forge JarJar selection are genuine differences, while
+NeoForge uses its ordinary module JAR and selection and staging flow are
+catalog behavior. Forge development launches must build a fresh JarJar
+artifact; never select a stale thin JAR in place of its `-all.jar`. This
+checkout builds only Minecraft 26.3 on Fabric (`builtVersions`); keep the Forge
+and NeoForge paths working for upstream's catalog anyway, because upstream's
+tests exercise them against 1.21.1.
+
+The fork's catalog fields have tooling readers in `loader_registry.py`:
+`builtVersions` (reported, never enforced, so an unbuilt version's registry
+still loads), `rendererCore`, `minecraft.resourcePackFormat` (the art pack's
+staged format), and `builtinResourcePackListed` on a loader (whether its
+built-in pack is written to `options.txt`). Each has a default that leaves
+upstream's 1.21.1 block valid.
+
+`launch`, benchmark `run`, and development `install` select a Minecraft version
+through an explicit tooling parameter where offered, then
+`RTXREMIX_MINECRAFT_VERSION`, then the manifest default. They accept a loader ID
+declared by that version and default through the environment and merged
+configuration to the version's manifest default. Every Gradle invocation passes
+both target properties and uses that loader's declared tasks.
+
 `rtx.bat install` stages an already-built development mod into an existing
-Fabric game directory, separate from the repository-local launch workflow.
+game directory for a declared loader, separate from the repository-local launch workflow.
 Keep its runtime/bridge architecture selection, unchanged-SDK marker, copies of
 `rtx.conf`, the conf payload and the runtime textures, and author-created file
 preservation in `src/rtx_tools/install.py`.
-It must not build, launch Minecraft, or install Fabric dependencies.
+It must not build, launch Minecraft, or install loader dependencies.
 
 After editing Python tooling, run `tools\rtx.bat check`. It runs Ruff format
 checks and linting over `src/` and `tests/`, followed by ty type checks.
@@ -75,6 +103,24 @@ Python tests, narrow an optional with `assert value is not None` before
 subscripting it; `self.assertIsNotNone` does not narrow. Cast a lightweight
 process double to the declared `subprocess.Popen` type in the test rather than
 widening a production signature to accommodate the double.
+
+Version-catalog reporting is read-only. It validates and reports every
+Minecraft version and loader declared by the current checkout, and whether each
+version is built here or carried as source only. Target status
+reports proportionate build, artifact, semantic-fixture, and live evidence for
+one selected version and all of its loaders without rewriting source; for a
+version that is not built here it starts no Gradle build and reports
+`not-built-here`.
+
+The pytest suite runs upstream's tests against Minecraft 1.21.1, which
+`tests/conftest.py` sets as the ambient reference target because they were
+written for it. Keep upstream's test files as close to byte-identical as
+possible; put every assertion about 26.3 in a new file under `tests/fork/`,
+which selects 26.3 explicitly. `tests/fork/test_transition_ledgers.py` holds
+the two ledgers, with their allowed lists beside them: the files under
+`versions/26.3/renderer-core/` and the files under `versions/26.3/minecraft/`
+that import `net.fabricmc` may lose entries, never gain them. Deleting such a
+file means deleting its line from the ledger.
 
 Identify development clients by command line and PID, never only window title,
 and run at most one client per checkout's game directory. The benchmark runner's
@@ -111,9 +157,10 @@ Gradle fetches a missing runtime automatically but never replaces an existing
 directory or local override. After changing `packman/remix-sdk.packman.xml`,
 use `sdk packman` to move an existing junction to the new pin.
 
-`build.gradle` reads the sentinel and rejects a dual-architecture `package` when
-one architecture is a local copy and the other is Packman-managed. Stage both
-the same way, or build a single architecture with `-Parch=`.
+The root build reads the sentinel, and every loader's dual-architecture
+`package` rejects one architecture as a local copy and the other as
+Packman-managed. Stage both the same way, or build a single architecture with
+`-Parch=`.
 
 ## Shared Configuration And Assets
 
@@ -216,8 +263,12 @@ benchmark SDK staging, and both target architectures.
 ## JVM Argument Copies
 
 `../docs/TUNING.md` documents the unconditional tuning arguments: the initial
-`vmArgs` in the `client` run configuration of `build.gradle` and
-`RECOMMENDED_JVM_ARGS` in `packaging/installer.ps1`. Keep those two copies in sync.
+`vmArgs` in the `client` run configuration of
+`versions/26.3/fabric/build.gradle` and
+`RECOMMENDED_JVM_ARGS` in `packaging/installer.ps1`. Keep those two copies in sync
+(`tests/fork/test_toolchain_26_3.py`). Upstream's
+`versions/1.21.1/fabric/build.gradle` holds its own copy, which this checkout
+carries unchanged.
 When `RECOMMENDED_JVM_ARGS` changes, also append its outgoing value to
 `PREVIOUS_RECOMMENDED_JVM_ARGS` beside it, so that upgrades replace what earlier
 installers wrote. `tests/benchmark/test_installer_prism_jvm.py` checks that list

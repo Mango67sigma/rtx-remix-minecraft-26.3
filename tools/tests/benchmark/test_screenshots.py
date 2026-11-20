@@ -11,8 +11,10 @@ import pytest
 from conftest import FakeLauncher, FakeProcess
 from PIL import Image
 
-from rtx_tools import client
+from rtx_tools import client, loader_registry
 from rtx_tools.benchmark import runner, screenshots, util
+
+PROJECT_STATE = loader_registry.load_registry()
 
 
 def shot(name, **overrides):
@@ -96,18 +98,26 @@ class ExportTests(unittest.TestCase):
 class ReadmeTests(unittest.TestCase):
     def test_enabled_pack_names_start_with_builtin_baseline(self):
         cases = (
-            ({}, ["rtx-remix-renderer"]),
-            ({"mode": "pinned", "name": "texture", "version": "0.55.0"}, ["rtx-remix-renderer", "texture 0.55.0"]),
-            ({"mode": "local"}, ["rtx-remix-renderer", "a local art pack"]),
+            ({}, ["fabric"]),
+            ({"mode": "pinned", "name": "texture", "version": "0.55.0"}, ["fabric", "texture 0.55.0"]),
+            ({"mode": "local"}, ["fabric", "a local art pack"]),
         )
         for resource_pack, expected in cases:
             with self.subTest(resource_pack=resource_pack):
                 self.assertEqual(screenshots.enabled_pack_names({"resourcePack": resource_pack}), expected)
 
+    def test_enabled_pack_names_identify_loader_builtin_resources(self):
+        for loader in PROJECT_STATE.loaders:
+            with self.subTest(loader=loader.id):
+                self.assertEqual(
+                    screenshots.enabled_pack_names({"modLoader": loader.id, "resourcePack": {"mode": "none"}}),
+                    [loader.builtin_resource_pack],
+                )
+
     def test_provenance_lists_every_shot_with_its_scene(self):
         text = screenshots.provenance_text(
             world_version="0.11.0",
-            pack_names=["rtx-remix-renderer", "texture 0.55.0"],
+            pack_names=["fabric", "texture 0.55.0"],
             width=1920,
             height=1080,
             shots=[
@@ -118,7 +128,7 @@ class ReadmeTests(unittest.TestCase):
             ],
         )
         self.assertIn("version 0.11.0", text)
-        self.assertIn("`rtx-remix-renderer` and `texture 0.55.0`", text)
+        self.assertIn("`fabric` and `texture 0.55.0`", text)
         self.assertIn("1920x1080", text)
         self.assertIn("| `village-night.jpg` | 18000 | clear | classic | on |", text)
         self.assertIn("| `thunderstorm.jpg` | 13000 | thunderstorm | classic | on |", text)

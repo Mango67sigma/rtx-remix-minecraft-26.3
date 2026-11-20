@@ -3,6 +3,21 @@
 How to build and run the mod from source. If you only want to play, read
 [Playing](PLAYING.md) instead.
 
+## What This Checkout Builds
+
+This checkout builds Minecraft 26.3 on Fabric only, with Java 25 and the Gradle
+9.8.2 wrapper. The port lives under `versions/26.3/`: `minecraft/` is the 26.3
+integration, `fabric/` the Fabric entry points, metadata, and Gradle project,
+and `renderer-core/` the port's own copy of the renderer core
+([why](../versions/26.3/renderer-core/README.md)). NVIDIA's shared
+`renderer-core/` and its Minecraft 1.21.1 sources under `versions/1.21.1/` are
+carried byte for byte so that NVIDIA's changes merge cleanly. They are never
+edited here and are not built here: one Gradle wrapper serves the checkout,
+and the 1.21.1 targets need Gradle 8. `builtVersions` in `project-state.json`
+records which versions are built. [Multi-Loader
+Architecture](MULTI_LOADER_ARCHITECTURE.md#this-fork-the-263-port) explains the
+layout and how a change is made in it.
+
 ## Prerequisites
 
 - **Windows 10 or 11**, on x64 or ARM64. The JNI bridge is compiled with MSVC,
@@ -19,8 +34,8 @@ How to build and run the mod from source. If you only want to play, read
   workload (MSVC v143). Cross-building the ARM64 bridge additionally needs the
   MSVC ARM64 build tools for some installed toolset; `build_native.bat` uses
   the default toolset when it has them, otherwise the newest one that does.
-- **Git.** Everything is in the clone except the native runtime and the two
-  large runtime textures, which the build pulls through Packman on first use.
+- **Git.** Everything is in the clone except the native runtime and its large
+  runtime texture asset, which the build pulls through Packman on first use.
 - **uv 0.13 or newer and Python 3.15 or newer**, for the developer tools that
   launch the mod. The first `tools\rtx.bat` command installs
   [uv](https://docs.astral.sh/uv/) for your user when it is missing, and uv
@@ -50,9 +65,12 @@ without the developer preflight reports `Failed to initialize RTX Remix` in
 
 Gradle fetches the pinned runtime through the bootstrap in `packman/` whenever
 the selected `remix-runtime/<arch>/` directory is absent. A fresh clone needs no
-SDK setup command: run `gradlew.bat build` or `test`, or `tools\rtx.bat launch`,
-normally. Gradle needs no Python installation. Packaging fetches only the
-architectures being packaged.
+SDK setup command before `tools\rtx.bat launch`, the loader module's `runClient`,
+or a `package` task. Ordinary `build` and `test` tasks fetch and stage it too,
+because compiling the mod's classes depends on the root `setupRuntime` task,
+which also compiles the JNI bridge; even `test` needs the C++ toolchain.
+Gradle needs no Python installation. Packaging fetches only the architectures
+being packaged.
 
 Pinned runtimes are published on NVIDIA's public Packman service, so the fetch
 needs no credentials. A matching local runtime is an alternative for
@@ -120,7 +138,7 @@ Before building a runtime branch, compare its
 SDK staging checks the DLL architecture, not its API version. While the API
 major version is zero, the runtime requires an exact minor match; the patch
 component is not compared. Before Prism starts, `tools\rtx.bat launch` uses the
-freshly built JNI bridge to initialize the runtime the installer selected,
+freshly built JNI bridge to initialize the configured runtime,
 including a checkout-relative or absolute `REMIX_BUILD`, in a short-lived
 process. An interactive launch warns on `INCOMPATIBLE_VERSION` and asks whether
 to continue; automated launches warn without waiting for input. Continuing is
@@ -154,19 +172,19 @@ cd rtx-remix-minecraft-26.3
 .\tools\rtx.bat launch
 ```
 
-The two large runtime textures are not in git: the first build pulls them
+The large overcast runtime texture is not in git: the first build pulls it
 through Packman into `remix-runtime/textures/`, the same way the runtime is
-fetched, and later builds reuse the cached copy. The build checks that both
-files arrived. The pin lives in
-`packman/textures.packman.xml`. The water normals in the package are generated
-by `tools\rtx.bat textures water-normals`. The build automatically fetches
-`rtx_remix_minecraft_runtime_textures` version `1.1.0` through Packman.
+fetched, and later builds reuse the cached copy. The build checks that the
+required file arrived and stages only that declared file from the package.
+The pin lives in `packman/textures.packman.xml`. Animated water normals are
+generated directly in memory by the native bridge when the renderer starts.
 
 The Java wrapper and JNI bridge are tracked under `rtxremix-java/` and arrive
 with the clone; no recursive checkout or hook setup is needed.
 
-`tools\rtx.bat launch` fetches a missing runtime and builds the mod and bridge
-with Gradle. It installs the mod, the pinned Fabric API, the runtime,
+`tools\rtx.bat launch` fetches a missing runtime and builds the selected loader
+and bridge with Gradle. It installs the mod, Fabric API when Fabric is
+selected, the runtime,
 `rtx.conf`, the gameplay conf payload, and the runtime textures into this
 checkout's Prism instance, then starts Minecraft at the main menu through
 Prism and waits until the game exits. Prism's own console output stays out of
@@ -176,13 +194,23 @@ and it needs no separate build or install step. `tools\rtx.bat` with no
 arguments opens the [developer dashboard](../tools/docs/LAUNCHER.md) instead,
 which launches into the pinned demo world.
 
+This checkout builds and launches Minecraft 26.3 on Fabric, the catalog's
+default target, so `launch`, `run`, and `world launch` need no target options.
+`--minecraft-version` and `--loader` select another declared target where a
+checkout builds one; the dashboard chooses the loader for the selected version. The checkout-specific Prism instance is rewritten
+with the matching game and loader components and mod set on each launch; this
+does not modify `%APPDATA%\.minecraft`.
+
 Each launch writes the enabled resource packs in the game directory's
 `options.txt`: vanilla, then any world packs and the selected art pack. The
 built-in baseline needs no entry, because Fabric API loads it through the mod's
 own hidden `rtx-remix-renderer` pack, which sits above vanilla and below the
 packs listed after it. It removes an old generated `rtx-remix` baseline pack,
 which it recognizes by its metadata and texture inventory, leaving other packs
-alone.
+alone. Whether a loader's built-in pack gets an entry is catalog data,
+`builtinResourcePackListed` in `project-state.json`: `false` for 26.3 on Fabric,
+which has no `fabric` pack, and `true`, the default, for upstream's 1.21.1
+loaders.
 
 ### Sign In To Prism
 
@@ -255,36 +283,76 @@ interactive readiness from the settled image.
 ## Other Commands
 
 ```powershell
-.\gradlew.bat build                         # development JAR in build/libs/
-.\gradlew.bat test                          # JUnit suites
-.\gradlew.bat package -Parch=win64           # installable JAR in build/distributions/
-.\gradlew.bat releaseArchive -Parch=win64    # installer bundle ZIP in build/distributions/
-.\gradlew.bat stageReleaseAssets             # the four release files in build/release-assets/
+.\gradlew.bat build                         # development JAR
+.\gradlew.bat test                          # JUnit suite
+.\gradlew.bat package -Parch=win64          # self-contained JAR
+.\gradlew.bat releaseArchive -Parch=win64   # installer ZIP
+.\gradlew.bat stageReleaseAssets            # release files
 ```
+
+The root is a neutral Gradle project that applies no loader plugin. It reads
+the version and loader catalogs from `project-state.json`. `-PmcVersion`
+selects a Minecraft target (the catalog default, 26.3, when omitted), and
+`-Ploader` narrows configuration to one loader. Without `-Ploader`, root
+`build`, `test`, and `package` aggregate the selected version's declared
+loaders, which for 26.3 is Fabric alone, the Gradle project
+`:versions:26.3:fabric`. The explicit form is:
+
+```powershell
+.\gradlew.bat build test "-PmcVersion=26.3" "-Ploader=fabric"
+.\gradlew.bat package "-PmcVersion=26.3" "-Ploader=fabric" -Parch=win64
+.\tools\rtx.bat launch --minecraft-version 26.3 --loader fabric
+```
+
+In this checkout that is the same as leaving both out. In PowerShell, quote a
+dotted `-PmcVersion`: unquoted, PowerShell passes `26` and Gradle answers
+`Unknown Minecraft version '26'`. The catalog also declares NVIDIA's Minecraft
+1.21.1 with Fabric, Forge, and NeoForge, but its `builtVersions` lists only
+26.3, so `-PmcVersion=1.21.1` stops at once with a message that the version is
+carried from upstream and not built in this checkout. `-PbuildUnlistedVersion=true`
+gets past that check, but the 1.21.1 targets need Gradle 8.11.1 and this
+checkout's wrapper is Gradle 9.8.2, which 26.3 needs; build 1.21.1 from
+NVIDIA's repository instead.
+
+There is no nested loader wrapper. Fabric is the default loader for developer
+commands that do not receive another selection, and the only one 26.3
+declares. `"modLoader"` in ignored `tools/config.local.json` and
+`RTXREMIX_MOD_LOADER` select another declared loader where a target has one.
 
 `.\gradlew.bat compileJava` checks Java compilation without fetching or staging
 the runtime or compiling the JNI bridge. It is a useful iteration check, not
 validation of native integration.
 
-The JAR from `package` is the one players get: it embeds the runtime, gameplay
-conf payload, runtime textures, and baseline PBR textures. To try it in a
-normal installation of Minecraft 26.3 that already has Fabric Loader and
-Fabric API, drop it into the instance's `mods` folder; the mod needs nothing
-else to run. The release's installer also adds the RTX Remix Materials pack
-and the showcase world, migrates old generated baseline packs, and preserves
-user-pack ordering.
+`build` leaves the lightweight development JAR in
+`versions/26.3/fabric/build/libs/rtx-remix-renderer-<buildVersion>.jar`, where
+`<buildVersion>` is the mod version from `project-state.json`, a UTC build
+timestamp, the short commit hash, `-dirty` for uncommitted changes, and an
+architecture suffix when `-Parch` is given. A new JAR appears each minute and
+old ones accumulate there. The root `package` task produces the self-contained
+JAR, `versions/26.3/fabric/build/distributions/rtx-remix-renderer-fabric-mc26.3-<buildVersion>.jar`.
+It embeds the runtime, gameplay conf payload, runtime textures, and baseline
+PBR textures, and is the one players get. To try it in a normal installation
+of Minecraft 26.3 that already has Fabric Loader and Fabric API, drop it into
+the instance's `mods` folder; the mod needs nothing else to run.
 
-Every task that reaches `classes` runs `setupRuntime` first, which compiles the
-bridge and stages the runtime. `test` and `build` therefore need a staged
-runtime and the C++ toolchain just as `tools\rtx.bat launch` does.
-`setupRuntime` also syncs a full copy of the runtime, PDBs included, with the
+`releaseArchive` contains the verified JAR under `mods/fabric/`. Its installer
+reads the packaged catalog, adds the RTX Remix Materials pack and the showcase
+world, migrates old generated baseline packs, and preserves user-pack
+ordering.
+
+The neutral root owns native compilation, runtime fetching, and
+`setupRuntime`, which syncs a full copy of the runtime, PDBs included, with the
 bridge, `rtx.conf`, the gameplay conf payload, and the runtime textures into
-`run/`, the game directory of Gradle's `runClient` task, so every build
-refreshes it. The developer tools' Prism launches use `run-prism\` instead.
+the shared `run/` game directory at the repository root. The loader module's
+`classes` depends on it, so `build` and `test` stage that directory too, and
+`package` needs the root-owned bridge and runtime because it embeds them.
+`runClient` also applies the selected loader's built-in resource-pack
+migration; `setupRuntime` alone no longer does. The developer tools' Prism
+launches use `run-prism\` instead.
 
-`build` produces a lightweight JAR that is not installable on its own.
-`package` embeds the runtime, `rtx.conf`, the gameplay conf payload, and the
-runtime textures.
+Each module's `build` produces a lightweight JAR that is not installable on its
+own. Its `package` embeds the runtime, `rtx.conf`, the gameplay conf payload,
+and the runtime textures.
 
 `verifyPackageJar` rejects Python interpreter and binding payloads because the
 runtime uses Python-free OpenUSD. Plain `.py` templates are not interpreters:
@@ -293,21 +361,22 @@ The task also requires every `packaging/licenses/` file in the JAR.
 
 | `package` invocation | Output |
 |---|---|
-| `package` | Dual-architecture fat JAR. Needs both architectures staged from the same kind of source |
-| `package -Parch=win64` | win64 only, skips the arm64 bridge compile |
-| `package -Parch=arm64` | arm64 only, useful for cross-building for device testing |
+| `package` | One dual-architecture fat JAR per declared loader, here the 26.3 Fabric JAR. Needs both architectures staged from the same kind of source |
+| `package -Ploader=<loader-id>` | One dual-architecture fat JAR for the selected loader |
+| `package -Parch=win64` | Declared loader JARs, win64 only; skips the arm64 bridge compile |
+| `package -Parch=arm64` | Declared loader JARs, arm64 only; useful for cross-building for device testing |
 
-`releaseArchive` builds the installer bundle. It runs `package` and its
-`verifyPackageJar` check, then stages the verified JAR under
-`build/release/mods/`, the RTX Remix Materials zip under
-`build/release/resourcepacks/`, the RTX Remix Showcase World zip under
+`releaseArchive` runs every declared loader package verification task, then
+stages each JAR under `build/release/mods/<loader-id>/`, RTX Remix Materials under
+`build/release/resourcepacks/`, RTX Remix Showcase World under
 `build/release/saves/`, and the installer scripts, documentation, and license
-notices beside them. It writes that layout as
-`rtx-remix-renderer-<version>-installer.zip` in `build/distributions/`. The
-same `-Parch` selection applies; omitting it includes both architectures. The
-baseline resource pack is built into the mod.
+notices beside them, together with `project-state.json`. It writes that layout
+as `rtx-remix-renderer-mc<minecraft-version>-<buildVersion>-installer.zip` in
+`build/distributions/`, here `rtx-remix-renderer-mc26.3-<buildVersion>-installer.zip`. The same `-Parch` selection applies to every JAR;
+omitting it includes both architectures. The baseline resource pack is built
+into every JAR.
 
-`fetchReleaseContent` pulls the pack and the world through Packman into
+`fetchReleaseContent` pulls the pack and world through Packman into
 `remix-runtime/art-pack/` and `remix-runtime/world/` from the pins in
 `tools/config.json`: `resourcePack.package` and `resourcePack.version` for the
 pack, `world.name` and `world.version` for the world. Development launches and
@@ -316,15 +385,21 @@ content. Because the installer finds the zips by name, `fetchReleaseContent`
 refuses a pack version that does not read `1.2.3` or a world version that does
 not read `v1.2.3`, its `v` optional. `materialsArchive` and `worldArchive` zip
 the two with the files in `packaging/content/`, and `stageReleaseAssets`
-collects the four files a release carries, the JAR, both zips, and the bundle,
-in `build/release-assets/`. Only these release tasks fetch the pack and world;
+collects one JAR per declared loader plus the Materials zip, Showcase World
+zip, and installer bundle in
+`build/release-assets/`: for this checkout
+`rtx-remix-renderer-fabric-mc26.3-<buildVersion>.jar`,
+`RTX-Remix-Materials-<version>.zip`, `RTX-Remix-Showcase-World-<version>.zip`,
+and `rtx-remix-renderer-mc26.3-<buildVersion>-installer.zip`. Only these release tasks fetch the pack and world;
 `build`, `test`, and `package` never do.
 
 The pinned pack and world were made for Minecraft 1.21.1. 26.3 drops a pack
 from `options.txt` unless its `pack.mcmeta` declares the game's resource pack
 format, so the `pack.mcmeta` that `materialsPackMeta` writes for the zip
-declares 26.3's, `materialsPackFormat` in `build.gradle`, through `min_format`
-and `max_format`, as the developer tools do for the copy they stage. The world
+declares 26.3's through `min_format` and `max_format`, as the developer tools
+do for the copy they stage. The format is `minecraft.resourcePackFormat` of the
+selected version in `project-state.json` (97 for 26.3); a version without that
+field keeps the pinned pack's own `pack.mcmeta`. The world
 needs no change: 26.3 upgrades it the first time a player opens it.
 
 ## Tooling And CI
@@ -356,16 +431,20 @@ the selected fixture's configuration, and explicit CLI overrides in that order.
 `check --tests` runs the pytest suite and needs no staged assets or runtime.
 See [Configuration](../tools/README.md#configuration).
 
-Pull requests and pushes to `main` run the GitHub
+Pull requests and pushes run manifest-derived GitHub
 [`check`](../.github/workflows/check.yml) and
 [`build`](../.github/workflows/build.yml) workflows on Windows.
-They run `tools\rtx.bat check --tests` and `gradlew.bat build test`,
-respectively, with read-only repository permissions and no secrets. Pull
-request checks also scan the added commit messages. These workflows do not
-launch a GPU client, run benchmarks, or produce a release archive; run those
-locally when they are relevant. The [`release`](../.github/workflows/release.yml)
-workflow builds the release files and runs only when a maintainer starts it;
-see [Releases](../CONTRIBUTING.md#releases). Runtime fetching has the publication
+The `check` workflow runs `tools\rtx.bat check --tests`. The `build` workflow
+validates project state, then builds, tests, packages, and verifies every
+Minecraft-version/loader target of a version listed in the catalog's
+`builtVersions`, here 26.3 on Fabric, on the Java version the catalog declares
+for it. All jobs use read-only
+repository permissions and no secrets. Pull request checks also scan
+the added commit messages. These workflows do not launch a GPU client, run
+benchmarks, or produce a release archive; run those locally when relevant. The
+[`release`](../.github/workflows/release.yml) workflow builds the
+manifest-derived release files and runs only when a maintainer starts it; see
+[Releases](../CONTRIBUTING.md#releases). Runtime fetching has the publication
 prerequisite described in [Get A Runtime](#get-a-runtime).
 
 ## Choosing A Launch Workflow
@@ -373,12 +452,14 @@ prerequisite described in [Get A Runtime](#get-a-runtime).
 | Goal | Use | Minecraft directory |
 |---|---|---|
 | Iterate on this repository | `tools\rtx.bat launch`, or `tools\rtx.bat` for the developer dashboard, through this checkout's Prism instance | Installed Prism's profile, or `run-prism\instances\rtx-remix-dev\.minecraft` for portable Prism |
-| Produce an artifact | `gradlew build`, `gradlew package`, or `gradlew releaseArchive` | None |
-| Test inside an existing Microsoft Launcher install | `tools\rtx.bat install` after `gradlew build` | `%APPDATA%\.minecraft`, or `--game-dir DIR` |
+| Produce the 26.3 artifacts | `gradlew build`, or the corresponding `package` or `releaseArchive` | None |
+| Produce one loader artifact of a built target | `gradlew build -PmcVersion=<version> -Ploader=<loader-id>` or the corresponding `package` | None |
+| Test inside an existing launcher install | `tools\rtx.bat install` after `gradlew build` | `%APPDATA%\.minecraft`, or `--game-dir DIR` |
 
-`build.gradle` also keeps `runClient`, Fabric's standard Gradle task. It runs
-from the repository-local `run/` directory, not the Prism instance, so the two
-share no saves, settings, or logs. The developer tools do not use it.
+`versions/26.3/fabric/build.gradle` also keeps Fabric's standard `runClient`
+task. It runs from the repository-local `run/` directory, not the Prism
+instance, so the two share no saves, settings, or logs. The developer tools do
+not use it.
 
 `rtx install` is an alternative to `tools\rtx.bat launch`, not a step before
 it. Build, then install from the repository root:
@@ -389,11 +470,13 @@ it. Build, then install from the repository root:
 ```
 
 The CLI bootstrap manages uv and its Python environment. The target installation
-must already have a compatible Fabric Loader profile and Fabric API. The command
-warns if Fabric API is missing; it does not install Fabric or launch Minecraft.
-Add `--game-dir DIR` to select another installation and `--arch win64` or
-`--arch arm64` to select its architecture. Relative paths use the repository
-root. Without `--arch`, `REMIX_ARCH` wins, then the host architecture.
+must already have a Minecraft 26.3 profile with Fabric Loader and Fabric API;
+the command warns if Fabric API is missing. The command does not
+install loader dependencies or launch Minecraft. Add `--game-dir DIR` to select
+another installation and `--arch win64` or `--arch arm64` to select its
+architecture. Relative paths use the repository root. Without `--loader`, the
+command follows `RTXREMIX_MOD_LOADER`, merged tools configuration, then Fabric.
+Without `--arch`, `REMIX_ARCH` wins, then the host architecture.
 
 The command installs the newest non-sources development JAR, the staged runtime
 from `remix-runtime/<arch>/`, the matching bridge from `build/native/<arch>/`,
@@ -402,7 +485,9 @@ textures. Baseline PBR textures are built into the JAR. The command removes its
 former generated `rtx-remix-labpbr` pack, drops a leftover `fabric` entry, and
 orders vanilla below existing user packs. Shipped gameplay confs are refreshed
 while extra author-created profiles are preserved. An unchanged runtime is not
-recopied, but the bridge and other payloads are always refreshed.
+recopied, but the bridge and other payloads are always refreshed. The mod is
+installed as `mods\rtx-remix-renderer-fabric.jar`, replacing any earlier
+`rtx-remix-renderer*.jar`.
 
 Set `REMIX_BUILD` to install a custom runtime directory containing `d3d9.dll`
 instead of the staged runtime. Set `REMIX_FORCE_SDK_COPY=1` to force a full SDK
@@ -506,6 +591,8 @@ removes its stale registration.
 |---|---|
 | `vswhere.exe not found` or `vcvarsall.bat failed` | Visual Studio Build Tools missing, or without the Desktop C++ workload |
 | `JAVA_HOME is not set`, or `jni.h not found` | `JAVA_HOME` unset or pointing at a JRE rather than a JDK 25 |
+| `Minecraft 1.21.1 is carried from upstream and is not built in this checkout` | `-PmcVersion=1.21.1` selected NVIDIA's target, which this checkout carries as source only. Leave `-PmcVersion` out to build 26.3; see [Other Commands](#other-commands) |
+| `Unknown Minecraft version '26'` | PowerShell split an unquoted `-PmcVersion=26.3`. Quote it, `"-PmcVersion=26.3"`, or leave it out |
 | Gradle cannot fetch the SDK | Check network access to the Packman remote, or stage a matching local runtime. See [Get A Runtime](#get-a-runtime) |
 | A launch reports that Prism Launcher is not installed | Install it from [prismlauncher.org](https://prismlauncher.org), or point `prism.executable` in `tools/config.local.json` at its `prismlauncher.exe` |
 | A launch opens Prism and stops with sign-in steps | No Microsoft account that owns Minecraft is signed in to the selected Prism profile, or `prism.account` names another. See [Sign In To Prism](#sign-in-to-prism) |
@@ -536,9 +623,10 @@ says `FATAL: loaded Remix runtime is missing required vtable tail entries`.
 An `UnsatisfiedLinkError` after changing a Java native declaration instead
 points to a bridge that was not rebuilt or loaded, or the wrong architecture.
 
-For an ARM64 toolset failure, `verifyPackageJar -Parch=win64` checks the
+For an ARM64 toolset failure,
+`:versions:26.3:fabric:verifyPackageJar -Parch=win64` checks the
 single-architecture package contents without running the tests. The
-dual-architecture artifact still needs both toolchains.
+dual-architecture artifacts still need both toolchains.
 
 ## Where To Go Next
 

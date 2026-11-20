@@ -33,8 +33,11 @@ Three areas have had less attention than the rest:
   themselves, and their terrain shows only with path tracing off.
 - **A full playthrough.** Blocks, mobs, dimensions, and situations the showcase
   never reaches have had less care, and some will look wrong or run slowly.
-- **Other versions.** It targets Minecraft 26.3 only. Ports to newer versions
-  are something we hope the community takes on.
+- **Other versions.** This port targets Minecraft 26.3 on Fabric only. NVIDIA's
+  own release targets Minecraft 1.21.1 with Fabric, Forge, and NeoForge; this
+  repository carries those sources unchanged so that NVIDIA's work merges in,
+  but does not build them. Ports to newer versions are something we hope the
+  community takes on.
 
 We hope the community helps fill it out. If something breaks,
 [report it](docs/PLAYING.md#reporting-a-bug); if you can fix it, see
@@ -42,19 +45,23 @@ We hope the community helps fill it out. If something breaks,
 
 ## Download
 
-Download the installer bundle, `rtx-remix-renderer-<version>-installer.zip`,
+Download the installer bundle,
+`rtx-remix-renderer-mc<minecraft-version>-<mod-version>-installer.zip`,
 from the
-[Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest).
-It holds the mod, the
+[Releases page](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3/releases/latest);
+for this port it is `rtx-remix-renderer-mc26.3-<mod-version>-installer.zip`.
+It holds the self-contained mod JAR for Fabric under `mods/fabric/`, the
 [RTX Remix Materials pack and the RTX Remix Showcase World](#showcase-world-and-materials-pack),
-and the installer that sets them up.
+and the installer that sets them up. The same JAR is also on the Releases page
+as `rtx-remix-renderer-fabric-mc26.3-<mod-version>.jar` for manual installation.
 
 ## Install in four steps
 
 1. Extract the installer bundle.
 2. Double-click `install.bat` and follow the menu. Pick a launcher, keep
    RTX Remix Renderer, RTX Remix Materials, and RTX Remix Showcase World
-   ticked, and press Enter on Continue.
+   ticked, and press Enter on Continue. Fabric is the only loader this port
+   offers, so the installer does not ask for one.
 3. Sign in, and launch the **NVIDIA RTX Remix for Minecraft** profile from
    your launcher.
 4. Open Singleplayer and choose **NVIDIA RTX Demo**. The world was saved in
@@ -73,9 +80,9 @@ The step-by-step version, with launcher advice and troubleshooting, is in
 - An internet connection while the installer runs.
 - 16 GB of system memory is recommended.
 
-Java 25, Fabric, and the RTX Remix runtime are installed for you. The mod
-starts Minecraft on its OpenGL graphics backend, which RTX Remix needs,
-whatever the Graphics API video setting says.
+Java 25, Fabric Loader, Fabric API, and the RTX Remix runtime are installed for
+you by the release installer. The mod starts Minecraft on its OpenGL graphics
+backend, which RTX Remix needs, whatever the Graphics API video setting says.
 
 Building and running from source has its own
 [prerequisites](docs/GETTING_STARTED.md#prerequisites), including Prism
@@ -155,6 +162,7 @@ To add either by hand, take `RTX-Remix-Materials-<version>.zip` or
 | Record a camera flythrough | [Camera Paths](docs/CAMERA_PATHS.md) |
 | Install, repair, or uninstall in detail | [packaging/INSTALL.md](packaging/INSTALL.md) |
 | Build and run from source | [Getting Started](docs/GETTING_STARTED.md) |
+| Understand loader and version ownership | [Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md) |
 | Tune the developer knobs behind the renderer | [Tuning](docs/TUNING.md) |
 | Diagnose a rendering or native integration problem | [Rendering Diagnostics](docs/RENDERING_DIAGNOSTICS.md) |
 | Contribute a change | [CONTRIBUTING.md](CONTRIBUTING.md) |
@@ -166,11 +174,16 @@ To add either by hand, take `RTX-Remix-Materials-<version>.zip` or
 
 | Path | Purpose |
 |---|---|
-| `src/` | Mod implementation and JVM tests |
+| `versions/26.3/minecraft/` | This port's Minecraft 26.3 integration: capture, game integration, UI, and tests |
+| `versions/26.3/fabric/` | This port's Fabric entry points, metadata, and Gradle project |
+| `versions/26.3/renderer-core/` | This port's own copy of the renderer core, kept until the port moves onto the shared one ([why](versions/26.3/renderer-core/README.md)) |
+| `renderer-core/` | NVIDIA's shared loader-neutral renderer core; carried unchanged, not built here |
+| `versions/1.21.1/` | NVIDIA's Minecraft 1.21.1 integration and loader adapters; carried unchanged, not built here |
+| `project-state.json` | The catalog of Minecraft targets, loaders, and pins that the build, tools, installer, and CI read |
 | `rtxremix-java/` | Minecraft-agnostic Java facade and JNI bridge over the RTX Remix C API |
 | `tools/` | Developer launcher, benchmarks, profiling, SDK staging, and development installation |
 | `packman/` | Packman bootstrap and runtime package pins |
-| `packaging/` | Public installer, runtime defaults, and distribution payload |
+| `packaging/` | Multi-loader release installer, runtime defaults, and distribution payload |
 | `docs/` | Player, authoring, and source-build guides |
 
 NVIDIA maintains some release and CI tooling outside this repository. It is
@@ -188,6 +201,18 @@ each commit with `git commit -s` to certify it under the
 no Contributor License Agreement to sign. See [CONTRIBUTING.md](CONTRIBUTING.md)
 for the full guidelines.
 
+This checkout builds Minecraft 26.3 on Fabric only, from `versions/26.3/`.
+It follows NVIDIA's layout, in which `project-state.json` declares every
+Minecraft target and loader and the neutral root enumerates that catalog for
+build, test, package, and release tasks. NVIDIA's shared `renderer-core/` and
+its Minecraft 1.21.1 sources under `versions/1.21.1/` are carried byte for byte
+so that NVIDIA's changes merge cleanly; they are never edited here and are not
+built here. The 26.3 port still compiles its own copy of the renderer core,
+`versions/26.3/renderer-core/`, until it moves onto the shared one. See
+[Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md) for the
+approachable overview and how this fork departs from it, and
+[AGENTS.md](AGENTS.md) for detailed invariants and validation rules.
+
 ## License
 
 This project is licensed under the Apache License, Version 2.0 (`Apache-2.0`).
@@ -203,8 +228,3 @@ MICROSOFT. Minecraft is a trademark of Mojang Synergies AB.
 
 NVIDIA, GeForce, and RTX are trademarks and/or registered trademarks of NVIDIA
 Corporation in the U.S. and other countries.
-
-## Experimental Forge 1.12.2
-
-The [Forge module](forge-1.12.2/README.md) provides a separate Windows x64 build.
-Its guide describes the implemented rendering features and current limitations.

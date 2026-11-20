@@ -131,11 +131,13 @@ selected in Prism's profile.
 The runner copies these packs, unchanged, from the fixture's `resourcepacks/`
 directory and enables them after `vanilla` and the packs Fabric API adds for
 mods, which supply the built-in baseline textures, and before the optional art
-pack. Omitting `resourcePacks` enables no world packs. Prefer unpacked folders
-for clean diffs. Minecraft 26.3 leaves a pack out of `options.txt` unless its
-`pack.mcmeta` declares a resource pack format range that includes the game's,
-so author a world pack with `min_format` and `max_format`; only the art pack is
-amended at staging
+pack. Where a target lists its loader's built-in pack in `options.txt`
+(`builtinResourcePackListed`, as upstream's 1.21.1 loaders do), that pack comes
+between `vanilla` and the world packs. Omitting `resourcePacks` enables no world
+packs. Prefer unpacked folders for clean diffs. Minecraft 26.3 leaves a pack out
+of `options.txt` unless its `pack.mcmeta` declares a resource pack format range
+that includes the game's, so author a world pack with `min_format` and
+`max_format`; only the art pack is amended at staging
 ([Resource Packs](BENCHMARKING.md#resource-packs)).
 
 Older fixtures may still list `rtx-remix` for the retired baseline. The runner

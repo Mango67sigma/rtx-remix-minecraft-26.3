@@ -58,9 +58,28 @@ The launcher combines the developer workflows in one dashboard:
    Change pins in `tools/config.local.json`. Import your own save with
    `world import`, or use CLI flags for a local art pack. **Custom**, the
    default quality preset, leaves in-game settings in charge.
-5. **Launcher** names the account the game will play as, or why it cannot
+5. **Mod loader** lists the loaders the selected Minecraft version declares in
+   `project-state.json`. This checkout builds Minecraft 26.3 on Fabric only, so
+   Fabric is the one choice. The Prism instance profile and installed mod
+   dependencies are updated to match.
+6. **Launcher** names the account the game will play as, or why it cannot
    launch. Select it to sign in.
-6. Choose **Launch game**.
+7. Choose **Launch game**.
+
+Minecraft 26.3 and Fabric are the defaults, from `defaultMinecraftVersion` and
+that version's `defaultLoader` in `project-state.json`. `--minecraft-version`
+selects a declared target and may appear before or after the command;
+`--loader` selects one of that target's loaders. For example,
+`tools\rtx.bat launch --minecraft-version 26.3 --loader fabric` and
+`tools\rtx.bat run --minecraft-version 26.3 --loader fabric`. `run` is the
+benchmark command.
+Development `install` accepts the same selectors. The dashboard saves its choice
+only in the ignored launcher state. For a shell or checkout-wide default, use
+`RTXREMIX_MINECRAFT_VERSION` and `RTXREMIX_MOD_LOADER`; loader configuration can
+also use `"modLoader"` in ignored `tools/config.local.json`. The catalog also
+declares NVIDIA's Minecraft 1.21.1 with Fabric, Forge, and NeoForge, which this
+checkout carries as source but does not build (`builtVersions`): selecting it
+fails at the Gradle step, before the Prism instance is touched.
 
 Do not run `gradlew build` or `tools\rtx.bat install` first, or install files
 under `%APPDATA%\.minecraft`. `rtx.bat` fetches the selected assets, compiles
@@ -90,6 +109,8 @@ over any Minecraft screen.
 tools\rtx.bat prism signin
 tools\rtx.bat doctor
 tools\rtx.bat sdk status
+tools\rtx.bat versions
+tools\rtx.bat target-status
 tools\rtx.bat run --runs 1
 tools\rtx.bat run --world MyWorld --camera benchmark --resource-pack none
 tools\rtx.bat open
@@ -103,18 +124,29 @@ the second benchmarks a save you imported and recorded a camera for.
   normal play and benchmark runs.
 - The same CLI exposes SDK sources, worlds, resource packs, launches, benchmarks,
   result comparison, and tooling checks as scriptable subcommands.
+- `rtx.bat versions` lists the catalog's Minecraft targets and says whether
+  each is built here or carried as source only (`builtVersions` in
+  `project-state.json`). `rtx.bat target-status` reports the evidence for one
+  target; for a version that is not built here it starts no Gradle build and
+  reports its build and live checks as `not-built-here`.
 - `rtx.bat prism signin` opens the selected Prism profile to sign in to a
   Microsoft account that owns Minecraft: Java Edition.
-- `rtx.bat doctor` is a read-only **benchmark** readiness check, including the
-  selected world, version 1 camera schema, Java, the launcher and its signed-in
-  account, SDK, and Tracy tools. It fails when a launch would be blocked. The
+- `rtx.bat doctor [--loader <loader-id>]` is a read-only **benchmark**
+  readiness check, including the selected loader, world, version 1 camera
+  schema, Java, the launcher and its signed-in account, SDK, and Tracy tools.
+  It fails when a launch would be blocked. The
   shipped demo world includes a benchmark camera; record one for your own saves.
   It checks the release runtime unless `--sdk-variant tracy` asks for the
   Tracy runtime and its capture tools.
 - `rtx.bat check` runs Ruff format checks and linting over `src/` and `tests/`,
   followed by ty type checks. Add `--tests` to run one pytest suite
   covering the benchmark, profiler, and launcher tests, including the
-  public-boundary gate.
+  public-boundary gate. Upstream's tests run against Minecraft 1.21.1 as their
+  ambient reference target (`tests/conftest.py`), because they were written for
+  it; the fork's own tests under `tests/fork/` select 26.3 explicitly and hold
+  what this port asserts, including the two transition ledgers that let
+  `versions/26.3/renderer-core/` and the loader imports in
+  `versions/26.3/minecraft/` only shrink.
   Use the uv-locked gate, not globally installed Ruff or ty;
   `--no-types` deliberately skips type checks.
 - `rtx.bat diag hang --pid N` captures `jstack.txt` and a full `native.dmp`
@@ -133,25 +165,25 @@ the second benchmarks a save you imported and recorded a camera for.
   Both diagnostics commands accept `--print-output-root` to print the
   `hang-dumps/` root in this checkout's game directory without touching any
   process.
-- `rtx.bat install [--game-dir DIR] [--arch win64|arm64]` installs an already-built
-  development mod into an existing Fabric installation. It defaults to
+- `rtx.bat install [--minecraft-version <version>] [--loader <loader-id>] [--game-dir DIR] [--arch win64|arm64]`
+  installs an already-built development mod into an existing installation for
+  the selected loader. Loader selection follows the command line,
+  `RTXREMIX_MOD_LOADER`, merged tools configuration, then Fabric. It defaults to
   `%APPDATA%\.minecraft` and installs the runtime, JNI bridge, gameplay confs,
   and textures. The baseline materials are built into the mod JAR, not copied
   as a separate pack. It runs `packaging/migrate_resource_packs.ps1` with
   `-LegacyPackName rtx-remix-labpbr` to retire the recognized old baseline,
-  preserve user packs and their order, drop a leftover `fabric` entry, and
-  place `vanilla` below the user packs in existing `options.txt`. A migration
+  preserve user packs and their order, and place `vanilla` below them in
+  existing `options.txt`. For a target whose loader pack is listed in
+  `options.txt` (`builtinResourcePackListed`, true for upstream's 1.21.1
+  loaders), that pack goes between `vanilla` and the user packs; for 26.3 on
+  Fabric, which keeps mod resources in a hidden pack, a leftover `fabric` entry
+  is dropped instead. A migration
   failure makes installation fail.
   `REMIX_ARCH` overrides host architecture, `REMIX_BUILD` selects a custom
   runtime, and `REMIX_FORCE_SDK_COPY=1` bypasses the runtime copy marker.
   Relative paths use the repository root. It neither builds nor launches
-  Minecraft and does not manage Fabric Loader or Fabric API.
-- `rtx.bat textures water-normals [--seed N] [--out PATH]` generates
-  `water_normals_flipbook.dds` from code, by default under `build/textures/`:
-  120 frames of a tiling ocean surface that loops every six seconds, packed
-  12 x 10 as BC5 with mips in the layout `BlockTextureManager` plays. A seed
-  always produces the same surface. It takes about a minute, and it does not
-  publish the result to Packman.
+  Minecraft and does not manage the mod loader or its dependencies.
 
 All Python tooling uses one uv-managed project in `tools/`, requiring
 Python >=3.15 and uv >=0.13. The benchmark and profiler packages share
@@ -180,7 +212,8 @@ Follow [Contributing](../CONTRIBUTING.md) for change submission and review.
 Before publishing a change, run `tools\rtx.bat check --tests` with
 `PUBLIC_COMMIT_RANGE=main..HEAD` to include the added commit messages in the
 boundary check. The GitHub `check` workflow uses this command; `build`
-runs `gradlew.bat build test`. Neither workflow runs GPU benchmarks.
+builds, tests, packages, and verifies every target the project catalog lists in
+`builtVersions` (here Minecraft 26.3 on Fabric) using its declared Java version. Neither workflow runs GPU benchmarks.
 
 A change that depends on a runtime API must wait until the package implementing
 it is published. The repository-root
@@ -192,8 +225,8 @@ section owns the cross-layer change order and publication requirements.
 | Goal | Use | Instance affected |
 |---|---|---|
 | Normal development, demo world, or local dxvk testing | `tools\rtx.bat`, through this checkout's Prism instance | Installed Prism's profile, or `run-prism\instances\rtx-remix-dev\.minecraft` for portable Prism |
-| Manually test in the regular Microsoft Launcher | `tools\rtx.bat install` after `gradlew.bat build` | `%APPDATA%\.minecraft`, or `--game-dir DIR` |
-| Install a produced release | The installer bundle's `install.bat` | Installer-selected launcher instance |
+| Manually test in an existing launcher installation | `tools\rtx.bat install --minecraft-version <version> --loader <loader-id>` after that target's Gradle build | `%APPDATA%\.minecraft`, or `--game-dir DIR` |
+| Install a produced release with its Materials pack and Showcase World | The installer bundle's `install.bat` | Installer-selected launcher instance |
 
 These are alternatives. Mixing them can leave you inspecting one Minecraft
 directory while a different instance is actually running.

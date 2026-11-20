@@ -45,8 +45,9 @@ passes an emission fallback of zero (`LabPBRConverter.blitEmissive`), so a
 block's vanilla light level never becomes surface glow on its own. For
 example, without an `_s` for glowstone, the block renders dark.
 
-The textures live in `src/main/resources/assets/` in this repository and are
-covered by the [LICENSE](../LICENSE), so copy them and build on them. A glow
+The textures live in `versions/26.3/minecraft/main/resources/assets/` in
+this repository and are covered by the [LICENSE](../LICENSE), so copy them and
+build on them. A glow
 map for part of a texture, such as a torch flame, lines up with the vanilla
 texture, so a pack that redraws that texture should ship its own `_s` too.
 
@@ -77,6 +78,15 @@ A sidecar does not have to match the resolution of the texture it describes. It
 is sampled with a wrap, so a 16x16 sidecar tiles across a 32x32 base colour.
 That makes a plain 16x16 `_s` a workable way to say "this whole block is
 metal".
+
+A sidecar is read from its file and is not a texture of its own. Minecraft
+would stitch it into the atlas beside the texture it describes, where its
+colours blend into its neighbours once a surface is far enough away to be read
+from a coarse mip level, so the mod keeps sidecars out of every atlas
+(`LabPBRSidecarFilter`). The rule goes by name: where `stone.png` is in an
+atlas, `stone_n.png`, `stone_s.png`, and `stone_sss.png` are its sidecars, and
+a model cannot use one of them as a texture. A suffixed texture with no base
+beside it, such as a `pipe_n.png` without a `pipe.png`, is left alone.
 
 ## Animated Textures
 

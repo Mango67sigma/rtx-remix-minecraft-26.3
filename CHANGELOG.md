@@ -6,8 +6,56 @@ refactoring does not.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-The version in a release is the `mod_version` in `gradle.properties`, and it is
-also part of every mod file name.
+The version in a release is `mod.version` in `project-state.json`, and it is
+also part of every release file name.
+
+## Unreleased
+
+NVIDIA's changes to the project through 2026-11-20 are merged, and the three
+of them that change what the game does are carried over to 26.3.
+
+### Changed
+
+- Animated water normals are generated when the game starts rendering instead
+  of being shipped as a 145 MB texture, so the download and the unpacked game
+  folder are smaller. The renderer builds them once, when it first sets up
+  water, which takes under a second, and keeps them across resource reloads.
+  The old `textures\water_normals_flipbook.dds` is deleted from the game folder
+  on the next launch.
+- LabPBR normal and specular textures (`_n`, `_s`, and `_sss`) are no longer
+  stitched into Minecraft's texture atlases, such as the block and item
+  atlases, as if they were textures of their own. Far surfaces lose a
+  blue-violet tint that bled from them into indirect light, and the atlases
+  are smaller. A pack texture named like a
+  sidecar of another texture in the same atlas, such as `pipe_n.png` beside
+  `pipe.png`, is now treated as a sidecar, so a model that uses it as a texture
+  shows the missing texture.
+- The installer bundle and the download names carry the loader and the
+  Minecraft version: the bundle is
+  `rtx-remix-renderer-mc26.3-<version>-installer.zip`, the standalone mod is
+  `rtx-remix-renderer-fabric-mc26.3-<version>.jar`, and the bundle keeps the
+  mod under `mods\fabric\`. The installer now installs the mod as
+  `mods\rtx-remix-renderer-fabric.jar` and removes the versioned file an
+  earlier release left; `latest.log` still names the exact build. It no longer
+  asks for a mod loader, since Fabric is the only one this port offers.
+
+### Fixed
+
+- The memory RTX Remix shares with Minecraft's OpenGL window is marked as a
+  dedicated allocation, which Proton and Wine need to show the picture. This
+  has not been tested on Proton or Wine.
+
+### For Contributors
+
+- The repository follows NVIDIA's multi-version layout. `src/` is gone: the
+  26.3 port lives in `versions/26.3/` (`minecraft/`, `fabric/`, and its own
+  copy of the renderer core in `renderer-core/`), and `project-state.json`
+  catalogs the targets and holds the mod version. NVIDIA's shared
+  `renderer-core/` and its Minecraft 1.21.1 sources in `versions/1.21.1/` are
+  carried unchanged and are not built here. A bare `gradlew build` still builds
+  26.3; the development JAR is now under `versions/26.3/fabric/build/libs/`.
+  [Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md#this-fork-the-263-port)
+  explains the layout and its rules.
 
 ## 0.1.3 - 2026-11-06
 

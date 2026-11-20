@@ -5,9 +5,7 @@
 as packaging/install.bat runs it.
 
 Minecraft reads options.txt's resourcePacks as a JSON list, lowest priority first, and loads a zipped pack from
-resourcepacks/ without unpacking it. A listed pack whose file is missing is dropped when the game starts. 26.3 has no
-`fabric` pack: Fabric API keeps the mod's baseline in a hidden pack above vanilla and below every listed pack, so the
-installer lists the Materials pack just above vanilla."""
+resourcepacks/ without unpacking it. A listed pack whose file is missing is dropped when the game starts."""
 
 import json
 import os
@@ -16,10 +14,14 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from fork.installer_reference import reference_catalog  # noqa: F401  (fork: the 1.21.1 catalog)
 
 from rtx_tools.benchmark import util
 
-pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer")
+pytestmark = [
+    pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer"),
+    pytest.mark.usefixtures("reference_catalog"),
+]
 
 INSTALLER = util.PROJECT_DIR / "packaging" / "installer.ps1"
 PACK = "RTX-Remix-Materials-0.58.0.zip"
@@ -170,7 +172,7 @@ def options(mc_dir: Path) -> str:
     return (mc_dir / "options.txt").read_bytes().decode("utf-8")
 
 
-def test_a_new_instance_gets_the_pack_turned_on_above_vanilla(run: Run, mc_dir: Path):
+def test_a_new_instance_gets_the_pack_turned_on_above_fabric(run: Run, mc_dir: Path):
     output = run()
 
     assert returned(output) == ["Installed"]
@@ -178,7 +180,7 @@ def test_a_new_instance_gets_the_pack_turned_on_above_vanilla(run: Run, mc_dir: 
     assert installed(mc_dir) == [PACK]
     assert (mc_dir / "resourcepacks" / PACK).read_bytes() == PACK_BYTES
     # The game reads a file at its own data version as current, and fills in every other option.
-    assert options(mc_dir) == f"version:5023\r\n{resource_packs('vanilla', f'file/{PACK}')}\r\n"
+    assert options(mc_dir) == f"version:3955\r\n{resource_packs('vanilla', 'fabric', f'file/{PACK}')}\r\n"
 
 
 @pytest.mark.parametrize("newline", ["\r\n", "\n"])
@@ -186,40 +188,32 @@ def test_a_new_instance_gets_the_pack_turned_on_above_vanilla(run: Run, mc_dir: 
 def test_the_pack_goes_below_the_players_own_packs_and_nothing_else_changes(
     run: Run, mc_dir: Path, newline: str, bom: bytes
 ):
-    before = newline.join(["version:5023", "ao:true", resource_packs("vanilla", "file/Faithful.zip"), "fov:0.0"])
+    before = newline.join(
+        ["version:3955", "ao:true", resource_packs("vanilla", "fabric", "file/Faithful.zip"), "fov:0.0"]
+    )
     (mc_dir / "options.txt").write_bytes(bom + (before + newline).encode("utf-8"))
 
     assert returned(run()) == ["Installed"]
 
     after = newline.join(
-        ["version:5023", "ao:true", resource_packs("vanilla", f"file/{PACK}", "file/Faithful.zip"), "fov:0.0"]
+        ["version:3955", "ao:true", resource_packs("vanilla", "fabric", f"file/{PACK}", "file/Faithful.zip"), "fov:0.0"]
     )
     assert (mc_dir / "options.txt").read_bytes() == bom + (after + newline).encode("utf-8")
 
 
-def test_an_options_file_without_a_pack_list_gets_one_with_vanilla_below_the_pack(run: Run, mc_dir: Path):
-    (mc_dir / "options.txt").write_bytes(b"version:5023\nao:true")
+def test_an_options_file_without_a_pack_list_gets_one_with_fabric_below_the_pack(run: Run, mc_dir: Path):
+    (mc_dir / "options.txt").write_bytes(b"version:3955\nao:true")
 
     assert returned(run()) == ["Installed"]
 
-    assert options(mc_dir) == f"version:5023\nao:true\n{resource_packs('vanilla', f'file/{PACK}')}\n"
-
-
-def test_a_fabric_entry_left_from_1_21_1_does_not_place_the_pack(run: Run, mc_dir: Path):
-    # 1.21.1 listed Fabric's pack. 26.3 has none and drops the entry when the game starts, and installing the mod
-    # removes it; the installer never adds one, and the pack still goes just above vanilla.
-    (mc_dir / "options.txt").write_bytes((resource_packs("vanilla", "fabric", "file/Faithful.zip") + "\r\n").encode())
-
-    assert returned(run()) == ["Installed"]
-
-    assert options(mc_dir) == resource_packs("vanilla", f"file/{PACK}", "fabric", "file/Faithful.zip") + "\r\n"
+    assert options(mc_dir) == f"version:3955\nao:true\n{resource_packs('vanilla', 'fabric', f'file/{PACK}')}\n"
 
 
 def test_an_upgrade_replaces_an_earlier_pack_in_place(run: Run, mc_dir: Path):
     (mc_dir / "resourcepacks").mkdir()
     (mc_dir / "resourcepacks" / OLD_PACK).write_bytes(b"old")
     (mc_dir / "options.txt").write_bytes(
-        (resource_packs("vanilla", f"file/{OLD_PACK}", "file/Faithful.zip") + "\r\n").encode("utf-8")
+        (resource_packs("vanilla", "fabric", f"file/{OLD_PACK}", "file/Faithful.zip") + "\r\n").encode("utf-8")
     )
 
     output = run()
@@ -228,13 +222,13 @@ def test_an_upgrade_replaces_an_earlier_pack_in_place(run: Run, mc_dir: Path):
     assert STAYS_OFF not in output
     assert installed(mc_dir) == [PACK]
     assert (mc_dir / "resourcepacks" / PACK).read_bytes() == PACK_BYTES
-    assert options(mc_dir) == resource_packs("vanilla", f"file/{PACK}", "file/Faithful.zip") + "\r\n"
+    assert options(mc_dir) == resource_packs("vanilla", "fabric", f"file/{PACK}", "file/Faithful.zip") + "\r\n"
 
 
 def test_an_upgrade_keeps_a_pack_the_player_turned_off_off(run: Run, mc_dir: Path):
     (mc_dir / "resourcepacks").mkdir()
     (mc_dir / "resourcepacks" / OLD_PACK).write_bytes(b"old")
-    before = resource_packs("vanilla", "file/Faithful.zip") + "\r\n"
+    before = resource_packs("vanilla", "fabric", "file/Faithful.zip") + "\r\n"
     (mc_dir / "options.txt").write_bytes(before.encode("utf-8"))
 
     output = run()
@@ -249,7 +243,7 @@ def test_an_upgrade_keeps_a_pack_the_player_turned_off_off(run: Run, mc_dir: Pat
 def test_a_pack_the_game_holds_open_fails_and_changes_nothing(run: Run, mc_dir: Path):
     (mc_dir / "resourcepacks").mkdir()
     (mc_dir / "resourcepacks" / PACK).write_bytes(b"old")
-    before = resource_packs("vanilla", f"file/{PACK}") + "\r\n"
+    before = resource_packs("vanilla", "fabric", f"file/{PACK}") + "\r\n"
     (mc_dir / "options.txt").write_bytes(before.encode("utf-8"))
 
     output = run(hold=mc_dir / "resourcepacks" / PACK)
@@ -267,7 +261,7 @@ def test_a_pack_the_game_holds_open_fails_and_changes_nothing(run: Run, mc_dir: 
 def test_an_upgrade_while_the_game_holds_the_older_pack_fails_and_leaves_options_alone(run: Run, mc_dir: Path):
     (mc_dir / "resourcepacks").mkdir()
     (mc_dir / "resourcepacks" / OLD_PACK).write_bytes(b"old")
-    before = resource_packs("vanilla", f"file/{OLD_PACK}") + "\r\n"
+    before = resource_packs("vanilla", "fabric", f"file/{OLD_PACK}") + "\r\n"
     (mc_dir / "options.txt").write_bytes(before.encode("utf-8"))
 
     # The fixture also asserts nothing reached stderr.
@@ -312,13 +306,13 @@ def test_files_that_only_look_like_the_pack_are_the_players(run: Run, mc_dir: Pa
     ]
     for name in lookalikes:
         (mc_dir / "resourcepacks" / name).write_bytes(b"mine")
-    before = resource_packs("vanilla", *(f"file/{name}" for name in lookalikes)) + "\r\n"
+    before = resource_packs("vanilla", "fabric", *(f"file/{name}" for name in lookalikes)) + "\r\n"
     (mc_dir / "options.txt").write_bytes(before.encode("utf-8"))
 
     assert returned(run()) == ["Installed"]
     assert installed(mc_dir) == sorted([*lookalikes, PACK])
     assert options(mc_dir) == (
-        resource_packs("vanilla", f"file/{PACK}", *(f"file/{name}" for name in lookalikes)) + "\r\n"
+        resource_packs("vanilla", "fabric", f"file/{PACK}", *(f"file/{name}" for name in lookalikes)) + "\r\n"
     )
 
     run("Uninstall")
@@ -344,18 +338,18 @@ def test_uninstall_removes_the_pack_and_its_entry(run: Run, mc_dir: Path):
     (mc_dir / "resourcepacks" / PACK).write_bytes(PACK_BYTES)
     (mc_dir / "resourcepacks" / "Faithful.zip").write_bytes(b"mine")
     (mc_dir / "options.txt").write_bytes(
-        ("ao:true\n" + resource_packs("vanilla", f"file/{PACK}", "file/Faithful.zip") + "\n").encode("utf-8")
+        ("ao:true\n" + resource_packs("vanilla", "fabric", f"file/{PACK}", "file/Faithful.zip") + "\n").encode("utf-8")
     )
 
     run("Uninstall")
 
     assert installed(mc_dir) == ["Faithful.zip"]
-    assert options(mc_dir) == "ao:true\n" + resource_packs("vanilla", "file/Faithful.zip") + "\n"
+    assert options(mc_dir) == "ao:true\n" + resource_packs("vanilla", "fabric", "file/Faithful.zip") + "\n"
 
 
 def test_uninstall_without_a_pack_leaves_options_byte_for_byte(run: Run, mc_dir: Path):
     # Spacing the installer would not write, so any rewrite would show.
-    before = 'resourcePacks:["vanilla", "file/Faithful.zip"]\r\n'
+    before = 'resourcePacks:["vanilla", "fabric", "file/Faithful.zip"]\r\n'
     (mc_dir / "options.txt").write_bytes(before.encode("utf-8"))
 
     run("Uninstall")

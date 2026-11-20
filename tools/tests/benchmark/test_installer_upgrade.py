@@ -22,17 +22,19 @@ from typing import Any
 import pytest
 from conftest import write_jdk
 
-from rtx_tools import prism
+from rtx_tools import loader_registry
 from rtx_tools.benchmark import util
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer")
 
 INSTALLER = util.PROJECT_DIR / "packaging" / "installer.ps1"
 INSTANCE_NAME = "NVIDIA RTX Remix for Minecraft"
-MC_VERSION = prism.installer_constant("MC_VERSION")
-LOADER_VERSION = prism.installer_constant("FABRIC_LOADER_VER")
-FABRIC_API_VERSION = prism.installer_constant("FABRIC_API_VERSION")
-JAVA_MAJOR = prism.GAME_JAVA_MAJOR
+# The fork's own target, selected explicitly: the suite's ambient target is NVIDIA's 1.21.1 (tests/conftest.py).
+TARGET = loader_registry.load_registry(minecraft_version="26.3")
+MC_VERSION = TARGET.minecraft_version
+LOADER_VERSION = TARGET.get("fabric").version
+FABRIC_API_VERSION = TARGET.get("fabric").api_version
+JAVA_MAJOR = TARGET.java_target
 # What the first release pinned.
 OLD_MC_VERSION = "1.21.1"
 OLD_LOADER_VERSION = "0.16.5"
@@ -60,7 +62,7 @@ X64_JDK_ASSETS_URL = (
 HARNESS = r"""
 param([string]$Installer, [string]$Loaded, [string]$Action, [string]$DataDir, [string]$InstanceDir,
       [string]$ManagedJdk, [string]$McDir, [string]$Launcher, [string]$JavaExe, [string]$Fixture, [string]$Sha256,
-      [string]$Sidecar, [string]$Answer, [switch]$Arm64, [switch]$Unattended)
+      [string]$Sidecar, [string]$Answer, [string]$MinecraftVersion, [switch]$Arm64, [switch]$Unattended)
 $ProgressPreference = 'SilentlyContinue'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$null, [ref]$null)
 $entryPoint = $ast.EndBlock.Statements[-1]
@@ -71,6 +73,8 @@ $start = $ast.ParamBlock.Extent.EndOffset
 $body = $ast.Extent.Text.Substring($start, $entryPoint.Extent.StartOffset - $start)
 [IO.File]::WriteAllText($Loaded, $body, [Text.UTF8Encoding]::new($true))
 . $Loaded
+# The checkout's catalog declares 1.21.1 and 26.3, so nothing is selected until the step names its target.
+Set-MinecraftVersion -VersionId $MinecraftVersion
 $script:Unattended = $Unattended.IsPresent
 $script:SessionTempDir = Join-Path (Split-Path -Parent $Loaded) 'session'
 New-Item -ItemType Directory -Path $script:SessionTempDir -Force | Out-Null
@@ -119,9 +123,10 @@ if ($Action -in 'InstallFabricApi', 'InitializeMicrosoft') {
 try {
     switch ($Action) {
         'Constants' {
+            $fabric = Get-LoaderProvider -ModLoader Fabric
             ConvertTo-Json -Compress -InputObject ([ordered]@{
-                profileKey = $script:FABRIC_PROFILE_KEY
-                versionId  = $script:FABRIC_VERSION_ID
+                profileKey = $fabric.MicrosoftProfileKey
+                versionId  = $fabric.VersionId
                 jdkFolder  = Split-Path -Leaf $script:MANAGED_JDK_DIR
             })
         }
@@ -130,7 +135,7 @@ try {
             $script:MANAGED_JDK_DIR = $ManagedJdk
             Install-ManagedJdk
         }
-        'InitializeInstance' { Initialize-PrismInstance -InstanceDir $InstanceDir }
+        'InitializeInstance' { Initialize-PrismInstance -InstanceDir $InstanceDir -ModLoader Fabric }
         'JavaPin' {
             $script:MANAGED_JDK_DIR = $ManagedJdk
             Set-PrismJavaPin -InstanceCfg (Join-Path $InstanceDir 'instance.cfg')
@@ -138,10 +143,12 @@ try {
         'InitializePrism' {
             $script:MANAGED_JDK_DIR = $ManagedJdk
             $state = [pscustomobject]@{ PrismDataDir = $DataDir }
-            Write-Host "Instance: $(Initialize-Prism -State $state -Unattended:$Unattended)"
+            Write-Host "Instance: $(Initialize-Prism -State $state -Unattended:$Unattended -ModLoader Fabric)"
         }
         'InstallFabricApi' { Install-FabricApi -McDir $McDir -Launcher $Launcher }
-        'InitializeMicrosoft' { Initialize-MicrosoftLauncher -JavaExe $JavaExe -Unattended:$Unattended }
+        'InitializeMicrosoft' {
+            Initialize-MicrosoftLauncher -JavaExe $JavaExe -Unattended:$Unattended -ModLoader Fabric
+        }
         default { throw "Unknown action: $Action" }
     }
 } catch {
@@ -164,7 +171,7 @@ def harness(tmp_path: Path) -> Harness:
     script.write_text(HARNESS, encoding="ascii")
 
     def run(action: str, *, env: dict[str, str] | None = None, **options: Path | str | bool) -> str:
-        arguments = ["-Action", action]
+        arguments = ["-Action", action, "-MinecraftVersion", MC_VERSION]
         for name, value in options.items():
             if value is True:
                 arguments.append(f"-{name}")
@@ -199,13 +206,6 @@ def harness(tmp_path: Path) -> Harness:
 def lines_after(output: str, prefix: str) -> list[str]:
     """What each output line that starts with `prefix` says after it."""
     return [line.removeprefix(prefix) for line in output.splitlines() if line.startswith(prefix)]
-
-
-def snapshot(folder: Path) -> dict[str, bytes]:
-    """Every file under `folder` with its bytes."""
-    return {
-        path.relative_to(folder).as_posix(): path.read_bytes() for path in sorted(folder.rglob("*")) if path.is_file()
-    }
 
 
 def cfg_values(instance: Path) -> dict[str, str]:
@@ -325,27 +325,16 @@ def test_an_instance_the_first_release_made_moves_to_the_pinned_game(
     pack = read_pack(instance)
     components = components_by_uid(pack)
     before = components_by_uid(original)
-    assert components[MINECRAFT]["version"] == MC_VERSION
-    assert components[FABRIC_LOADER]["version"] == LOADER_VERSION
-    # Every other component, the order, and the format stay, except the dependencies Prism added for the old
-    # Minecraft: it adds those again for the new one, but fails an instance whose Intermediary Mappings require the old.
-    # The two that moved keep what Prism cached about them except the version and requirements it cached for the old
-    # game.
+    # The installer writes Minecraft and the loader first, as for a new instance, at the target's versions, and keeps
+    # every other component in its order, except the dependencies Prism added for the old Minecraft: it adds those
+    # again for the new one, but fails an instance whose Intermediary Mappings require the old.
+    assert pack["components"][:2] == installer_written_pack(MC_VERSION, LOADER_VERSION)["components"]
     removed = [uid for uid, component in before.items() if is_volatile_dependency(component)]
-    assert [component["uid"] for component in pack["components"]] == [uid for uid in before if uid not in removed]
+    others = [uid for uid in before if uid not in removed and uid not in (MINECRAFT, FABRIC_LOADER)]
+    assert [component["uid"] for component in pack["components"][2:]] == others
+    for uid in others:
+        assert components[uid] == before[uid]
     assert pack["formatVersion"] == original["formatVersion"]
-    for uid, component in before.items():
-        if uid in removed:
-            continue
-        if uid in (MINECRAFT, FABRIC_LOADER):
-            kept = {
-                key: value
-                for key, value in component.items()
-                if key not in ("version", "cachedVersion", "cachedRequires")
-            }
-            assert {key: value for key, value in components[uid].items() if key != "version"} == kept
-        else:
-            assert components[uid] == component
     # The previous file is kept, and instance.cfg changes in JavaVersion alone.
     assert json.loads((instance / "mmc-pack.json.bak").read_text(encoding="utf-8")) == original
     assert cfg_values(instance)["JavaVersion"] == str(JAVA_MAJOR)
@@ -356,7 +345,6 @@ def test_an_instance_the_first_release_made_moves_to_the_pinned_game(
     assert (instance / "instance.cfg").read_text(encoding="utf-8").splitlines() == expected
     # Each change is logged.
     assert f"Updated the Prism instance's Minecraft from {OLD_MC_VERSION} to {MC_VERSION}." in output
-    assert f"Updated the Prism instance's Fabric Loader from {OLD_LOADER_VERSION} to {LOADER_VERSION}." in output
     assert f"Updated the Prism instance's JavaVersion from {OLD_JAVA_MAJOR} to {JAVA_MAJOR}." in output
     assert output.count("Removed the Prism instance's") == len(removed)
     for uid in removed:
@@ -373,41 +361,53 @@ def test_a_new_loader_alone_leaves_the_dependencies_prism_added_for_the_pinned_m
 
     components = components_by_uid(read_pack(instance))
     assert components[FABRIC_LOADER]["version"] == LOADER_VERSION
-    assert list(components) == list(components_by_uid(original))
+    assert set(components) == set(components_by_uid(original))
     assert components["org.lwjgl3"] == components_by_uid(original)["org.lwjgl3"]
     assert components["net.fabricmc.intermediary"] == components_by_uid(original)["net.fabricmc.intermediary"]
     assert "Removed" not in output
+    assert "Updated the Prism instance's Minecraft" not in output
 
 
-def test_an_instance_the_installer_just_made_is_left_alone_by_the_next_run(harness: Harness, tmp_path: Path):
+def test_an_instance_the_installer_just_made_keeps_its_settings_on_the_next_run(harness: Harness, tmp_path: Path):
     instance = tmp_path / "PrismLauncher" / "instances" / INSTANCE_NAME
     created = harness("InitializeInstance", InstanceDir=instance)
     assert "Creating Prism instance" in created
-    written = snapshot(instance)
-    assert components_by_uid(read_pack(instance))[MINECRAFT]["version"] == MC_VERSION
-    assert cfg_values(instance)["JavaVersion"] == str(JAVA_MAJOR)
+    assert (instance / "instance.cfg").read_bytes().decode("utf-8").split("\r\n") == [
+        "InstanceType=OneSix",
+        f"name={INSTANCE_NAME}",
+        f"JavaVersion={JAVA_MAJOR}",
+    ]
+    assert read_pack(instance) == installer_written_pack(MC_VERSION, LOADER_VERSION)
+    cfg = (instance / "instance.cfg").read_bytes()
 
     output = harness("InitializeInstance", InstanceDir=instance)
 
     assert "Reusing existing Prism instance" in output
     assert "Updated" not in output and "Set the Prism instance" not in output
-    assert snapshot(instance) == written
+    assert (instance / "instance.cfg").read_bytes() == cfg
+    assert read_pack(instance) == installer_written_pack(MC_VERSION, LOADER_VERSION)
 
 
 @pytest.mark.parametrize("java_version", [f"{JAVA_MAJOR}.0.4.1", f'"{JAVA_MAJOR}.0.4.1"', str(JAVA_MAJOR)])
-def test_a_pack_prism_saved_for_the_pinned_game_is_left_alone(harness: Harness, tmp_path: Path, java_version: str):
+def test_a_pack_prism_saved_for_the_pinned_game_keeps_its_components(
+    harness: Harness, tmp_path: Path, java_version: str
+):
     pack = prism_saved_pack(MC_VERSION, LOADER_VERSION, "3.4.3")
     cfg = (
         f"[General]\r\nConfigVersion=1.3\r\nInstanceType=OneSix\r\nJavaVersion={java_version}\r\n"
         f"name={INSTANCE_NAME}\r\n"
     )
     instance = make_instance(tmp_path / "PrismLauncher", cfg=cfg, pack=pack)
-    before = snapshot(instance)
+    cfg_before = (instance / "instance.cfg").read_bytes()
 
     output = harness("InitializeInstance", InstanceDir=instance)
 
-    assert snapshot(instance) == before
-    assert "Updated" not in output and "Set the Prism instance" not in output
+    assert (instance / "instance.cfg").read_bytes() == cfg_before
+    components = components_by_uid(read_pack(instance))
+    assert {uid: component["version"] for uid, component in components.items()} == {
+        uid: component["version"] for uid, component in components_by_uid(pack).items()
+    }
+    assert "Updated" not in output and "Set the Prism instance" not in output and "Removed" not in output
 
 
 @pytest.mark.parametrize(
@@ -430,7 +430,6 @@ def test_the_instances_java_version_follows_the_game_major(
     cfg = "\r\n".join(["InstanceType=OneSix", f"name={INSTANCE_NAME}", *version_line, "OverrideJavaArgs=false", ""])
     pack = installer_written_pack(MC_VERSION, LOADER_VERSION)
     instance = make_instance(tmp_path / "PrismLauncher", cfg=cfg, pack=pack)
-    pack_before = (instance / "mmc-pack.json").read_bytes()
 
     output = harness("InitializeInstance", InstanceDir=instance)
 
@@ -438,31 +437,26 @@ def test_the_instances_java_version_follows_the_game_major(
     values = cfg_values(instance)
     assert values["JavaVersion"] == str(JAVA_MAJOR)
     assert values["OverrideJavaArgs"] == "false"
-    assert (instance / "mmc-pack.json").read_bytes() == pack_before
+    assert read_pack(instance) == pack
 
 
 def test_an_instance_without_a_pack_gets_the_pinned_one(harness: Harness, tmp_path: Path):
     instance = make_instance(tmp_path / "PrismLauncher", cfg=first_release_cfg(), pack=None)
 
-    output = harness("InitializeInstance", InstanceDir=instance)
+    harness("InitializeInstance", InstanceDir=instance)
 
-    assert "has no mmc-pack.json" in output
-    pack = read_pack(instance)
-    assert {uid: component["version"] for uid, component in components_by_uid(pack).items()} == {
-        MINECRAFT: MC_VERSION,
-        FABRIC_LOADER: LOADER_VERSION,
-    }
+    assert read_pack(instance) == installer_written_pack(MC_VERSION, LOADER_VERSION)
+    assert cfg_values(instance)["JavaVersion"] == str(JAVA_MAJOR)
 
 
-def test_a_pack_the_installer_cannot_read_is_left_as_it_is(harness: Harness, tmp_path: Path):
+def test_a_pack_the_installer_cannot_read_stops_the_install(harness: Harness, tmp_path: Path):
     instance = make_instance(tmp_path / "PrismLauncher", cfg=first_release_cfg(), pack="{ not json")
 
     output = harness("InitializeInstance", InstanceDir=instance)
 
-    assert "Could not parse mmc-pack.json" in output
+    assert "Thrown: Cannot safely switch the Prism loader because mmc-pack.json is invalid" in output
     assert (instance / "mmc-pack.json").read_text(encoding="utf-8") == "{ not json"
     assert not (instance / "mmc-pack.json.bak").exists()
-    assert cfg_values(instance)["JavaVersion"] == str(JAVA_MAJOR)
 
 
 def managed_jdk(tmp_path: Path, *, present: bool = True) -> Path:

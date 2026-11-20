@@ -15,10 +15,14 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fork.installer_reference import reference_catalog  # noqa: F401  (fork: the 1.21.1 catalog)
 
 from rtx_tools.benchmark import util
 
-pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer")
+pytestmark = [
+    pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer"),
+    pytest.mark.usefixtures("reference_catalog"),
+]
 
 INSTALLER = util.PROJECT_DIR / "packaging" / "installer.ps1"
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")

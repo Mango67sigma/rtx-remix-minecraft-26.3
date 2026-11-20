@@ -16,10 +16,14 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fork.installer_reference import reference_catalog  # noqa: F401  (fork: the 1.21.1 catalog)
 
 from rtx_tools.benchmark import util
 
-pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer")
+pytestmark = [
+    pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runs the installer"),
+    pytest.mark.usefixtures("reference_catalog"),
+]
 
 INSTALLER = util.PROJECT_DIR / "packaging" / "installer.ps1"
 INSTANCE_NAME = "NVIDIA RTX Remix for Minecraft"
@@ -75,7 +79,7 @@ switch ($Action) {
         $null = Select-Launcher -State $state
         Write-Host "Recorded before the instance: $(Test-Path -LiteralPath $script:PRISM_DATA_DIR_RECORD)"
         try {
-            $null = Initialize-Prism -State $state -Unattended
+            $null = Initialize-Prism -State $state -Unattended -ModLoader Fabric
         } catch {
             Write-Host "Threw: $($_.Exception.Message)"
         }

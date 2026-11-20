@@ -1,4 +1,4 @@
-﻿# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 <#
@@ -33,8 +33,19 @@
     -Unattended mode if both launchers are present (otherwise we fail fast
     rather than silently choose one).
 
+.PARAMETER ModLoader
+    A loader declared by this release's project-state.json. Interactive
+    Upgrade/Repair preserves an unambiguous installed loader; Install prompts
+    so it can switch. Required for every -Unattended operation.
+
+.PARAMETER MinecraftVersion
+    A Minecraft version carried by this release. Interactive runs ask when
+    more than one packaged version is available. Required for every
+    -Unattended operation.
+
 .PARAMETER Unattended
-    Headless mode. No prompts; reasonable defaults for everything.
+    Headless mode. No prompts; -MinecraftVersion and -ModLoader are required
+    for deterministic target selection.
     Uninstall additionally requires -AcknowledgeDataLoss. Export requires
     -OutputPath. Ambiguous launcher detection errors instead of defaulting.
 
@@ -105,20 +116,20 @@
     Interactive TUI.
 
 .EXAMPLE
-    .\installer.ps1 -Mode Install -Unattended -Launcher Prism
+    .\installer.ps1 -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric
     Headless install using Prism. For CI / automated deployment.
 
 .EXAMPLE
-    .\installer.ps1 -Mode Install -Unattended -Launcher Prism -ArtPack Install -World Install
+    .\installer.ps1 -Mode Install -Unattended -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric -ArtPack Install -World Install
     Headless install of the mod, the RTX Remix Materials pack, and the RTX
     Remix Showcase World.
 
 .EXAMPLE
-    .\installer.ps1 -Mode Export -Unattended -OutputPath D:\artifacts\mc.zip
+    .\installer.ps1 -Mode Export -Unattended -MinecraftVersion 26.3 -ModLoader Fabric -OutputPath D:\artifacts\mc.zip
     Headless export of the current Prism instance to a portable zip.
 
 .EXAMPLE
-    .\installer.ps1 -Mode Uninstall -Unattended -AcknowledgeDataLoss -Launcher Prism
+    .\installer.ps1 -Mode Uninstall -Unattended -AcknowledgeDataLoss -Launcher Prism -MinecraftVersion 26.3 -ModLoader Fabric
     Headless uninstall. -AcknowledgeDataLoss is mandatory to guard against accidents.
 
 .NOTES
@@ -132,8 +143,12 @@ param(
     [ValidateSet('Install', 'Upgrade', 'Repair', 'Uninstall', 'Export')]
     [string]$Mode,
 
-    [ValidateSet('Prism', 'Microsoft')]
+    [ValidateSet('Prism', 'Microsoft', 'Both')]
     [string]$Launcher,
+
+    [string]$ModLoader,
+
+    [string]$MinecraftVersion,
 
     [switch]$Unattended,
 
@@ -167,8 +182,8 @@ param(
 # handling is done via try/catch where needed.
 $ErrorActionPreference = 'Continue'
 
-# --- Constants (kept in sync with build.gradle / rtxremix-java) ---
-$script:APP_VERSION          = '0.1.3'
+# --- Constants and manifest-owned project state ---
+$script:APP_VERSION          = $null
 $script:PRISM_INSTANCE_NAME  = 'NVIDIA RTX Remix for Minecraft'
 # Legacy instance names kept for backward detection only; prior installs
 # used shorter / differently-worded names. Ordered newest-to-oldest.
@@ -182,29 +197,19 @@ $script:PRISM_PORTABLE_DIR   = Join-Path $env:LOCALAPPDATA 'RtxRemixMinecraft\Pr
 # it once the instance is in that Prism, and Get-LauncherState reads it, so
 # later runs detect that Prism too.
 $script:PRISM_DATA_DIR_RECORD = Join-Path $env:LOCALAPPDATA 'RtxRemixMinecraft\prism-data-dir.txt'
-# The Java major the pinned Minecraft version runs on: the only entry in
-# compatibleJavaMajors of https://meta.prismlauncher.org/v1/net.minecraft/26.3.json.
-# The managed JDK folder, its download and version checks, and a new Prism
-# instance's JavaVersion all follow it.
-$script:GAME_JAVA_MAJOR      = 25
-$script:MANAGED_JDK_DIR      = Join-Path $env:LOCALAPPDATA "RtxRemixMinecraft\jdk-$($script:GAME_JAVA_MAJOR)"
-$script:FABRIC_API_VERSION   = '0.165.0+26.3'
-$script:FABRIC_LOADER_VER    = '0.20.1'
-$script:MC_VERSION           = '26.3'
+$script:MANAGED_JDK_DIR      = $null
+$script:MC_VERSION           = $null
+$script:JAVA_TARGET          = $null
 $script:FABRIC_INSTALLER_VER = '1.0.1'
 # Fabric installer 1.0.x writes launcher_profiles.json using an MC-only
 # profile key, but the underlying `versions/` directory name (and the
 # profile's inner `lastVersionId` field) still include the loader version.
 # Two distinct strings; keep them both as derived constants so detection
 # logic can't accidentally use one where the other is expected.
-$script:FABRIC_PROFILE_KEY   = "fabric-loader-$($script:MC_VERSION)"
-$script:FABRIC_VERSION_ID    = "fabric-loader-$($script:FABRIC_LOADER_VER)-$($script:MC_VERSION)"
-# User-facing display label for the MS launcher profile.
-$script:FABRIC_PROFILE_NAME  = 'NVIDIA RTX Remix for Minecraft'
 # Mojang's bundled Java runtime components under the Microsoft launcher's
-# runtime folder, in the order to prefer them. java-runtime-epsilon is the
-# runtime the pinned Minecraft version ships (Java 25); the older components
-# stay as fallbacks for a launcher that has not downloaded it.
+# runtime folder, newest generation first. java-runtime-epsilon is Java 25,
+# the runtime of Minecraft 26.x; java-runtime-delta is Java 21. Suitability
+# is decided from the Java major each reports, not from its name.
 $script:MOJANG_RUNTIME_COMPONENTS = @('java-runtime-epsilon', 'java-runtime-delta', 'java-runtime-gamma', 'java-runtime-beta', 'java-runtime-alpha', 'jre-legacy')
 
 # Fallback Prism version used when all "latest" lookups fail (GitHub API
@@ -269,6 +274,8 @@ $script:PRISM_KNOWN_HASHES = @{
 # and paste below. Update when bumping the VER constants above.
 $script:FABRIC_INSTALLER_SHA256 = ''
 $script:FABRIC_API_SHA256       = ''
+$script:FORGE_INSTALLER_SHA256  = '6b83521a70aaf5371af8c4c9f97d930d51ec4266ac6ec3bc975182fba2ef9f62'
+$script:NEOFORGE_INSTALLER_SHA256 = 'a547ccc30a80a675d1c61d04b55d10c45c39a86971e09731482c50a24399d1a2'
 
 # Minimum Prism Launcher version we'll install as a fresh portable. Prism
 # 9.0's official release notes tagged the Windows MSVC portable asset as
@@ -325,6 +332,418 @@ $script:PRISM_INSTALLER_RECORD_KEYS = @('JvmArgs', 'OverrideMemory', 'MinMemAllo
 # Resolve the directory the script lives in (used to find the sibling mods/
 # staged by the dist archive).
 $script:SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Loader-independent code reads the manifest-backed catalog. Providers contain
+# only behavior that cannot be declarative (how to install a loader into the
+# Microsoft launcher and how to manage its companion dependency).
+$script:LOADER_PROVIDERS = [ordered]@{
+    fabric = [ordered]@{
+        MicrosoftKind         = 'Fabric'
+        MicrosoftProfileName  = 'NVIDIA RTX Remix for Minecraft'
+        InstallerMinimumJava  = 8
+        CompanionKind         = 'FabricApi'
+        VersionIdKind         = 'Fabric'
+    }
+    forge = [ordered]@{
+        MicrosoftKind         = 'Installer'
+        MicrosoftProfileName  = 'NVIDIA RTX Remix for Minecraft (Forge)'
+        InstallerMinimumJava  = 21
+        CompanionKind         = $null
+        VersionIdKind         = 'Forge'
+        InstallerRepository   = 'https://maven.minecraftforge.net'
+        InstallerGroupPath    = 'net/minecraftforge/forge'
+        InstallerArtifact     = 'forge'
+        InstallerClientArg    = '--installClient'
+        InstallerReleaseIncludesMinecraft = $true
+        InstallerPinnedSha256 = $script:FORGE_INSTALLER_SHA256
+    }
+    neoforge = [ordered]@{
+        MicrosoftKind         = 'Installer'
+        MicrosoftProfileName  = 'NVIDIA RTX Remix for Minecraft (NeoForge)'
+        InstallerMinimumJava  = 21
+        CompanionKind         = $null
+        VersionIdKind         = 'NeoForge'
+        InstallerRepository   = 'https://maven.neoforged.net/releases'
+        InstallerGroupPath    = 'net/neoforged/neoforge'
+        InstallerArtifact     = 'neoforge'
+        InstallerClientArg    = '--install-client'
+        InstallerReleaseIncludesMinecraft = $false
+        InstallerPinnedSha256 = $script:NEOFORGE_INSTALLER_SHA256
+    }
+}
+$script:LOADER_CATALOG = $null
+$script:DEFAULT_LOADER_ID = $null
+$script:PROJECT_STATE_PATH = $null
+$script:PROJECT_CATALOG = $null
+$script:DEFAULT_MINECRAFT_VERSION = $null
+$script:AVAILABLE_MINECRAFT_VERSIONS = @()
+
+function Get-ProjectStatePath {
+    # In a release bundle project-state.json is beside installer.ps1.  In a
+    # source checkout it is one directory above packaging/.
+    $candidates = @()
+    if ($env:RTXREMIX_PROJECT_STATE) {
+        $candidates += $env:RTXREMIX_PROJECT_STATE
+    }
+    $candidates += @(
+        (Join-Path $script:SCRIPT_DIR 'project-state.json'),
+        (Join-Path (Split-Path -Parent $script:SCRIPT_DIR) 'project-state.json')
+    )
+    foreach ($candidate in $candidates | Select-Object -Unique) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    throw "Missing project-state.json. A release bundle must stage it beside installer.ps1."
+}
+
+function Get-PackagedVersionRoot {
+    param(
+        [Parameter(Mandatory)] [string]$VersionId,
+        [Parameter(Mandatory)] [pscustomobject]$VersionState,
+        [int]$DeclaredVersionCount
+    )
+    $versionedRoot = Join-Path $script:SCRIPT_DIR "mods\$VersionId"
+    if (Test-Path -LiteralPath $versionedRoot -PathType Container) {
+        $hasLoaderSubtree = @($VersionState.loaders.PSObject.Properties | Where-Object {
+            Test-Path -LiteralPath (Join-Path $versionedRoot $_.Name) -PathType Container
+        }).Count -gt 0
+        if ($hasLoaderSubtree) { return "mods\$VersionId" }
+    }
+    # Current single-target release archives use mods/<loader>. Keep that
+    # layout compatible while reserving mods/<version>/<loader> for archives
+    # that carry more than one Minecraft version.
+    $directRoot = Join-Path $script:SCRIPT_DIR 'mods'
+    $directLoaderDirectories = @($VersionState.loaders.PSObject.Properties | ForEach-Object {
+        $path = Join-Path $directRoot $_.Name
+        if (Test-Path -LiteralPath $path -PathType Container) { $path }
+    })
+    if ($DeclaredVersionCount -eq 1 -and $directLoaderDirectories.Count -gt 0) {
+        return 'mods'
+    }
+    # A release workflow selects one version at a time while staging the full
+    # multi-version manifest. Identify that direct-layout target from the
+    # version-qualified package name; never guess from a bare loader folder.
+    $versionPattern = "*-mc$VersionId-*.jar"
+    $hasVersionedJar = @($directLoaderDirectories | Where-Object {
+        @(Get-ChildItem -LiteralPath $_ -File -Filter $versionPattern -ErrorAction SilentlyContinue).Count -gt 0
+    }).Count -gt 0
+    if ($hasVersionedJar) {
+        return 'mods'
+    }
+    return $null
+}
+
+function New-LoaderCatalog {
+    param(
+        [Parameter(Mandatory)] [string]$VersionId,
+        [Parameter(Mandatory)] [pscustomobject]$VersionState,
+        [Parameter(Mandatory)] [string]$ArtifactRoot
+    )
+    $minecraft = $VersionState.minecraft
+    if ($minecraft -isnot [pscustomobject] -or
+        [string]::IsNullOrWhiteSpace([string]$minecraft.version) -or
+        [string]$minecraft.version -cne $VersionId -or
+        $minecraft.javaTarget -isnot [int] -or
+        $minecraft.javaTarget -lt 8 -or
+        $minecraft.dataVersion -isnot [int] -or
+        $minecraft.dataVersion -le 0) {
+        throw "project-state.json versions.$VersionId must declare matching minecraft.version, javaTarget, and dataVersion."
+    }
+    if (-not $VersionState.PSObject.Properties['loaders'] -or
+        $VersionState.loaders -isnot [pscustomobject] -or
+        $VersionState.loaders.PSObject.Properties.Count -eq 0) {
+        throw "project-state.json field 'versions.$VersionId.loaders' must be a non-empty object."
+    }
+    $defaultLoaderId = ([string]$VersionState.defaultLoader).Trim().ToLowerInvariant()
+    if (-not $defaultLoaderId) {
+        throw "project-state.json field 'versions.$VersionId.defaultLoader' must be a non-empty string."
+    }
+
+    $catalog = [ordered]@{}
+    $usedProviders = @{}
+    $installedJars = @{}
+    foreach ($property in $VersionState.loaders.PSObject.Properties) {
+        $id = [string]$property.Name
+        $declaration = $property.Value
+        $loaderPath = "versions.$VersionId.loaders.$id"
+        if (-not $id -or $id -cne $id.ToLowerInvariant() -or $id -notmatch '^[a-z][a-z0-9-]*$') {
+            throw "project-state.json loader key '$id' for Minecraft $VersionId must be a lowercase slug."
+        }
+        if ($declaration -isnot [pscustomobject]) {
+            throw "project-state.json field '$loaderPath' must be an object."
+        }
+        $providerId = ([string]$declaration.provider).Trim().ToLowerInvariant()
+        if (-not $providerId -or -not $script:LOADER_PROVIDERS.Contains($providerId)) {
+            throw "project-state.json loader '$id' for Minecraft $VersionId names unsupported provider '$($declaration.provider)'."
+        }
+        if ($usedProviders.ContainsKey($providerId)) {
+            throw "project-state.json loaders '$($usedProviders[$providerId])' and '$id' for Minecraft $VersionId both name provider '$providerId'; installer providers are one-to-one."
+        }
+        $usedProviders[$providerId] = $id
+        $provider = $script:LOADER_PROVIDERS[$providerId]
+        if ([int]$provider.InstallerMinimumJava -gt [int]$minecraft.javaTarget) {
+            throw "Loader provider '$providerId' needs Java $($provider.InstallerMinimumJava), above Minecraft $VersionId's Java target $($minecraft.javaTarget)."
+        }
+        foreach ($field in @('displayName', 'module', 'installedJar', 'builtinResourcePack')) {
+            if ([string]::IsNullOrWhiteSpace([string]$declaration.$field)) {
+                throw "project-state.json field '$loaderPath.$field' must be a non-empty string."
+            }
+        }
+        $expectedModule = "versions/$VersionId/$id"
+        if ([string]$declaration.module -cne $expectedModule) {
+            throw "project-state.json field '$loaderPath.module' must be '$expectedModule'."
+        }
+        $installedJar = [string]$declaration.installedJar
+        if ($installedJar -ne [IO.Path]::GetFileName($installedJar) -or $installedJar -notmatch '\.jar$') {
+            throw "project-state.json field '$loaderPath.installedJar' must be a JAR file name without a path."
+        }
+        if ($installedJars.ContainsKey($installedJar.ToLowerInvariant())) {
+            throw "project-state.json loaders '$($installedJars[$installedJar.ToLowerInvariant()])' and '$id' for Minecraft $VersionId declare the same installedJar '$installedJar'."
+        }
+        $installedJars[$installedJar.ToLowerInvariant()] = $id
+        foreach ($objectField in @('developmentArtifact', 'gradle', 'prism', 'loader')) {
+            if (-not $declaration.PSObject.Properties[$objectField] -or
+                $declaration.$objectField -isnot [pscustomobject]) {
+                throw "project-state.json field '$loaderPath.$objectField' must be an object."
+            }
+        }
+        foreach ($field in @('directory', 'pattern')) {
+            if ([string]::IsNullOrWhiteSpace([string]$declaration.developmentArtifact.$field)) {
+                throw "project-state.json field '$loaderPath.developmentArtifact.$field' must be a non-empty string."
+            }
+        }
+        foreach ($field in @('build', 'test', 'package')) {
+            if ([string]::IsNullOrWhiteSpace([string]$declaration.gradle.$field)) {
+                throw "project-state.json field '$loaderPath.gradle.$field' must be a non-empty string."
+            }
+        }
+        if ($declaration.gradle.PSObject.Properties['prepare'] -and
+            $null -ne $declaration.gradle.prepare -and
+            $declaration.gradle.prepare -isnot [array]) {
+            throw "project-state.json field '$loaderPath.gradle.prepare' must be an array of strings."
+        }
+        foreach ($field in @('uid', 'name', 'version')) {
+            if ([string]::IsNullOrWhiteSpace([string]$declaration.prism.$field)) {
+                throw "project-state.json field '$loaderPath.prism.$field' must be a non-empty string."
+            }
+        }
+        $loaderVersion = [string]$declaration.loader.version
+        if ([string]::IsNullOrWhiteSpace($loaderVersion)) {
+            throw "project-state.json field '$loaderPath.loader.version' must be a non-empty string."
+        }
+        if ([string]$declaration.prism.version -ne $loaderVersion) {
+            throw "project-state.json loader '$id' for Minecraft $VersionId has prism.version that disagrees with loader.version."
+        }
+        $companion = $null
+        if ($provider.CompanionKind) {
+            if (-not $declaration.PSObject.Properties['api'] -or
+                $declaration.api -isnot [pscustomobject] -or
+                [string]::IsNullOrWhiteSpace([string]$declaration.api.version)) {
+                throw "project-state.json loader '$id' for Minecraft $VersionId provider '$providerId' requires api.version."
+            }
+            $companion = [pscustomobject]@{
+                Kind = $provider.CompanionKind
+                DisplayName = 'Fabric API'
+                Version = [string]$declaration.api.version
+            }
+        } elseif ($declaration.PSObject.Properties['api'] -and $null -ne $declaration.api) {
+            throw "project-state.json loader '$id' for Minecraft $VersionId provider '$providerId' does not support an API companion."
+        }
+        $entry = [ordered]@{}
+        foreach ($key in $provider.Keys) { $entry[$key] = $provider[$key] }
+        $entry.Id = $id
+        $entry.Provider = $providerId
+        $entry.DisplayName = [string]$declaration.displayName
+        $entry.Module = [string]$declaration.module
+        $entry.DevelopmentArtifactDirectory = [string]$declaration.developmentArtifact.directory
+        $entry.DevelopmentArtifactPattern = [string]$declaration.developmentArtifact.pattern
+        $entry.InstalledJar = $installedJar
+        $entry.BuiltInResourcePack = [string]$declaration.builtinResourcePack
+        # Whether options.txt lists the loader's built-in pack at all. Absent
+        # means it does; 26.3 Fabric keeps mod resources in a hidden pack above
+        # vanilla instead, and drops a listed `fabric` entry.
+        $entry.BuiltInResourcePackListed = $true
+        if ($declaration.PSObject.Properties['builtinResourcePackListed']) {
+            if ($declaration.builtinResourcePackListed -isnot [bool]) {
+                throw "project-state.json field '$loaderPath.builtinResourcePackListed' must be a boolean."
+            }
+            $entry.BuiltInResourcePackListed = $declaration.builtinResourcePackListed
+        }
+        $entry.PrismUid = [string]$declaration.prism.uid
+        $entry.PrismCachedName = [string]$declaration.prism.name
+        $entry.LoaderVersion = $loaderVersion
+        $entry.ArtifactDirectory = Join-Path $ArtifactRoot $id
+        $entry.Companion = $companion
+        $entry.VersionId = switch ($provider.VersionIdKind) {
+            'Fabric' { "fabric-loader-$loaderVersion-$VersionId" }
+            'Forge' { "$VersionId-forge-$loaderVersion" }
+            'NeoForge' { "neoforge-$loaderVersion" }
+            default { throw "Loader provider '$providerId' has unknown version ID kind '$($provider.VersionIdKind)'." }
+        }
+        $entry.MicrosoftProfileKey = if ($provider.MicrosoftKind -eq 'Fabric') {
+            "fabric-loader-$VersionId"
+        } else {
+            "rtx-remix-$id-$VersionId"
+        }
+        $catalog[$id] = [pscustomobject]$entry
+    }
+    if (-not $catalog.Contains($defaultLoaderId)) {
+        throw "project-state.json versions.$VersionId.defaultLoader '$defaultLoaderId' is not present in loaders."
+    }
+    return [pscustomobject]@{
+        Id = $VersionId
+        State = $VersionState
+        Loaders = $catalog
+        DefaultLoaderId = $defaultLoaderId
+        ArtifactRoot = $ArtifactRoot
+    }
+}
+
+function Set-MinecraftVersion {
+    param([Parameter(Mandatory)] [string]$VersionId)
+    if (-not $script:PROJECT_CATALOG.Contains($VersionId)) {
+        throw "Unknown Minecraft version '$VersionId'. Supported versions: $($script:AVAILABLE_MINECRAFT_VERSIONS -join '|')."
+    }
+    if ($script:AVAILABLE_MINECRAFT_VERSIONS -cnotcontains $VersionId) {
+        throw "Minecraft $VersionId is declared but this release has no staged mods subtree for it."
+    }
+    $selected = $script:PROJECT_CATALOG[$VersionId]
+    $minecraft = $selected.State.minecraft
+    $script:MC_VERSION = $VersionId
+    $script:JAVA_TARGET = [int]$minecraft.javaTarget
+    $script:MC_DATA_VERSION = [int]$minecraft.dataVersion
+    $script:MANAGED_JDK_DIR = Join-Path $env:LOCALAPPDATA "RtxRemixMinecraft\jdk-$($minecraft.javaTarget)"
+    $script:DEFAULT_LOADER_ID = $selected.DefaultLoaderId
+    $script:LOADER_CATALOG = $selected.Loaders
+}
+
+function Select-MinecraftVersion {
+    param([string]$Preferred, [switch]$Unattended)
+    if ($Preferred) {
+        Set-MinecraftVersion -VersionId $Preferred
+        return $Preferred
+    }
+    if ($script:MC_VERSION) { return $script:MC_VERSION }
+    if ($Unattended) {
+        throw "-MinecraftVersion is required in -Unattended mode. Supported versions: $($script:AVAILABLE_MINECRAFT_VERSIONS -join '|')."
+    }
+    $items = @(foreach ($versionId in $script:AVAILABLE_MINECRAFT_VERSIONS) {
+        $version = $script:PROJECT_CATALOG[$versionId]
+        [pscustomobject]@{
+            Label = "Minecraft $versionId"
+            Hint = "$($version.Loaders.Count) loader$(if ($version.Loaders.Count -eq 1) { '' } else { 's' })"
+            Value = $versionId
+        }
+    })
+    $selected = Invoke-Menu -Title '  Which Minecraft version should this installation use?' `
+        -Items $items -Selected $script:DEFAULT_MINECRAFT_VERSION
+    if (-not $selected) { throw 'Cancelled by user.' }
+    Set-MinecraftVersion -VersionId $selected
+    return $selected
+}
+
+function Initialize-LoaderCatalog {
+    param([string]$PreferredMinecraftVersion)
+    $manifestPath = Get-ProjectStatePath
+    try {
+        $manifest = [IO.File]::ReadAllText($manifestPath, [Text.UTF8Encoding]::new($false)) |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Cannot read loader manifest ${manifestPath}: $($_.Exception.Message)"
+    }
+    if ([string]$manifest.schema -cne 'multi-version/v1') {
+        throw "project-state.json schema must be 'multi-version/v1', got '$($manifest.schema)'."
+    }
+    if ($manifest.mod -isnot [pscustomobject] -or
+        [string]::IsNullOrWhiteSpace([string]$manifest.mod.version)) {
+        throw "project-state.json field 'mod.version' must be a non-empty string."
+    }
+    $script:APP_VERSION = [string]$manifest.mod.version
+    if (-not $manifest.PSObject.Properties['versions'] -or
+        $manifest.versions -isnot [pscustomobject] -or
+        $manifest.versions.PSObject.Properties.Count -eq 0) {
+        throw "project-state.json field 'versions' must be a non-empty object."
+    }
+    $defaultVersion = ([string]$manifest.defaultMinecraftVersion).Trim()
+    if (-not $defaultVersion -or -not $manifest.versions.PSObject.Properties[$defaultVersion]) {
+        throw "project-state.json defaultMinecraftVersion must name a declared version."
+    }
+
+    $catalog = [ordered]@{}
+    $available = @()
+    $versionProperties = @($manifest.versions.PSObject.Properties)
+    $isReleaseBundle = (Split-Path -Parent $manifestPath) -eq $script:SCRIPT_DIR
+    foreach ($property in $versionProperties) {
+        $versionId = [string]$property.Name
+        if ($versionId -notmatch '^\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?$' -or
+            $property.Value -isnot [pscustomobject]) {
+            throw "Every project-state.json version key must be a Minecraft version string with an object value."
+        }
+        $artifactRoot = Get-PackagedVersionRoot -VersionId $versionId `
+            -VersionState $property.Value -DeclaredVersionCount $versionProperties.Count
+        if (-not $isReleaseBundle) {
+            $artifactRoot = if ($versionProperties.Count -eq 1) { 'mods' } else { "mods\$versionId" }
+        } elseif ($artifactRoot) {
+            $available += $versionId
+        }
+        $catalogArtifactRoot = if ($artifactRoot) { $artifactRoot } else { "mods\$versionId" }
+        $catalog[$versionId] = New-LoaderCatalog -VersionId $versionId `
+            -VersionState $property.Value -ArtifactRoot $catalogArtifactRoot
+    }
+    if (-not $isReleaseBundle) {
+        $available = @($versionProperties | ForEach-Object { $_.Name })
+    }
+    if ($available.Count -eq 0) {
+        throw "This release has no staged mods subtree for any declared Minecraft version."
+    }
+    $script:PROJECT_STATE_PATH = $manifestPath
+    $script:PROJECT_CATALOG = $catalog
+    $script:DEFAULT_MINECRAFT_VERSION = $defaultVersion
+    $script:AVAILABLE_MINECRAFT_VERSIONS = @($available)
+    if ($PreferredMinecraftVersion) {
+        Set-MinecraftVersion -VersionId $PreferredMinecraftVersion
+    } elseif ($available.Count -eq 1) {
+        Set-MinecraftVersion -VersionId $available[0]
+    }
+}
+
+function Get-LoaderCatalog { return $script:LOADER_CATALOG }
+function Get-LoaderProvider {
+    param([Parameter(Mandatory)] [string]$ModLoader)
+    $id = $ModLoader.ToLowerInvariant()
+    if (-not $script:LOADER_CATALOG.Contains($id)) {
+        throw "Unknown mod loader '$ModLoader'. Supported loaders: $(($script:LOADER_CATALOG.Values.DisplayName) -join ', ')."
+    }
+    return $script:LOADER_CATALOG[$id]
+}
+function Test-LoaderName {
+    param([string]$ModLoader)
+    return [bool]($ModLoader -and $script:LOADER_CATALOG.Contains($ModLoader.ToLowerInvariant()))
+}
+function Get-LoaderDisplayNames { return @($script:LOADER_CATALOG.Values | ForEach-Object DisplayName) }
+function Get-ModArtifactLoader {
+    param([string]$FileName)
+    if (-not $FileName -or $FileName -match '-(sources|dev|javadoc)\.jar$') { return $null }
+    foreach ($loader in $script:LOADER_CATALOG.Values) {
+        if ($FileName -eq $loader.InstalledJar) { return $loader.DisplayName }
+    }
+    # Recognize pre-manifest versioned installs for upgrades and uninstall.
+    # Loader-qualified artifacts must be checked before Fabric's historical
+    # neutral name, which otherwise also matches Forge and NeoForge.
+    foreach ($loader in $script:LOADER_CATALOG.Values | Where-Object Provider -ne 'fabric') {
+        $qualified = '^rtx-remix-renderer-' + [regex]::Escape($loader.Id) + '-.+\.jar$'
+        if ($FileName -match $qualified) { return $loader.DisplayName }
+    }
+    if ($FileName -match '^rtx-remix-renderer-.+\.jar$') {
+        $fabric = @($script:LOADER_CATALOG.Values | Where-Object Provider -eq 'fabric')
+        if ($fabric.Count -eq 1) { return $fabric[0].DisplayName }
+    }
+    return $null
+}
+
+# Initialize while loading the function body as well as from the entry point.
+# Focused installer harnesses dot-source the body without executing the entry
+# point, and must exercise the same catalog validation as a real run.
+Initialize-LoaderCatalog -PreferredMinecraftVersion $MinecraftVersion
 # What the detected state shows as the packaged mod when mods\ holds more than
 # one, usually because a newer download was extracted over an older one.
 $script:AMBIGUOUS_MOD_PACKAGE = '(more than one mod JAR)'
@@ -339,17 +758,18 @@ $script:LEGACY_RESOURCE_PACK_PATH = 'resourcepacks\RtxRemix-LabPBR'
 # installed under the same name. Only files matching this pattern are the
 # installer's to replace or remove. build.gradle's materialsArchive names it.
 $script:ART_PACK_PATTERN = '^RTX-Remix-Materials-\d+\.\d+\.\d+\.zip$'
-# Minecraft 26.3's data version, world_version in its client jar's
-# version.json. A new options.txt carries it so the game reads the file as
-# current rather than running every options upgrade on it, as it would from
-# an older version (OPTIONS_DATA_VERSION in the developer tools' runner.py).
-$script:MC_DATA_VERSION = 5023
+# The target catalog supplies Minecraft's data version. A new options.txt
+# carries it so the game reads the file as current.
 # The RTX Remix Showcase World ships as
 # saves\RTX-Remix-Showcase-World-<version>.zip beside the installer, and the
 # zip's one top-level folder is the save, which keeps its name in saves\ and
 # in Minecraft's world list. build.gradle's worldArchive names both.
 $script:WORLD_ZIP_PATTERN = '^RTX-Remix-Showcase-World-v?\d+\.\d+\.\d+\.zip$'
 $script:WORLD_FOLDER_NAME = 'NVIDIA RTX Demo'
+# The Minecraft version the Showcase World was saved in. A newer target
+# upgrades a save that old once, after its backup prompt, before it opens it,
+# and Write-FinalInstructions says so.
+$script:WORLD_MINECRAFT_VERSION = '1.21.1'
 
 # Per-run temp dir so concurrent installer invocations don't corrupt each
 # other's downloads. Populated by Initialize-Session; torn down in finally.
@@ -540,9 +960,7 @@ function Test-PathLengthBudget {
       Best-effort MAX_PATH-class check. Windows legacy API caps at 260
       characters unless long-path-aware mode is opted into (manifest +
       registry), which we don't assume. The worst-case path we build is
-      the instance mods jar:
-        $PrismDataDir\instances\RTX Remix 1.21.1 (Fabric)\.minecraft\mods\rtx-remix-renderer-0.1.0-{ts}-{hash}.jar
-      which adds ~122 fixed chars on top of $PrismDataDir. If the user's
+      the managed instance's mod JAR. If the user's
       data dir starts out long (deep personal path, substituted drive
       letter, OneDrive redirect, etc.) we could bust 260 and see opaque
       cryptic errors mid-install.
@@ -550,7 +968,7 @@ function Test-PathLengthBudget {
     param([string]$PrismDataDir)
     if (-not $PrismDataDir) { return }
     # Conservative sample path we know will be constructed.
-    $probe = Join-Path $PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)\.minecraft\mods\rtx-remix-renderer-$($script:APP_VERSION)-000000000000-0000000.jar"
+    $probe = Join-Path (Get-PrismInstanceDir -DataDir $PrismDataDir) ".minecraft\mods\rtx-remix-renderer-$($script:APP_VERSION)-000000000000-0000000.jar"
     if ($probe.Length -gt 248) {
         Write-Warn "Prism data dir path is long ($($PrismDataDir.Length) chars). Some install paths will exceed Windows' legacy 260-char MAX_PATH limit:"
         Write-Warn "  Probe: $probe ($($probe.Length) chars)"
@@ -806,35 +1224,39 @@ function Test-JavaArchMatchesHost {
 }
 
 function Resolve-GameJavaForArm {
-    # ARM64: need the game's Java (GAME_JAVA_MAJOR) AND native ARM64. Fall
-    # back to the managed Microsoft Build of OpenJDK because Mojang publishes
+    # ARM64: need the branch-pinned Java release AND native ARM64. Fall back
+    # to the managed ARM64 JDK (Get-ManagedJdkSource) because Mojang publishes
     # no ARM64 Windows JRE and x64 Java under WoA emulation breaks JNI.
     $onPath = Get-Command java -ErrorAction SilentlyContinue
-    if ($onPath -and (Get-JavaMajor $onPath.Source) -eq $script:GAME_JAVA_MAJOR -and (Test-JavaArchMatchesHost $onPath.Source)) {
-        Write-Info "Java $($script:GAME_JAVA_MAJOR) (ARM64 native) found on PATH: $($onPath.Source)"
+    if ($onPath -and (Get-JavaMajor $onPath.Source) -eq $script:JAVA_TARGET -and (Test-JavaArchMatchesHost $onPath.Source)) {
+        Write-Info "Java $($script:JAVA_TARGET) (ARM64 native) found on PATH: $($onPath.Source)"
         return $onPath.Source
     }
     $managed = Join-Path $script:MANAGED_JDK_DIR 'bin\java.exe'
-    if ((Test-Path -LiteralPath $managed) -and (Get-JavaMajor $managed) -eq $script:GAME_JAVA_MAJOR -and (Test-JavaArchMatchesHost $managed)) {
-        Write-Info "Using managed ARM64 JDK $($script:GAME_JAVA_MAJOR) at $($script:MANAGED_JDK_DIR)"
+    if ((Test-Path -LiteralPath $managed) -and (Get-JavaMajor $managed) -eq $script:JAVA_TARGET -and (Test-JavaArchMatchesHost $managed)) {
+        Write-Info "Using managed ARM64 JDK $($script:JAVA_TARGET) at $($script:MANAGED_JDK_DIR)"
         return $managed
     }
     Install-ManagedJdk
     return (Join-Path $script:MANAGED_JDK_DIR 'bin\java.exe')
 }
 
-function Resolve-JavaForFabricInstaller {
-    # x64 + Microsoft launcher: any Java 8+ works. Probe PATH -> managed JDK
+function Resolve-JavaForLoaderInstaller {
+    param([Parameter(Mandatory)] [string]$ModLoader)
+    # The provider controls the Java floor for its one-shot loader installer;
+    # the game itself uses the branch-pinned Java target. Probe PATH -> managed JDK
     # -> MS launcher's bundled runtimes -> Adoptium fallback. Arch-match is
-    # not required (installer is a one-shot).
+    # not required for this one-shot installer process.
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
+    $minimumMajor = $provider.InstallerMinimumJava
     $onPath = Get-Command java -ErrorAction SilentlyContinue
-    if ($onPath) {
-        Write-Info "Using system Java for Fabric installer: $($onPath.Source)"
+    if ($onPath -and (Get-JavaMajor $onPath.Source) -ge $minimumMajor) {
+        Write-Info "Using system Java for $ModLoader installer: $($onPath.Source)"
         return $onPath.Source
     }
     $managed = Join-Path $script:MANAGED_JDK_DIR 'bin\java.exe'
-    if (Test-Path -LiteralPath $managed) {
-        Write-Info 'Using previously-installed managed JDK for Fabric installer'
+    if ((Test-Path -LiteralPath $managed) -and (Get-JavaMajor $managed) -ge $minimumMajor) {
+        Write-Info "Using previously-installed managed JDK for $ModLoader installer"
         return $managed
     }
     $runtimeRoots = @(
@@ -847,8 +1269,8 @@ function Resolve-JavaForFabricInstaller {
         if (-not (Test-Path -LiteralPath $root)) { continue }
         foreach ($comp in $components) {
             $candidate = Join-Path $root "$comp\windows-x64\$comp\bin\java.exe"
-            if (Test-Path -LiteralPath $candidate) {
-                Write-Info "Using Microsoft launcher's bundled Java: $candidate"
+            if ((Test-Path -LiteralPath $candidate) -and (Get-JavaMajor $candidate) -ge $minimumMajor) {
+                Write-Info "Using Microsoft launcher's bundled Java for $ModLoader installer: $candidate"
                 return $candidate
             }
         }
@@ -861,7 +1283,7 @@ function Resolve-JavaForFabricInstaller {
 function Get-ManagedJdkSource {
     <#
       Where the managed JDK comes from on this host. The JDK is the game's Java
-      major (GAME_JAVA_MAJOR), the one MANAGED_JDK_DIR is named for.
+      major (JAVA_TARGET), the one MANAGED_JDK_DIR is named for.
         x64     Eclipse Temurin through the Adoptium v3 API. The binary endpoint
                 redirects, so the asset list (AssetUrl) is fetched first for the
                 SHA-256 it holds for the zip.
@@ -873,7 +1295,7 @@ function Get-ManagedJdkSource {
       Name is what the log and the uninstall menu call it, and Slug names the
       download's temp files.
     #>
-    $javaMajor = $script:GAME_JAVA_MAJOR
+    $javaMajor = $script:JAVA_TARGET
     if (Test-HostIsArm64) {
         $binaryUrl = "https://aka.ms/download-jdk/microsoft-jdk-$javaMajor-windows-aarch64.zip"
         return [pscustomobject]@{
@@ -896,10 +1318,10 @@ function Get-ManagedJdkSource {
 }
 
 function Install-ManagedJdk {
-    # The JDK is the game's Java major (GAME_JAVA_MAJOR), the one MANAGED_JDK_DIR
+    # The JDK is the game's Java major (JAVA_TARGET), the one MANAGED_JDK_DIR
     # is named for. Get-ManagedJdkSource says which vendor supplies it on this
     # host and where its zip and checksum are.
-    $javaMajor = $script:GAME_JAVA_MAJOR
+    $javaMajor = $script:JAVA_TARGET
     $source    = Get-ManagedJdkSource
     $jdkArch   = $source.Arch
     $zip       = New-SessionTempPath "$($source.Slug)-jdk-$javaMajor.zip"
@@ -960,7 +1382,9 @@ function Install-ManagedJdk {
     Move-Item -LiteralPath $nested.FullName -Destination $script:MANAGED_JDK_DIR
 
     $major = Get-JavaMajor (Join-Path $script:MANAGED_JDK_DIR 'bin\java.exe')
-    if ($major -ne $javaMajor) { throw "JDK $javaMajor install completed but java -version reports major=$major (not $javaMajor)." }
+    if ($major -ne $javaMajor) {
+        throw "JDK $javaMajor install completed but java -version reports major=$major."
+    }
     Write-Info "JDK $javaMajor ready at $($script:MANAGED_JDK_DIR)"
 }
 
@@ -1011,6 +1435,15 @@ function Read-PrismDataDirRecord {
     return $null
 }
 
+function Get-MsLauncherProfilesPath {
+    $root = Join-Path $env:APPDATA '.minecraft'
+    $classic = Join-Path $root 'launcher_profiles.json'
+    $store = Join-Path $root 'launcher_profiles_microsoft_store.json'
+    if (Test-Path -LiteralPath $classic -PathType Leaf) { return $classic }
+    if (Test-Path -LiteralPath $store -PathType Leaf) { return $store }
+    return $classic
+}
+
 function Get-LauncherState {
     # Detection order: explicit -PrismDataDir > the record of a Prism named at
     # an earlier launcher question > our portable > an installed Prism's data
@@ -1051,7 +1484,7 @@ function Get-LauncherState {
             $dataDir = Get-PrismDataDirForExe -Exe $exe
         }
     }
-    $hasMs = Test-Path -LiteralPath (Join-Path $env:APPDATA '.minecraft\launcher_profiles.json')
+    $hasMs = Test-Path -LiteralPath (Get-MsLauncherProfilesPath)
     return [pscustomobject]@{
         HasPrism     = $hasPrism
         HasMs        = $hasMs
@@ -1059,11 +1492,44 @@ function Get-LauncherState {
     }
 }
 
-function Get-McDirForLauncher {
-    param([string]$Launcher, [string]$PrismDataDir)
-    if ($Launcher -eq 'Prism') {
-        return Join-Path $PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)\.minecraft"
+function Get-PrismInstancesDir {
+    param([Parameter(Mandatory)] [string]$DataDir)
+    $default = Join-Path $DataDir 'instances'
+    $config = Join-Path $DataDir 'prismlauncher.cfg'
+    if (-not (Test-Path -LiteralPath $config -PathType Leaf)) { return $default }
+    try {
+        $line = [IO.File]::ReadAllLines($config) |
+            Where-Object { $_ -match '^InstanceDir=' } |
+            Select-Object -First 1
+        if (-not $line) { return $default }
+        $value = ($line.Substring('InstanceDir='.Length)).Trim().Trim('"')
+        if (-not $value) { return $default }
+        if ([IO.Path]::IsPathRooted($value)) { return $value }
+        return Join-Path $DataDir $value
+    } catch {
+        Write-Trace "Could not read Prism InstanceDir from ${config}: $($_.Exception.Message)"
+        return $default
     }
+}
+
+function Get-PrismInstanceDir {
+    param(
+        [Parameter(Mandatory)] [string]$DataDir,
+        [string]$InstanceName = $script:PRISM_INSTANCE_NAME
+    )
+    return Join-Path (Get-PrismInstancesDir -DataDir $DataDir) $InstanceName
+}
+
+function Get-McDirForLauncher {
+    param(
+        [string]$Launcher,
+        [string]$PrismDataDir,
+        [string]$ModLoader
+    )
+    if ($Launcher -eq 'Prism') {
+        return Join-Path (Get-PrismInstanceDir -DataDir $PrismDataDir) '.minecraft'
+    }
+    if ($ModLoader) { return Get-MsProfileGameDir -ModLoader $ModLoader }
     return Join-Path $env:APPDATA '.minecraft'
 }
 
@@ -1071,39 +1537,113 @@ function Get-ContentOnlyMcDir {
     # The game folder a run without the mod puts the pack and the world in:
     # the RTX Remix Prism instance's, or the Microsoft launcher's .minecraft.
     # $null when it does not exist, because only the mod's steps make it.
-    param([ValidateSet('Prism', 'Microsoft')] [string]$Launcher, [string]$PrismDataDir)
+    param([ValidateSet('Prism', 'Microsoft')] [string]$Launcher, [string]$PrismDataDir, [string]$ModLoader)
     if ($Launcher -eq 'Prism' -and -not $PrismDataDir) { return $null }
-    $mcDir = Get-McDirForLauncher -Launcher $Launcher -PrismDataDir $PrismDataDir
+    $mcDir = Get-McDirForLauncher -Launcher $Launcher -PrismDataDir $PrismDataDir -ModLoader $ModLoader
     if (Test-Path -LiteralPath $mcDir -PathType Container) { return $mcDir }
     return $null
 }
 
 function Get-InstalledModVersion {
-    param([string]$McDir)
+    param([string]$McDir, [string]$ModLoader)
     if (-not (Test-Path -LiteralPath $McDir)) { return $null }
     $modsDir = Join-Path $McDir 'mods'
     if (-not (Test-Path -LiteralPath $modsDir)) { return $null }
-    $jar = Get-ChildItem -LiteralPath $modsDir -Filter 'rtx-remix-renderer-*.jar' -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -notmatch '-(sources|dev|javadoc)\.jar$' } |
-        Select-Object -First 1
-    if ($jar) { return $jar.Name }
+    $jars = @(Get-ChildItem -LiteralPath $modsDir -Filter 'rtx-remix-renderer-*.jar' -ErrorAction SilentlyContinue |
+        Where-Object {
+            $artifactLoader = Get-ModArtifactLoader -FileName $_.Name
+            if (-not $artifactLoader) { return $false }
+            return (-not $ModLoader) -or $artifactLoader -eq (Get-LoaderProvider -ModLoader $ModLoader).DisplayName
+        })
+    if ($jars.Count -gt 1) { return "(ambiguous: $(($jars.Name | Sort-Object) -join ', '))" }
+    if ($jars.Count -eq 1) { return $jars[0].Name }
     return $null
 }
 
 function Get-DistModJar {
-    # Locate THE runtime mod JAR in dist/mods/. Excludes classifier variants
+    param([Parameter(Mandatory)] [string]$ModLoader)
+    # Locate THE runtime mod JAR in dist/mods/<loader>/. Excludes classifier variants
     # (-sources, -dev, -javadoc). Fails loudly if ambiguous so a bad dist
     # archive can't silently install the wrong artifact.
-    $path = Join-Path $script:SCRIPT_DIR 'mods'
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
+    $path = Join-Path $script:SCRIPT_DIR $provider.ArtifactDirectory
     if (-not (Test-Path -LiteralPath $path)) { return $null }
-    $candidates = Get-ChildItem -LiteralPath $path -Filter 'rtx-remix-renderer-*.jar' |
-        Where-Object { $_.Name -notmatch '-(sources|dev|javadoc)\.jar$' }
+    # The loader-specific directory is the ownership boundary.  Older Forge
+    # bundles used the neutral renderer base name, so keep accepting those
+    # while the manifest drives which directory is selected.
+    $candidates = @(Get-ChildItem -LiteralPath $path -Filter 'rtx-remix-renderer-*.jar' |
+        Where-Object { $_.Name -notmatch '-(sources|dev|javadoc)\.jar$' })
     if ($candidates.Count -eq 0) { return $null }
     if ($candidates.Count -gt 1) {
         $names = ($candidates | Select-Object -ExpandProperty Name) -join ', '
-        throw "More than one mod JAR is in ${path}: $names. A download carries exactly one. Extract the download into an empty folder and run the installer again."
+        throw "More than one mod JAR is in ${path}: $names. A download carries exactly one $ModLoader JAR. Extract the download into an empty folder and run the installer again."
     }
     return $candidates[0].FullName
+}
+
+function Get-PrismLoader {
+    param([string]$DataDir, [string]$InstanceName = $script:PRISM_INSTANCE_NAME)
+    if (-not $DataDir) { return $null }
+    $pack = Join-Path (Get-PrismInstanceDir -DataDir $DataDir -InstanceName $InstanceName) 'mmc-pack.json'
+    if (-not (Test-Path -LiteralPath $pack -PathType Leaf)) { return $null }
+    try {
+        $json = [IO.File]::ReadAllText($pack, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
+        $found = @($script:LOADER_CATALOG.Values | Where-Object {
+            $uid = $_.PrismUid
+            [bool]($json.components | Where-Object { $_.uid -eq $uid })
+        })
+        if ($found.Count -gt 1) { return 'Ambiguous' }
+        if ($found.Count -eq 1) { return $found[0].DisplayName }
+    } catch { return 'Ambiguous' }
+    return $null
+}
+
+function Get-MsProfileKey {
+    param([Parameter(Mandatory)] [string]$ModLoader, [pscustomobject]$Profiles)
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
+    if ($Profiles) {
+        foreach ($property in $Profiles.PSObject.Properties) {
+            $profile = $property.Value
+            if ($profile -and $profile.PSObject.Properties['lastVersionId'] -and
+                $profile.lastVersionId -eq $provider.VersionId) { return $property.Name }
+        }
+    }
+    return $provider.MicrosoftProfileKey
+}
+
+function Get-MsProfileGameDir {
+    param([Parameter(Mandatory)] [string]$ModLoader)
+    $default = Join-Path $env:APPDATA '.minecraft'
+    $lp = Get-MsLauncherProfilesPath
+    if (-not (Test-Path -LiteralPath $lp -PathType Leaf)) { return $default }
+    try {
+        $json = [IO.File]::ReadAllText($lp, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
+        if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles) { return $default }
+        $key = Get-MsProfileKey -ModLoader $ModLoader -Profiles $json.profiles
+        if (-not $json.profiles.PSObject.Properties[$key]) { return $default }
+        $profile = $json.profiles.$key
+        if ($profile.PSObject.Properties['gameDir'] -and -not [string]::IsNullOrWhiteSpace($profile.gameDir)) {
+            return [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables([string]$profile.gameDir))
+        }
+    } catch {
+        Write-Warn "Could not resolve the $ModLoader Microsoft profile's game directory; using $default."
+    }
+    return $default
+}
+
+function Get-MicrosoftLoaders {
+    $result = @()
+    $lp = Get-MsLauncherProfilesPath
+    if (-not (Test-Path -LiteralPath $lp -PathType Leaf)) { return $result }
+    try {
+        $json = [IO.File]::ReadAllText($lp, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
+        if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles) { return $result }
+        foreach ($provider in $script:LOADER_CATALOG.Values) {
+            $key = Get-MsProfileKey -ModLoader $provider.DisplayName -Profiles $json.profiles
+            if ($json.profiles.PSObject.Properties[$key]) { $result += $provider.DisplayName }
+        }
+    } catch { return @('Ambiguous') }
+    return @($result | Select-Object -Unique)
 }
 
 # --- TUI primitives ---
@@ -1286,15 +1826,11 @@ function Get-DetectedState {
       JavaManagedMajor     : major version of managed JDK, or 0
       HasPrism / PrismDataDir / PrismIsPortable
       HasMs
-      Prism_FabricReady    : does the Prism instance exist AND claim Fabric?
-                             (we can't easily tell 'Fabric-component-installed'
-                              vs 'mmc-pack.json says Fabric'; we check the
-                              latter)
-      Ms_FabricReady       : MS has both the versions dir AND the profile
-                             entry for the pinned fabric-loader-{ver}-{mc}
+      PrismLoader          : loader component declared by the managed Prism instance
+      MsLoaderState        : catalog-keyed Microsoft version/profile readiness
       ModInstalled         : hashtable { Prism=<filename>, Microsoft=<filename> }
-      ModPackage           : basename of the JAR in dist/mods/, $null, or
-                             $script:AMBIGUOUS_MOD_PACKAGE for more than one
+      ModLoaders           : loader inferred for each installed mod
+      ModPackages          : packaged JAR names keyed by loader
       Status               : 'install' | 'upgrade' | 'repair' | 'no-package'
                              | 'ambiguous-package'
                              (coarse summary of what the main menu should
@@ -1320,7 +1856,8 @@ function Get-DetectedState {
             'C:\Program Files (x86)\Minecraft Launcher\runtime',
             'C:\Program Files\Minecraft Launcher\runtime'
         )
-        # java-runtime-epsilon (Java 25) is what the pinned Minecraft uses; prefer it.
+        # Probe launcher runtime generations newest-first; suitability is
+        # decided from their reported Java major, not the component name.
         $components = $script:MOJANG_RUNTIME_COMPONENTS
         foreach ($root in $runtimeRoots) {
             if (-not (Test-Path -LiteralPath $root)) { continue }
@@ -1336,69 +1873,86 @@ function Get-DetectedState {
         }
     }
 
-    # Fabric on MS: surface whether the versions/ dir and launcher_profiles.json
-    # entry BOTH exist (the bug addressed in feedback #10 was version-dir-only,
-    # which the launcher UI couldn't see).
-    $msFabricVersionDir = $false
-    $msFabricProfile    = $false
+    # A Microsoft loader is ready only when both its version directory and a
+    # visible profile exist.  Keep this keyed by the catalog rather than
+    # adding a pair of state fields for every provider.
+    $msLoaderState = [ordered]@{}
     if ($state.HasMs) {
-        $versionDir = Join-Path $env:APPDATA ".minecraft\versions\$($script:FABRIC_VERSION_ID)"
-        $msFabricVersionDir = Test-Path -LiteralPath $versionDir
-        $msFabricProfile    = Test-MsFabricProfileRegistered
-    }
-    $msFabricReady = $msFabricVersionDir -and $msFabricProfile
-    $prismFabricReady = $false
-    if ($state.HasPrism -and $state.PrismDataDir) {
-        # Cheap check: instance.cfg exists AND mmc-pack.json references Fabric.
-        # Actual component install happens on Prism's first launch; we can't
-        # probe that from here without running Prism.
-        $cfg  = Join-Path $state.PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)\instance.cfg"
-        $pack = Join-Path $state.PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)\mmc-pack.json"
-        if ((Test-Path -LiteralPath $cfg) -and (Test-Path -LiteralPath $pack)) {
-            try {
-                $json = Get-Content -LiteralPath $pack -Raw | ConvertFrom-Json -ErrorAction Stop
-                $prismFabricReady = [bool]($json.components | Where-Object { $_.uid -eq 'net.fabricmc.fabric-loader' })
-            } catch { $prismFabricReady = $false }
+        $registered = @(Get-MicrosoftLoaders)
+        foreach ($provider in $script:LOADER_CATALOG.Values) {
+            $hasVersion = Test-Path -LiteralPath (Join-Path $env:APPDATA ".minecraft\versions\$($provider.VersionId)")
+            $hasProfile = $registered -contains $provider.DisplayName
+            $msLoaderState[$provider.Id] = [pscustomobject]@{
+                VersionDir = $hasVersion
+                Profile = $hasProfile
+                Ready = $hasVersion -and $hasProfile
+            }
         }
+    }
+    $prismLoader = $null
+    if ($state.HasPrism -and $state.PrismDataDir) {
+        $prismLoader = Get-PrismLoader -DataDir $state.PrismDataDir
     }
 
     $mods = @{}
+    $modLoaders = @{}
     $prismLegacyInstalled = $false
     if ($state.HasPrism -and $state.PrismDataDir) {
         $dir = Get-McDirForLauncher -Launcher 'Prism' -PrismDataDir $state.PrismDataDir
         $v = Get-InstalledModVersion -McDir $dir
-        if ($v) { $mods['Prism'] = $v }
+        if ($v) {
+            $mods['Prism'] = $v
+            $modLoaders['Prism'] = if (Test-LoaderName $prismLoader) { $prismLoader } else {
+                $fromArtifact = Get-ModArtifactLoader -FileName $v
+                if ($fromArtifact) { $fromArtifact } else { 'Ambiguous' }
+            }
+        }
         # Also detect mods installed under legacy instance names; prior
         # installer versions used different instance labels. Surface the
         # state so users can uninstall/migrate, but don't fold it into
         # the primary 'Prism' slot (Install would then target the wrong
         # dir). We scan every legacy name and show the first hit.
         foreach ($legacyName in $script:PRISM_INSTANCE_LEGACY_NAMES) {
-            $legacyDir = Join-Path $state.PrismDataDir "instances\$legacyName\.minecraft"
+            $legacyDir = Join-Path (Get-PrismInstanceDir -DataDir $state.PrismDataDir -InstanceName $legacyName) '.minecraft'
             if (-not (Test-Path -LiteralPath $legacyDir)) { continue }
             $vLegacy = Get-InstalledModVersion -McDir $legacyDir
             if ($vLegacy) {
                 $prismLegacyInstalled = $true
                 $slot = "Prism (legacy: $legacyName)"
                 $mods[$slot] = $vLegacy
+                $legacyLoader = Get-PrismLoader -DataDir $state.PrismDataDir -InstanceName $legacyName
+                $modLoaders[$slot] = if ($legacyLoader) { $legacyLoader } else { 'Ambiguous' }
             }
         }
     }
     if ($state.HasMs) {
-        $dir = Get-McDirForLauncher -Launcher 'Microsoft' -PrismDataDir $null
-        $v = Get-InstalledModVersion -McDir $dir
-        if ($v) { $mods['Microsoft'] = $v }
+        $installedProfiles = @()
+        foreach ($loader in @(Get-MicrosoftLoaders | Where-Object { Test-LoaderName $_ })) {
+            $dir = Get-McDirForLauncher -Launcher Microsoft -ModLoader $loader
+            $v = Get-InstalledModVersion -McDir $dir -ModLoader $loader
+            if ($v) {
+                $installedProfiles += [pscustomobject]@{ Loader = $loader; Jar = $v; McDir = $dir }
+            }
+        }
+        if ($installedProfiles.Count -eq 1) {
+            $mods['Microsoft'] = $installedProfiles[0].Jar
+            $modLoaders['Microsoft'] = $installedProfiles[0].Loader
+        } elseif ($installedProfiles.Count -gt 1) {
+            $mods['Microsoft'] = "(multiple: $(($installedProfiles.Jar | Sort-Object -Unique) -join ', '))"
+            $modLoaders['Microsoft'] = 'Ambiguous'
+        }
     }
 
-    $packageMod = $null
-    try {
-        $p = Get-DistModJar
-        if ($p) { $packageMod = Split-Path -Leaf $p }
-    } catch {
-        # More than one JAR is a real error, but the main menu still opens and
-        # says how to fix it; Get-InstallStatus reports it as its own status.
-        $packageMod = $script:AMBIGUOUS_MOD_PACKAGE
+    $packages = @{}
+    foreach ($loader in Get-LoaderDisplayNames) {
+        try {
+            $p = Get-DistModJar -ModLoader $loader
+            if ($p) { $packages[$loader] = (Get-LoaderProvider -ModLoader $loader).InstalledJar }
+        } catch {
+            $packages[$loader] = '(ambiguous, see Install)'
+        }
     }
+    $packageMod = if ($packages.Count -eq 1) { @($packages.Values)[0] } elseif ($packages.Count -eq 0) { $null } else { '(loader-specific)' }
 
     return [pscustomobject]@{
         HostArch             = Get-HostArch
@@ -1412,12 +1966,12 @@ function Get-DetectedState {
         PrismDataDir         = $state.PrismDataDir
         PrismIsPortable      = ($state.PrismDataDir -eq $script:PRISM_PORTABLE_DIR)
         HasMs                = $state.HasMs
-        PrismFabricReady     = $prismFabricReady
-        MsFabricVersionDir   = $msFabricVersionDir
-        MsFabricProfile      = $msFabricProfile
-        MsFabricReady        = $msFabricReady
+        PrismLoader          = $prismLoader
+        MsLoaderState        = $msLoaderState
         ModInstalled         = $mods
+        ModLoaders           = $modLoaders
         ModPackage           = $packageMod
+        ModPackages          = $packages
         PrismLegacyInstalled = $prismLegacyInstalled
     }
 }
@@ -1435,8 +1989,29 @@ function Get-InstallStatus {
       takes precedence over 'repair'.
     #>
     param([pscustomobject]$State)
-    if ($State.ModPackage -eq $script:AMBIGUOUS_MOD_PACKAGE) { return 'ambiguous-package' }
-    if (-not $State.ModPackage) { return 'no-package' }
+    if ($State.PSObject.Properties['ModPackages'] -and $State.PSObject.Properties['ModLoaders']) {
+        if (@($State.ModPackages.Values | Where-Object { $_ -like '(ambiguous*' }).Count -gt 0) {
+            return 'ambiguous-package'
+        }
+        if ($State.ModPackages.Count -eq 0) { return 'no-package' }
+        if ($State.ModInstalled.Count -eq 0) { return 'install' }
+        $anyDiff = $false
+        $anyMatch = $false
+        foreach ($launcher in $State.ModInstalled.Keys) {
+            $loader = $State.ModLoaders[$launcher]
+            if (-not $loader -or $loader -eq 'Ambiguous' -or -not $State.ModPackages.ContainsKey($loader)) {
+                $anyDiff = $true
+            } elseif ($State.ModInstalled[$launcher] -eq $State.ModPackages[$loader]) {
+                $anyMatch = $true
+            } else {
+                $anyDiff = $true
+            }
+        }
+        if ($anyDiff) { return 'upgrade' }
+        if ($anyMatch) { return 'repair' }
+        return 'install'
+    }
+    if (-not $State.ModPackage -or $State.ModPackage -like '(ambiguous*') { return 'no-package' }
     if ($State.ModInstalled.Count -eq 0) { return 'install' }
     $anyDiff = $false
     $anyMatch = $false
@@ -1502,34 +2077,41 @@ function Write-DetectedStateBlock {
         }
     }
 
-    # Fabric: explicit status per launcher so the user can tell WHAT
-    # specifically isn't installed. Previously "not yet" was ambiguous
-    # (missing version dir? profile? both?); now we say so.
-    $fparts = @()
+    # Loader status per launcher. A pack/profile that claims multiple loaders is
+    # shown as ambiguous rather than pretending either side is ready.
+    $loaderParts = @()
     if ($State.HasPrism) {
-        $label = if ($State.PrismFabricReady) { 'installed' } else { 'not installed' }
-        $fparts += "Prism: $label"
+        $label = if ($State.PrismLoader) { $State.PrismLoader } else { 'not installed' }
+        $loaderParts += "Prism: $label"
     }
     if ($State.HasMs) {
-        $msLabel = switch ($true) {
-            ($State.MsFabricVersionDir -and $State.MsFabricProfile)       { 'installed'; break }
-            ($State.MsFabricVersionDir -and -not $State.MsFabricProfile)  { 'missing launcher profile (files present)'; break }
-            (-not $State.MsFabricVersionDir -and $State.MsFabricProfile)  { 'missing version files (profile present)'; break }
-            default                                                       { 'not installed' }
+        $ready = @()
+        $incomplete = $false
+        foreach ($provider in $script:LOADER_CATALOG.Values) {
+            $loaderState = $State.MsLoaderState[$provider.Id]
+            if ($loaderState.Ready) { $ready += $provider.DisplayName }
+            if ($loaderState.VersionDir -xor $loaderState.Profile) { $incomplete = $true }
         }
-        $fparts += "Microsoft: $msLabel"
+        if ($ready.Count -eq 0 -and $incomplete) { $ready += 'incomplete profile state' }
+        if ($ready.Count -eq 0) { $ready += 'not installed' }
+        $loaderParts += "Microsoft: $($ready -join ' + ')"
     }
-    if ($fparts.Count -gt 0) {
-        Write-Host "$(_fmtKey 'Fabric:')$($script:FABRIC_LOADER_VER)-$($script:MC_VERSION) ($($fparts -join ', '))"
+    if ($loaderParts.Count -gt 0) {
+        Write-Host "$(_fmtKey 'Loaders:')$($loaderParts -join ', ')"
     } else {
-        Write-Host "$(_fmtKey 'Fabric:')$($script:FABRIC_LOADER_VER)-$($script:MC_VERSION) (no launcher to install into)"
+        Write-Host "$(_fmtKey 'Loaders:')(no launcher to install into)"
     }
 
     # Mod
-    $pkgShown = if ($State.ModPackage -eq $script:AMBIGUOUS_MOD_PACKAGE) {
-        "$($script:C_YELLOW)$($State.ModPackage)$($script:C_RESET)"
-    } elseif ($State.ModPackage) { $State.ModPackage } else { "$($script:C_YELLOW)no dist JAR in $(Join-Path $script:SCRIPT_DIR 'mods')$($script:C_RESET)" }
-    Write-Host "$(_fmtKey 'Mod package:')$pkgShown"
+    if ($State.PSObject.Properties['ModPackages']) {
+        foreach ($loader in Get-LoaderDisplayNames) {
+            $pkgShown = if ($State.ModPackages.ContainsKey($loader)) { $State.ModPackages[$loader] } else { "$($script:C_YELLOW)missing$($script:C_RESET)" }
+            Write-Host "$(_fmtKey "$loader package:")$pkgShown"
+        }
+    } else {
+        $pkgShown = if ($State.ModPackage) { $State.ModPackage } else { "$($script:C_YELLOW)no dist JAR in $(Join-Path $script:SCRIPT_DIR 'mods')$($script:C_RESET)" }
+        Write-Host "$(_fmtKey 'Mod package:')$pkgShown"
+    }
     if ($State.ModInstalled.Count -eq 0) {
         Write-Host "$(_fmtKey 'Mod installed:')$($script:C_DIM)(none)$($script:C_RESET)"
     } else {
@@ -1537,15 +2119,21 @@ function Write-DetectedStateBlock {
         foreach ($k in $State.ModInstalled.Keys) {
             $label = if ($first) { 'Mod installed:' } else { '' }
             $val = $State.ModInstalled[$k]
-            $match = ($val -eq $State.ModPackage)
+            $loader = if ($State.PSObject.Properties['ModLoaders']) { $State.ModLoaders[$k] } else { $null }
+            $expected = if ($loader -and $State.PSObject.Properties['ModPackages'] -and $State.ModPackages.ContainsKey($loader)) { $State.ModPackages[$loader] } else { $State.ModPackage }
+            $match = ($val -eq $expected)
             $badge = if ($match) { "$($script:C_GREEN)[match]$($script:C_RESET)" } else { "$($script:C_YELLOW)[differs]$($script:C_RESET)" }
-            Write-Host "$(_fmtKey $label)$k : $val  $badge"
+            $loaderLabel = if ($loader) { " [$loader]" } else { '' }
+            Write-Host "$(_fmtKey $label)$k$loaderLabel : $val  $badge"
             $first = $false
         }
     }
 
-    # Fabric API version pin
-    Write-Host "$(_fmtKey 'Fabric API:')$($script:FABRIC_API_VERSION)"
+    $pins = @($script:LOADER_CATALOG.Values | ForEach-Object { "$($_.DisplayName) $($_.LoaderVersion)" })
+    Write-Host "$(_fmtKey 'Loader pins:')$($pins -join ', ')"
+    foreach ($provider in $script:LOADER_CATALOG.Values | Where-Object Companion) {
+        Write-Host "$(_fmtKey "$($provider.Companion.DisplayName):")$($provider.Companion.Version) ($($provider.DisplayName) only)"
+    }
 }
 
 # --- Install / Upgrade implementation ---
@@ -1748,12 +2336,12 @@ function Get-InstallItemPresets {
 }
 
 function Get-InstallStepCount {
-    # Checking prerequisites and selecting the launcher, then the mod's three
-    # steps (preparing the launcher, its files, Fabric API) and one each for
-    # the pack and the world.
+    # Checking prerequisites and selecting the launcher, then selecting the
+    # mod loader, preparing the launcher, configuring dependencies, and
+    # installing the mod, plus one step each for the pack and the world.
     param([pscustomobject]$Items)
     $count = 2
-    if ($Items.Mod) { $count += 3 }
+    if ($Items.Mod) { $count += 4 }
     if ($Items.ArtPack) { $count++ }
     if ($Items.World) { $count++ }
     return $count
@@ -1774,6 +2362,7 @@ function Select-InstallItems {
     param(
         [ValidateSet('Prism', 'Microsoft')] [string]$Launcher,
         [switch]$Unattended,
+        [string]$ModLoader,
         [string]$ModChoice,
         [string]$ArtPackChoice,
         [string]$WorldChoice
@@ -1781,7 +2370,14 @@ function Select-InstallItems {
     $ticked = Get-InstallItemPresets -Unattended:$Unattended -ModChoice $ModChoice -ArtPackChoice $ArtPackChoice -WorldChoice $WorldChoice
     if ($Unattended) { return $ticked }
     $entries = @(
-        [pscustomobject]@{ Value = 'Mod';     Label = 'RTX Remix Renderer';       Hint = 'the mod';        Find = { Get-DistModJar } }
+        [pscustomobject]@{ Value = 'Mod';     Label = 'RTX Remix Renderer';       Hint = 'the mod';        Find = {
+            if ($ModLoader) {
+                Get-DistModJar -ModLoader $ModLoader
+            } else {
+                @(Get-LoaderDisplayNames | ForEach-Object { Get-DistModJar -ModLoader $_ }) |
+                    Where-Object { $_ } | Select-Object -First 1
+            }
+        } }
         [pscustomobject]@{ Value = 'ArtPack'; Label = 'RTX Remix Materials';      Hint = 'texture pack';   Find = { Get-DistArtPack } }
         [pscustomobject]@{ Value = 'World';   Label = 'RTX Remix Showcase World'; Hint = 'the demo world'; Find = { Get-DistWorld } }
     )
@@ -1809,6 +2405,39 @@ function Select-InstallItems {
         $ticked.$choice = -not $ticked.$choice
         $selected = $choice
     }
+}
+
+function Select-ModLoader {
+    param(
+        [string]$Preferred,
+        [switch]$Unattended,
+        [string]$Mode,
+        [string]$Launcher,
+        [pscustomobject]$DetectedState
+    )
+    if ($Preferred) { return $Preferred }
+    if ($Unattended) {
+        throw "-ModLoader is required in -Unattended mode. Supported loaders: $((Get-LoaderDisplayNames) -join '|')."
+    }
+    if ($Mode -in @('Upgrade','Repair','Uninstall','Export') -and $DetectedState -and
+        $DetectedState.PSObject.Properties['ModLoaders']) {
+        $installed = $DetectedState.ModLoaders[$Launcher]
+        if (Test-LoaderName $installed) {
+            Write-Info "Keeping the installed mod loader: $installed. Choose Install to switch loaders."
+            return $installed
+        }
+    }
+    # A target with one loader, such as 26.3 with Fabric alone, has nothing to ask.
+    if ($script:LOADER_CATALOG.Count -eq 1) { return @($script:LOADER_CATALOG.Values)[0].DisplayName }
+    $items = @(foreach ($provider in $script:LOADER_CATALOG.Values) {
+        $hint = "$($provider.DisplayName) $($provider.LoaderVersion)"
+        if ($provider.Companion) { $hint += " + $($provider.Companion.DisplayName)" }
+        [pscustomobject]@{ Label = $provider.DisplayName; Hint = $hint; Value = $provider.DisplayName }
+    })
+    $defaultLoader = $script:LOADER_CATALOG[$script:DEFAULT_LOADER_ID].DisplayName
+    $choice = Invoke-Menu -Title '  Which mod loader should this installation use?' -Items $items -Selected $defaultLoader
+    if (-not $choice) { throw 'Cancelled by user.' }
+    return $choice
 }
 
 function Install-PrismPortable {
@@ -1999,133 +2628,97 @@ function Disable-PrismUpdateCheck {
     }
 }
 
-function Write-PrismPack {
-    # mmc-pack.json for a new instance: Minecraft and Fabric Loader at the
-    # pinned versions. Prism adds the components these require (Intermediary
-    # Mappings, LWJGL) when it first loads the instance.
-    param([string]$InstanceDir)
-    $pack = @{
-        components = @(
-            @{ cachedName = 'Minecraft';     important = $true; uid = 'net.minecraft';              version = $script:MC_VERSION }
-            @{ cachedName = 'Fabric Loader';                   uid = 'net.fabricmc.fabric-loader'; version = $script:FABRIC_LOADER_VER }
-        )
-        formatVersion = 1
-    }
-    ($pack | ConvertTo-Json -Depth 8) | Out-File -LiteralPath (Join-Path $InstanceDir 'mmc-pack.json') -Encoding ascii
-}
-
-function Sync-PrismInstanceVersions {
-    <#
-      Bring a Prism instance that an earlier installer created to the pinned
-      game. Install and Upgrade replace the mod JAR and Fabric API in it, but
-      nothing else moves its components or its Java version, so an instance
-      from the Minecraft 1.21.1 installer would keep 1.21.1 and its Fabric
-      Loader under the new mod. This rewrites the Minecraft and Fabric Loader
-      component versions in mmc-pack.json when they differ from MC_VERSION and
-      FABRIC_LOADER_VER, and JavaVersion in instance.cfg when its major
-      differs from GAME_JAVA_MAJOR, and logs each change. Every other
-      component and setting stays as it is. A rewritten component drops the
-      cached version and requirements Prism saved for its old version. An
-      instance that already matches is not written to; a changed mmc-pack.json
-      is kept as mmc-pack.json.bak.
-
-      The exception is the components Prism added itself as dependencies of
-      the old Minecraft and marks volatile (Intermediary Mappings, LWJGL).
-      When Minecraft's version changes they go too, because Prism adds them
-      again at the version the new Minecraft calls for, as for a new instance,
-      and it will not do that for the ones left behind: Intermediary Mappings
-      of the old version require that Minecraft, which Prism reports as
-      "Instance has conflicting dependencies", and an old LWJGL stays at a
-      version the new Minecraft does not ask for.
-    #>
-    param([string]$InstanceDir)
-    $packPath = Join-Path $InstanceDir 'mmc-pack.json'
-    if (-not (Test-Path -LiteralPath $packPath)) {
-        Write-Info "Prism instance has no mmc-pack.json; writing one for Minecraft $($script:MC_VERSION) and Fabric Loader $($script:FABRIC_LOADER_VER)."
-        Write-PrismPack -InstanceDir $InstanceDir
-    } else {
-        $pack = $null
-        try {
-            # Prism writes BOM-less UTF-8, which Windows PowerShell would
-            # otherwise decode in the ANSI code page.
-            $pack = [System.IO.File]::ReadAllText($packPath, [System.Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
-        } catch {
-            Write-Warn "Could not parse mmc-pack.json ($($_.Exception.Message)); leaving the instance's Minecraft and Fabric Loader versions as they are."
-        }
-        if ($pack) {
-            $pins = @{
-                'net.minecraft'              = [pscustomobject]@{ Name = 'Minecraft';     Version = $script:MC_VERSION }
-                'net.fabricmc.fabric-loader' = [pscustomobject]@{ Name = 'Fabric Loader'; Version = $script:FABRIC_LOADER_VER }
-            }
-            $changed = $false
-            $minecraftChanged = $false
-            foreach ($component in @($pack.components)) {
-                if (-not $component -or -not $component.PSObject.Properties['uid']) { continue }
-                $pin = $pins[[string]$component.uid]
-                if (-not $pin -or $component.version -eq $pin.Version) { continue }
-                Write-Info "Updated the Prism instance's $($pin.Name) from $($component.version) to $($pin.Version)."
-                $component | Add-Member -NotePropertyName version -NotePropertyValue $pin.Version -Force
-                foreach ($stale in 'cachedVersion', 'cachedRequires', 'cachedConflicts') {
-                    [void]$component.PSObject.Properties.Remove($stale)
-                }
-                if ([string]$component.uid -eq 'net.minecraft') { $minecraftChanged = $true }
-                $changed = $true
-            }
-            if ($minecraftChanged) {
-                $kept = [System.Collections.Generic.List[object]]::new()
-                foreach ($component in @($pack.components)) {
-                    if ($component -and $component.dependencyOnly -eq $true -and $component.cachedVolatile -eq $true) {
-                        $name = if ($component.cachedName) { $component.cachedName } else { $component.uid }
-                        Write-Info "Removed the Prism instance's $name $($component.version); Prism adds it again for Minecraft $($script:MC_VERSION)."
-                    } else {
-                        $kept.Add($component)
-                    }
-                }
-                $pack.components = $kept.ToArray()
-            }
-            if ($changed) {
-                Write-FileAtomic -Path $packPath -Content (ConvertTo-Json -InputObject $pack -Depth 16) -Backup
-            }
-        }
-    }
-
-    # Prism saves the full version it detects, such as 25.0.4.1, where this
-    # installer writes the major alone, so only the major says whether it is
-    # the game's.
-    $cfg = Join-Path $InstanceDir 'instance.cfg'
-    $javaVersion = Get-PrismCfgValue -Text (Read-PrismCfg -Cfg $cfg) -Key 'JavaVersion'
-    if (-not ($javaVersion -match '^"?(\d+)' -and [int]$Matches[1] -eq $script:GAME_JAVA_MAJOR)) {
-        Set-PrismCfgValues -Cfg $cfg -Values ([ordered]@{ JavaVersion = "$($script:GAME_JAVA_MAJOR)" })
-        if ($javaVersion) {
-            Write-Info "Updated the Prism instance's JavaVersion from $javaVersion to $($script:GAME_JAVA_MAJOR)."
-        } else {
-            Write-Info "Set the Prism instance's JavaVersion to $($script:GAME_JAVA_MAJOR)."
-        }
-    }
-}
-
 function Initialize-PrismInstance {
-    param([string]$InstanceDir)
+    param([string]$InstanceDir, [Parameter(Mandatory)] [string]$ModLoader)
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
     $cfg = Join-Path $InstanceDir 'instance.cfg'
     if (Test-Path -LiteralPath $cfg) {
         Write-Info "Reusing existing Prism instance: $($script:PRISM_INSTANCE_NAME)"
-        Sync-PrismInstanceVersions -InstanceDir $InstanceDir
-        return
+        Sync-PrismInstanceJavaVersion -Cfg $cfg
+    } else {
+        Write-Info "Creating Prism instance: $($script:PRISM_INSTANCE_NAME)"
+        New-Item -ItemType Directory -Path (Join-Path $InstanceDir '.minecraft') -Force | Out-Null
+        @(
+            'InstanceType=OneSix'
+            "name=$($script:PRISM_INSTANCE_NAME)"
+            "JavaVersion=$($script:JAVA_TARGET)"
+        ) -join "`r`n" | Out-File -LiteralPath $cfg -Encoding ascii -NoNewline
     }
-    Write-Info "Creating Prism instance: $($script:PRISM_INSTANCE_NAME)"
-    New-Item -ItemType Directory -Path (Join-Path $InstanceDir '.minecraft') -Force | Out-Null
-    @(
-        'InstanceType=OneSix'
-        "name=$($script:PRISM_INSTANCE_NAME)"
-        "JavaVersion=$($script:GAME_JAVA_MAJOR)"
-    ) -join "`r`n" | Out-File -LiteralPath $cfg -Encoding ascii -NoNewline
-    Write-PrismPack -InstanceDir $InstanceDir
+
+    $packPath = Join-Path $InstanceDir 'mmc-pack.json'
+    $components = @()
+    $previousMinecraft = $null
+    if (Test-Path -LiteralPath $packPath -PathType Leaf) {
+        try {
+            $existing = [IO.File]::ReadAllText($packPath, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
+            $loaderUids = @($script:LOADER_CATALOG.Values | ForEach-Object PrismUid)
+            $components = @($existing.components | Where-Object {
+                $_.uid -ne 'net.minecraft' -and $_.uid -notin $loaderUids
+            })
+            $previousMinecraft = @($existing.components | Where-Object { $_.uid -eq 'net.minecraft' } |
+                ForEach-Object { [string]$_.version }) | Select-Object -First 1
+        } catch {
+            throw "Cannot safely switch the Prism loader because mmc-pack.json is invalid: $($_.Exception.Message)"
+        }
+    }
+    if ($previousMinecraft -and $previousMinecraft -ne $script:MC_VERSION) {
+        # An instance an earlier installer made for another Minecraft version.
+        # The components Prism added itself as dependencies of that Minecraft
+        # and marks volatile (Intermediary Mappings, LWJGL) go with it: Prism
+        # adds them again at the versions the new Minecraft asks for, as for a
+        # new instance, but keeps the ones left behind, and Intermediary
+        # Mappings that require the old Minecraft fail the instance with
+        # "Instance has conflicting dependencies".
+        Write-Info "Updated the Prism instance's Minecraft from $previousMinecraft to $($script:MC_VERSION)."
+        $kept = @()
+        foreach ($component in $components) {
+            if ($component.dependencyOnly -eq $true -and $component.cachedVolatile -eq $true) {
+                $name = if ($component.cachedName) { $component.cachedName } else { $component.uid }
+                Write-Info "Removed the Prism instance's $name $($component.version); Prism adds it again for Minecraft $($script:MC_VERSION)."
+            } else {
+                $kept += $component
+            }
+        }
+        $components = $kept
+    }
+    $loaderComponent = @{
+        cachedName = $provider.PrismCachedName
+        uid = $provider.PrismUid
+        version = $provider.LoaderVersion
+    }
+    $pack = [ordered]@{
+        components = @(@{ cachedName = 'Minecraft'; important = $true; uid = 'net.minecraft'; version = $script:MC_VERSION }) +
+            @($loaderComponent) + @($components)
+        formatVersion = 1
+    }
+    Write-FileAtomic -Path $packPath -Content ($pack | ConvertTo-Json -Depth 8) -Backup
+    Write-Info "Prism instance loader set to $ModLoader."
+}
+
+function Sync-PrismInstanceJavaVersion {
+    <#
+      Point an existing instance's JavaVersion at the target's Java
+      (JAVA_TARGET). An instance an earlier installer made for an older
+      Minecraft keeps that game's Java version otherwise, such as the 21 of
+      the Minecraft 1.21.1 installer. Prism saves the full version it detects,
+      such as 25.0.4.1, where this installer writes the major alone, so only
+      the major says whether it is the target's. Every other setting stays.
+    #>
+    param([Parameter(Mandatory)] [string]$Cfg)
+    $javaVersion = Get-PrismCfgValue -Text (Read-PrismCfg -Cfg $Cfg) -Key 'JavaVersion'
+    if ($javaVersion -match '^"?(\d+)' -and [int]$Matches[1] -eq $script:JAVA_TARGET) { return }
+    Set-PrismCfgValues -Cfg $Cfg -Values ([ordered]@{ JavaVersion = "$($script:JAVA_TARGET)" })
+    if ($javaVersion) {
+        Write-Info "Updated the Prism instance's JavaVersion from $javaVersion to $($script:JAVA_TARGET)."
+    } else {
+        Write-Info "Set the Prism instance's JavaVersion to $($script:JAVA_TARGET)."
+    }
 }
 
 function Get-PrismJavaPinProblem {
     # Why the Java that a Prism instance pins cannot run the game on this
     # ARM64 host, or $null when it can: it has to be a native ARM64 binary
-    # (Get-PeMachine == 0xAA64) of the game's Java major (GAME_JAVA_MAJOR).
+    # (Get-PeMachine == 0xAA64) of the target's Java major (JAVA_TARGET).
     param([string]$JavaPath)
     # Resolve forward-slash paths that Prism writes back to native form.
     $resolved = $JavaPath -replace '/', '\'
@@ -2137,9 +2730,9 @@ function Get-PrismJavaPinProblem {
         return "Existing Prism JavaPath points at a non-ARM64 JVM (PE Machine 0x$($machine.ToString('X4'))); WoA can't run our JNI bridge under x64 emulation."
     }
     $major = Get-JavaHomeMajor -JavaExe $resolved
-    if ($major -ne $script:GAME_JAVA_MAJOR) {
+    if ($major -ne $script:JAVA_TARGET) {
         $which = if ($major -gt 0) { "Java $major" } else { 'a Java whose version could not be read' }
-        return "Existing Prism JavaPath points at $which, but Minecraft $($script:MC_VERSION) needs Java $($script:GAME_JAVA_MAJOR)."
+        return "Existing Prism JavaPath points at $which, but Minecraft $($script:MC_VERSION) needs Java $($script:JAVA_TARGET)."
     }
     return $null
 }
@@ -2167,7 +2760,7 @@ function Set-PrismJavaPin {
     if ($overrideEnabled -and $pinnedJava) {
         $problem = Get-PrismJavaPinProblem -JavaPath $pinnedJava
         if (-not $problem) {
-            Write-Info "Prism instance already pins a native ARM64 Java $($script:GAME_JAVA_MAJOR), leaving untouched."
+            Write-Info "Prism instance already pins a native ARM64 Java $($script:JAVA_TARGET), leaving untouched."
             return
         }
         if (-not $haveManaged) {
@@ -2220,6 +2813,29 @@ function Write-FileAtomic {
     }
 }
 
+function New-FileSnapshot {
+    param([Parameter(Mandatory)] [string]$Path)
+    $exists = Test-Path -LiteralPath $Path -PathType Leaf
+    return [pscustomobject]@{
+        Path    = $Path
+        Existed = $exists
+        Bytes   = if ($exists) { [IO.File]::ReadAllBytes($Path) } else { $null }
+    }
+}
+
+function Restore-FileSnapshot {
+    param([Parameter(Mandatory)] [pscustomobject]$Snapshot)
+    if ($Snapshot.Existed) {
+        $parent = Split-Path -Parent $Snapshot.Path
+        if (-not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        [IO.File]::WriteAllBytes($Snapshot.Path, $Snapshot.Bytes)
+    } elseif (Test-Path -LiteralPath $Snapshot.Path) {
+        Remove-Item -LiteralPath $Snapshot.Path -Force
+    }
+}
+
 function Sync-JvmArgs {
     <#
       Three-way reconcile against RECOMMENDED_JVM_ARGS, in the form each
@@ -2251,6 +2867,7 @@ function Sync-JvmArgs {
     param(
         [ValidateSet('Prism','Microsoft')] [string]$For,
         [string]$PrismCfg,
+        [string]$ModLoader,
         [switch]$Unattended
     )
     if ($For -eq 'Prism') {
@@ -2314,8 +2931,7 @@ function Sync-JvmArgs {
     }
 
     # Microsoft launcher: defensive JSON read.
-    $lp  = Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'
-    $key = $script:FABRIC_PROFILE_KEY
+    $lp  = Get-MsLauncherProfilesPath
     if (-not (Test-Path -LiteralPath $lp)) { return }
     $json = $null
     try {
@@ -2327,9 +2943,10 @@ function Sync-JvmArgs {
         return
     }
     if (-not $json -or -not $json.PSObject.Properties['profiles'] -or -not $json.profiles) {
-        Write-Trace 'launcher_profiles.json has no profiles section; Fabric installer will populate it.'
+        Write-Trace 'launcher_profiles.json has no profiles section; the loader installer will populate it.'
         return
     }
+    $key = Get-MsProfileKey -ModLoader $ModLoader -Profiles $json.profiles
     if (-not $json.profiles.PSObject.Properties[$key]) {
         Write-Trace "MS launcher profile '$key' not present yet."
         return
@@ -2339,18 +2956,18 @@ function Sync-JvmArgs {
     if ($current -eq $script:RECOMMENDED_JVM_ARGS) { Write-Info 'Microsoft launcher profile JVM args already match launcher defaults; no change.'; return }
     if (-not $current) {
         Write-Info 'Applying launcher default JVM args to Microsoft launcher profile.'
-        Write-MsLauncherJvmArgs
+        Write-MsLauncherJvmArgs -ModLoader $ModLoader
         return
     }
     if (Test-InstallerJvmArgs -JvmArgs $current -For Microsoft) {
         Write-Info 'Replacing the JVM args an earlier installer wrote to the Microsoft launcher profile with launcher defaults.'
-        Write-MsLauncherJvmArgs
+        Write-MsLauncherJvmArgs -ModLoader $ModLoader
         Write-Info "Previous JVM args, kept in launcher_profiles.json.bak: $current"
         return
     }
     if ($Unattended) { Write-Info 'Microsoft launcher JVM args differ; keeping existing (unattended).'; return }
     if (Confirm-JvmArgsOverwrite -Label "Microsoft launcher profile '$key'" -Current $current -Recommended $script:RECOMMENDED_JVM_ARGS) {
-        Write-MsLauncherJvmArgs
+        Write-MsLauncherJvmArgs -ModLoader $ModLoader
         Write-Info 'Microsoft launcher profile JVM args updated to launcher defaults.'
     } else {
         Write-Info 'Keeping existing Microsoft launcher JVM args.'
@@ -2688,8 +3305,8 @@ function Write-MsLauncherJvmArgs {
     # Atomic, BOM-free rewrite of launcher_profiles.json. The launcher writes
     # this file itself on shutdown, so an in-place write during launcher
     # runtime can corrupt it.
-    $lp  = Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'
-    $key = $script:FABRIC_PROFILE_KEY
+    param([Parameter(Mandatory)] [string]$ModLoader)
+    $lp  = Get-MsLauncherProfilesPath
     try {
         # The launcher writes BOM-less UTF-8. Windows PowerShell 5.1 would
         # otherwise decode it through the active ANSI code page.
@@ -2699,6 +3316,7 @@ function Write-MsLauncherJvmArgs {
         Write-Warn 'Could not parse launcher_profiles.json; JVM args update skipped.'
         return
     }
+    $key = Get-MsProfileKey -ModLoader $ModLoader -Profiles $json.profiles
     if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles -or -not $json.profiles.PSObject.Properties[$key]) {
         Write-Trace "MS launcher profile '$key' not present; JVM args update skipped."
         return
@@ -2716,14 +3334,14 @@ function Confirm-JvmArgsOverwrite {
     Write-Host "     $($script:C_BOLD)Current:$($script:C_RESET)     $($script:C_DIM)$Current$($script:C_RESET)"
     Write-Host "     $($script:C_BOLD)Recommended:$($script:C_RESET) $($script:C_DIM)$Recommended$($script:C_RESET)"
     Write-Host ''
-    Write-Host "  The recommended arguments use G1GC and a 2 GB heap. Custom"
+    Write-Host "  Minecraft $($script:MC_VERSION) launcher defaults use G1GC and a 2 GB heap. Custom"
     Write-Host '  args may include profiling flags, test toggles, or more memory.'
     foreach ($line in $Note) { if ($line) { Write-Host "  $line" } }
     return (Confirm-YesNo -Prompt 'Overwrite current JVM args with launcher defaults?' -DefaultNo)
 }
 
 function Initialize-Prism {
-    param([pscustomobject]$State, [switch]$Unattended)
+    param([pscustomobject]$State, [switch]$Unattended, [Parameter(Mandatory)] [string]$ModLoader)
     # $State is [pscustomobject] (ref-typed). We intentionally mutate
     # .PrismDataDir below so the caller sees the resolved value.
     if ($State.PrismDataDir -and $State.PrismDataDir -ne $script:PRISM_PORTABLE_DIR) {
@@ -2734,8 +3352,8 @@ function Initialize-Prism {
         Install-PrismPortable
     }
     if (-not $State.PrismDataDir) { $State.PrismDataDir = $script:PRISM_PORTABLE_DIR }
-    $instanceDir = Join-Path $State.PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)"
-    Initialize-PrismInstance -InstanceDir $instanceDir
+    $instanceDir = Get-PrismInstanceDir -DataDir $State.PrismDataDir
+    Initialize-PrismInstance -InstanceDir $instanceDir -ModLoader $ModLoader
     # The record of a Prism named at the launcher question lives and dies with
     # the instance: written once the instance is there, and removed with it by
     # Remove-PrismInstance.
@@ -2754,23 +3372,23 @@ function Test-MsFabricProfileRegistered {
     # profiles.* entry; a user who deletes the profile manually leaves the
     # versions dir behind, so version-dir-presence alone is NOT a reliable
     # signal that the launcher knows about Fabric.
-    $lp = Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'
+    $lp = Get-MsLauncherProfilesPath
     if (-not (Test-Path -LiteralPath $lp)) { return $false }
     try {
         $json = Get-Content -LiteralPath $lp -Raw | ConvertFrom-Json -ErrorAction Stop
     } catch { return $false }
     if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles) { return $false }
-    $key = $script:FABRIC_PROFILE_KEY
+    $key = (Get-LoaderProvider -ModLoader Fabric).MicrosoftProfileKey
     return [bool]$json.profiles.PSObject.Properties[$key]
 }
 
 function Get-MsFabricProfileVersionId {
     # The version id (lastVersionId) that the launcher profile registered under
-    # FABRIC_PROFILE_KEY launches, or $null when launcher_profiles.json has no
-    # such profile or it names none. The key names the Minecraft version only,
-    # so a profile that an install of another Fabric Loader build left shares
-    # it, and launches that build.
-    $lp = Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'
+    # the Fabric loader's MicrosoftProfileKey launches, or $null when
+    # launcher_profiles.json has no such profile or it names none. The key
+    # names the Minecraft version only, so a profile that an install of another
+    # Fabric Loader build left shares it, and launches that build.
+    $lp = Get-MsLauncherProfilesPath
     if (-not (Test-Path -LiteralPath $lp)) { return $null }
     try {
         # The launcher writes BOM-less UTF-8, which Windows PowerShell would
@@ -2778,36 +3396,52 @@ function Get-MsFabricProfileVersionId {
         $json = [System.IO.File]::ReadAllText($lp, [System.Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
     } catch { return $null }
     if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles) { return $null }
-    $entry = $json.profiles.PSObject.Properties[$script:FABRIC_PROFILE_KEY]
+    $entry = $json.profiles.PSObject.Properties[(Get-LoaderProvider -ModLoader Fabric).MicrosoftProfileKey]
     if (-not $entry -or -not $entry.Value.PSObject.Properties['lastVersionId']) { return $null }
     return [string]$entry.Value.lastVersionId
 }
 
 function Initialize-MicrosoftLauncher {
-    param([string]$JavaExe, [switch]$Unattended)
-    if (-not (Test-Path -LiteralPath (Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'))) {
+    param(
+        [string]$JavaExe,
+        [switch]$Unattended,
+        [Parameter(Mandatory)] [string]$ModLoader
+    )
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
+    if (-not (Test-Path -LiteralPath (Get-MsLauncherProfilesPath))) {
         throw 'Microsoft Minecraft launcher not detected. Install it first from https://www.minecraft.net/en-us/download'
+    }
+    if ($provider.MicrosoftKind -eq 'Installer') {
+        Initialize-MicrosoftLoaderInstaller -JavaExe $JavaExe -ModLoader $provider.DisplayName
+        Ensure-MsLoaderProfile -ModLoader $provider.DisplayName
+        Remove-OtherManagedMsProfiles -SelectedModLoader $provider.DisplayName
+        Write-Info "Configuring Minecraft $($script:MC_VERSION) launcher JVM defaults on the $($provider.DisplayName) profile..."
+        Sync-JvmArgs -For Microsoft -ModLoader $provider.DisplayName -Unattended:$Unattended
+        return
+    }
+    if ($provider.MicrosoftKind -ne 'Fabric') {
+        throw "Loader '$($provider.DisplayName)' has no Microsoft launcher provider."
     }
     # Both conditions are required: the versions/ dir, and a profile entry that
     # launches it. Users who delete a Fabric profile entry in the launcher UI
     # leave the versions/ dir behind; if we only checked that, we'd
     # short-circuit and the launcher UI would have no entry to select. And the
     # profile key names only the Minecraft version, so an entry can exist yet
-    # launch another Fabric Loader build than the pinned one (the version id,
-    # FABRIC_VERSION_ID), which would run the mod on that loader.
-    $versionDir   = Join-Path $env:APPDATA ".minecraft\versions\$($script:FABRIC_VERSION_ID)"
+    # launch another Fabric Loader build than the pinned one (the version id),
+    # which would run the mod on that loader.
+    $versionDir   = Join-Path $env:APPDATA ".minecraft\versions\$($provider.VersionId)"
     $hasVersion   = Test-Path -LiteralPath $versionDir
     $hasProfile   = Test-MsFabricProfileRegistered
     $profileLaunches = if ($hasProfile) { Get-MsFabricProfileVersionId } else { $null }
-    $profileIsPinned = $hasProfile -and $profileLaunches -eq $script:FABRIC_VERSION_ID
+    $profileIsPinned = $hasProfile -and $profileLaunches -eq $provider.VersionId
     if ($hasVersion -and $profileIsPinned) {
-        Write-Info "Reusing existing Fabric $($script:FABRIC_LOADER_VER) for MC $($script:MC_VERSION)"
+        Write-Info "Reusing existing $($provider.DisplayName) $($provider.LoaderVersion) for MC $($script:MC_VERSION)"
     } else {
         if ($hasProfile -and -not $profileIsPinned) {
             $launches = if ($profileLaunches) { $profileLaunches } else { 'no version' }
-            Write-Info "Launcher profile '$($script:FABRIC_PROFILE_KEY)' launches $launches, not $($script:FABRIC_VERSION_ID); re-running the Fabric installer to point it at the pinned loader."
+            Write-Info "Launcher profile '$($provider.MicrosoftProfileKey)' launches $launches, not $($provider.VersionId); re-running the Fabric installer to point it at the pinned loader."
         } elseif ($hasVersion -and -not $hasProfile) {
-            Write-Info "Fabric $($script:FABRIC_LOADER_VER) version dir exists but no launcher profile entry; re-running installer to re-register it."
+            Write-Info "$($provider.DisplayName) $($provider.LoaderVersion) version dir exists but no launcher profile entry; re-running installer to re-register it."
         } else {
             Write-Info 'Downloading Fabric installer...'
         }
@@ -2821,7 +3455,7 @@ function Initialize-MicrosoftLauncher {
         # already exists; it just updates/re-registers the profile entry.
         # Captured, not left in the output stream: its lines would otherwise be
         # returned by Invoke-InstallOrUpgrade along with the exit code.
-        $fabricOut = & $JavaExe -jar $jar client -mcversion $script:MC_VERSION -loader $script:FABRIC_LOADER_VER 2>&1
+        $fabricOut = & $JavaExe -jar $jar client -mcversion $script:MC_VERSION -loader $provider.LoaderVersion 2>&1
         if ($LASTEXITCODE -ne 0) {
             $fabricOut | ForEach-Object { Write-Warn "$_" }
             throw 'Fabric installer execution failed (non-zero exit).'
@@ -2830,13 +3464,136 @@ function Initialize-MicrosoftLauncher {
         # guard against it having written somewhere else: a profile that
         # still launches another build runs the mod on that loader.
         $launches = Get-MsFabricProfileVersionId
-        if ($launches -and $launches -ne $script:FABRIC_VERSION_ID) {
-            Write-Warn "The Fabric installer finished, but launcher profile '$($script:FABRIC_PROFILE_KEY)' still launches $launches. Choose $($script:FABRIC_VERSION_ID) as its version in the launcher's profile editor."
+        if ($launches -and $launches -ne $provider.VersionId) {
+            Write-Warn "The Fabric installer finished, but launcher profile '$($provider.MicrosoftProfileKey)' still launches $launches. Choose $($provider.VersionId) as its version in the launcher's profile editor."
         }
     }
     Set-MsLauncherProfileName
+    Remove-OtherManagedMsProfiles -SelectedModLoader $provider.DisplayName
     Write-Info "Configuring Minecraft $($script:MC_VERSION) launcher JVM defaults on the Fabric profile..."
-    Sync-JvmArgs -For Microsoft -Unattended:$Unattended
+    Sync-JvmArgs -For Microsoft -ModLoader $provider.DisplayName -Unattended:$Unattended
+}
+
+function Initialize-MicrosoftLoaderInstaller {
+    param(
+        [Parameter(Mandatory)] [string]$JavaExe,
+        [Parameter(Mandatory)] [string]$ModLoader
+    )
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
+    if ($provider.MicrosoftKind -ne 'Installer') {
+        throw "Loader '$($provider.DisplayName)' does not use a Microsoft launcher installer."
+    }
+    $versionDir = Join-Path $env:APPDATA ".minecraft\versions\$($provider.VersionId)"
+    $hasVersion = Test-Path -LiteralPath $versionDir
+    $hasProfile = (Get-MicrosoftLoaders) -contains $provider.DisplayName
+    if ($hasVersion -and $hasProfile) {
+        Write-Info "Reusing existing $($provider.DisplayName) $($provider.LoaderVersion) for MC $($script:MC_VERSION)"
+        return
+    }
+    if ($hasVersion) {
+        Write-Info "$($provider.DisplayName) version files exist without a matching launcher profile; re-running the installer to repair registration."
+    }
+    Write-Info "Downloading pinned $($provider.DisplayName) installer $($script:MC_VERSION)-$($provider.LoaderVersion)..."
+    $releaseVersion = if ($provider.InstallerReleaseIncludesMinecraft) {
+        "$($script:MC_VERSION)-$($provider.LoaderVersion)"
+    } else {
+        $provider.LoaderVersion
+    }
+    $artifact = "$($provider.InstallerArtifact)-$releaseVersion-installer.jar"
+    $url = "$($provider.InstallerRepository)/$($provider.InstallerGroupPath)/$releaseVersion/$artifact"
+    $jar = New-SessionTempPath "$($provider.Provider)-installer.jar"
+    $pinned = if ($provider.InstallerPinnedSha256) { $provider.InstallerPinnedSha256 } else { $null }
+    Invoke-VerifiedDownload -Url $url -Destination $jar -ExpectedSha256 $pinned -ChecksumUrl "$url.sha256"
+    $mcRoot = Join-Path $env:APPDATA '.minecraft'
+    $installerOut = & $JavaExe -jar $jar $provider.InstallerClientArg $mcRoot 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $installerOut | ForEach-Object { Write-Warn "$_" }
+        throw "$($provider.DisplayName) installer execution failed (non-zero exit)."
+    }
+    if (-not (Test-Path -LiteralPath $versionDir)) {
+        throw "$($provider.DisplayName) installer reported success but did not create $versionDir."
+    }
+}
+
+function Ensure-MsLoaderProfile {
+    # Loader installers have changed whether they register a launcher profile.
+    # Ensure one visible custom profile targets the pinned version either way.
+    param([Parameter(Mandatory)] [string]$ModLoader)
+    $lp = Get-MsLauncherProfilesPath
+    try {
+        $raw = [IO.File]::ReadAllText($lp, [Text.UTF8Encoding]::new($false))
+        $json = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Could not parse launcher_profiles.json while registering ${ModLoader}: $($_.Exception.Message)"
+    }
+    if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles) {
+        $json | Add-Member -NotePropertyName profiles -NotePropertyValue ([pscustomobject]@{}) -Force
+    }
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
+    if ($provider.MicrosoftKind -ne 'Installer') {
+        throw "Loader '$($provider.DisplayName)' does not use a managed Microsoft launcher profile."
+    }
+    $key = Get-MsProfileKey -ModLoader $provider.DisplayName -Profiles $json.profiles
+    if (-not $json.profiles.PSObject.Properties[$key]) {
+        $profile = [pscustomobject][ordered]@{
+            created       = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            icon          = 'Furnace'
+            lastUsed      = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+            lastVersionId = $provider.VersionId
+            name          = $provider.MicrosoftProfileName
+            type          = 'custom'
+        }
+        $json.profiles | Add-Member -NotePropertyName $provider.MicrosoftProfileKey -NotePropertyValue $profile
+    } else {
+        $profile = $json.profiles.$key
+        $profile | Add-Member -NotePropertyName lastVersionId -NotePropertyValue $provider.VersionId -Force
+        if (-not $profile.PSObject.Properties['name'] -or [string]::IsNullOrWhiteSpace($profile.name) -or
+            $profile.name -match '^(neo)?forge') {
+            $profile | Add-Member -NotePropertyName name -NotePropertyValue $provider.MicrosoftProfileName -Force
+        }
+        $profile | Add-Member -NotePropertyName type -NotePropertyValue 'custom' -Force
+    }
+    Write-FileAtomic -Path $lp -Content ($json | ConvertTo-Json -Depth 32) -Backup
+    Write-Info "Microsoft launcher $($provider.DisplayName) profile is available as '$($profile.name)'."
+}
+
+function Remove-OtherManagedMsProfiles {
+    param([Parameter(Mandatory)] [string]$SelectedModLoader)
+    $selectedProvider = Get-LoaderProvider -ModLoader $SelectedModLoader
+    $lp = Get-MsLauncherProfilesPath
+    if (-not (Test-Path -LiteralPath $lp -PathType Leaf)) { return }
+    try {
+        $json = [IO.File]::ReadAllText($lp, [Text.UTF8Encoding]::new($false)) | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Warn "Could not parse launcher_profiles.json while reconciling loader profiles: $($_.Exception.Message)"
+        return
+    }
+    if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles) { return }
+
+    $removed = @()
+    foreach ($property in @($json.profiles.PSObject.Properties)) {
+        $profile = $property.Value
+        $name = if ($profile -and $profile.PSObject.Properties['name']) { [string]$profile.name } else { '' }
+        $lastVersion = if ($profile -and $profile.PSObject.Properties['lastVersionId']) {
+            [string]$profile.lastVersionId
+        } else { '' }
+        $managedOther = $false
+        foreach ($provider in $script:LOADER_CATALOG.Values | Where-Object Id -ne $selectedProvider.Id) {
+            $managedNames = @($provider.MicrosoftProfileName, 'NVIDIA RTX Remix', 'RTX Remix')
+            if (($property.Name -eq $provider.MicrosoftProfileKey -or $lastVersion -eq $provider.VersionId) -and
+                $name -in $managedNames) {
+                $managedOther = $true
+                break
+            }
+        }
+        if ($managedOther) {
+            [void]$json.profiles.PSObject.Properties.Remove($property.Name)
+            $removed += $property.Name
+        }
+    }
+    if ($removed.Count -eq 0) { return }
+    Write-FileAtomic -Path $lp -Content ($json | ConvertTo-Json -Depth 32) -Backup
+    Write-Info "Removed the superseded managed Microsoft launcher profile: $($removed -join ', ')"
 }
 
 function Set-MsLauncherProfileName {
@@ -2848,7 +3605,7 @@ function Set-MsLauncherProfileName {
       updates cleanly. Any other name is treated as a user customization
       and left alone.
     #>
-    $lp = Join-Path $env:APPDATA '.minecraft\launcher_profiles.json'
+    $lp = Get-MsLauncherProfilesPath
     if (-not (Test-Path -LiteralPath $lp)) { return }
     try {
         $raw = Get-Content -LiteralPath $lp -Raw
@@ -2857,7 +3614,8 @@ function Set-MsLauncherProfileName {
         Write-Warn "Could not parse launcher_profiles.json; profile rename skipped."
         return
     }
-    $key = $script:FABRIC_PROFILE_KEY
+    $provider = Get-LoaderProvider -ModLoader Fabric
+    $key = $provider.MicrosoftProfileKey
     if (-not $json.PSObject.Properties['profiles'] -or -not $json.profiles -or -not $json.profiles.PSObject.Properties[$key]) {
         Write-Trace "MS launcher profile '$key' not present; profile rename skipped."
         return
@@ -2868,46 +3626,49 @@ function Set-MsLauncherProfileName {
         $key                                              # Fabric installer default (e.g. 'fabric-loader-26.3')
         ''                                                # empty name
         'fabric-loader'                                   # legacy Fabric installer default
-        "fabric-loader-$($script:FABRIC_LOADER_VER)-$($script:MC_VERSION)"  # older loader-included key
+        "fabric-loader-$($provider.LoaderVersion)-$($script:MC_VERSION)"  # older loader-included key
         'NVIDIA RTX Remix'                                # our prior label
         'RTX Remix'                                       # any earlier labels we might have used
     )
-    if ($currentName -eq $script:FABRIC_PROFILE_NAME) {
-        Write-Trace "MS launcher profile already named '$($script:FABRIC_PROFILE_NAME)'; no change."
+    if ($currentName -eq $provider.MicrosoftProfileName) {
+        Write-Trace "MS launcher profile already named '$($provider.MicrosoftProfileName)'; no change."
         return
     }
     if ($defaults -notcontains $currentName) {
-        Write-Info "MS launcher profile has a custom name ('$currentName'); leaving untouched. Rename manually in the launcher UI if you'd prefer '$($script:FABRIC_PROFILE_NAME)'."
+        Write-Info "MS launcher profile has a custom name ('$currentName'); leaving untouched. Rename manually in the launcher UI if you'd prefer '$($provider.MicrosoftProfileName)'."
         return
     }
-    $profileObj | Add-Member -NotePropertyName name -NotePropertyValue $script:FABRIC_PROFILE_NAME -Force
+    $profileObj | Add-Member -NotePropertyName name -NotePropertyValue $provider.MicrosoftProfileName -Force
     $out = ($json | ConvertTo-Json -Depth 32)
     Write-FileAtomic -Path $lp -Content $out -Backup
-    Write-Info "Renamed Microsoft launcher profile to '$($script:FABRIC_PROFILE_NAME)'."
+    Write-Info "Renamed Microsoft launcher profile to '$($provider.MicrosoftProfileName)'."
 }
 
 function Install-ModFiles {
-    param([string]$McDir)
+    param([string]$McDir, [Parameter(Mandatory)] [string]$ModLoader)
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
     Write-Info "Installing mod files to $McDir"
     if (-not (Test-Path -LiteralPath $McDir))                    { New-Item -ItemType Directory -Path $McDir -Force | Out-Null }
     if (-not (Test-Path -LiteralPath (Join-Path $McDir 'mods'))) { New-Item -ItemType Directory -Path (Join-Path $McDir 'mods') -Force | Out-Null }
 
     # Resolve + validate the new JAR BEFORE touching anything. A broken dist
     # must not turn an upgrade into a destructive failure.
-    $newJar = Get-DistModJar
-    if (-not $newJar) { throw "No rtx-remix-renderer JAR found in $(Join-Path $script:SCRIPT_DIR 'mods')" }
+    $newJar = Get-DistModJar -ModLoader $ModLoader
+    if (-not $newJar) { throw "No $ModLoader rtx-remix-renderer JAR found in $(Join-Path $script:SCRIPT_DIR $provider.ArtifactDirectory)" }
 
-    # Stage-in via temp name next to target, then prune old, then rename.
-    $finalPath  = Join-Path $McDir "mods\$(Split-Path $newJar -Leaf)"
+    # Stage beside the target. Keep every working old JAR until the new JAR and
+    # loader-specific resource-pack migration both succeed.
+    $finalPath  = Join-Path $McDir "mods\$($provider.InstalledJar)"
     $stagedPath = "$finalPath.new"
+    $rollbackPath = "$finalPath.rollback"
     if (Test-Path -LiteralPath $stagedPath) { Remove-Item -LiteralPath $stagedPath -Force }
+    if (Test-Path -LiteralPath $rollbackPath) { Remove-Item -LiteralPath $rollbackPath -Force }
     Copy-Item -LiteralPath $newJar -Destination $stagedPath -Force -ErrorAction Stop
-
-    Get-ChildItem -LiteralPath (Join-Path $McDir 'mods') -Filter 'rtx-remix-renderer-*.jar' -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -ne $stagedPath -and $_.FullName -ne $finalPath } |
-        ForEach-Object { Write-Info "Replacing old mod JAR: $($_.Name)"; Remove-Item -LiteralPath $_.FullName -Force }
-
-    if (Test-Path -LiteralPath $finalPath) { Remove-Item -LiteralPath $finalPath -Force -ErrorAction Stop }
+    $oldJars = @(Get-ChildItem -LiteralPath (Join-Path $McDir 'mods') -Filter 'rtx-remix-renderer-*.jar' -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -ne $stagedPath })
+    if (Test-Path -LiteralPath $finalPath) {
+        Move-Item -LiteralPath $finalPath -Destination $rollbackPath -Force -ErrorAction Stop
+    }
     # The staged file can vanish or stay locked for a moment: real-time
     # antivirus scanning or quarantining a fresh JAR, or a second installer
     # run sharing the same .new name. Re-stage and retry before giving up.
@@ -2925,12 +3686,30 @@ function Install-ModFiles {
         }
     }
     if (-not $moved) {
-        throw "Could not place $(Split-Path $newJar -Leaf) in $(Join-Path $McDir 'mods'): the staged file kept disappearing or stayed locked. Antivirus real-time protection may be quarantining it (check Windows Security > Protection history), or another installer run is still going. Close other installers, allow the file, and run the installer again."
+        if (Test-Path -LiteralPath $rollbackPath) {
+            Move-Item -LiteralPath $rollbackPath -Destination $finalPath -Force
+        }
+        throw "Could not place $($provider.InstalledJar) in $(Join-Path $McDir 'mods'): the staged file kept disappearing or stayed locked. Antivirus real-time protection may be quarantining it (check Windows Security > Protection history), or another installer run is still going. Close other installers, allow the file, and run the installer again."
     }
-    Write-Info "Installed $(Split-Path $newJar -Leaf)"
-
-    & (Join-Path $script:SCRIPT_DIR 'migrate_resource_packs.ps1') -McDir $McDir `
-        -LegacyPackName (Split-Path $script:LEGACY_RESOURCE_PACK_PATH -Leaf)
+    try {
+        & (Join-Path $script:SCRIPT_DIR 'migrate_resource_packs.ps1') `
+            -McDir $McDir `
+            -LegacyPackName (Split-Path $script:LEGACY_RESOURCE_PACK_PATH -Leaf) `
+            -MinecraftVersion $script:MC_VERSION `
+            -ModLoader $ModLoader
+    } catch {
+        Remove-Item -LiteralPath $finalPath -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $rollbackPath) {
+            Move-Item -LiteralPath $rollbackPath -Destination $finalPath -Force
+        }
+        throw
+    }
+    $oldJars | Where-Object { $_.FullName -ne $finalPath } | ForEach-Object {
+        Write-Info "Replacing old mod JAR: $($_.Name)"
+        Remove-Item -LiteralPath $_.FullName -Force
+    }
+    if (Test-Path -LiteralPath $rollbackPath) { Remove-Item -LiteralPath $rollbackPath -Force }
+    Write-Info "Installed $($provider.InstalledJar)"
 }
 
 function Install-FabricApi {
@@ -2943,7 +3722,10 @@ function Install-FabricApi {
       other Fabric profiles on the same shared dir would break.
     #>
     param([string]$McDir, [ValidateSet('Prism','Microsoft')] [string]$Launcher)
-    $desired = "fabric-api-$($script:FABRIC_API_VERSION).jar"
+    $provider = @($script:LOADER_CATALOG.Values | Where-Object { $_.Companion -and $_.Companion.Kind -eq 'FabricApi' })
+    if ($provider.Count -ne 1) { throw "Fabric API provider must resolve to exactly one manifest loader." }
+    $apiVersion = $provider[0].Companion.Version
+    $desired = "fabric-api-$apiVersion.jar"
     $target  = Join-Path $McDir "mods\$desired"
 
     # Stale-version pruning on Prism is deferred until AFTER a successful
@@ -2965,9 +3747,9 @@ function Install-FabricApi {
         $staleJars | ForEach-Object { Write-Info "Removing stale Fabric API: $($_.Name)"; Remove-Item -LiteralPath $_.FullName -Force }
         return
     }
-    $url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/$($script:FABRIC_API_VERSION)/$desired"
+    $url = "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/$apiVersion/$desired"
     $tmp = New-SessionTempPath "$desired.part"
-    Write-Info "Downloading Fabric API $($script:FABRIC_API_VERSION)..."
+    Write-Info "Downloading Fabric API $apiVersion..."
     try {
         # Prefer a pinned literal hash (script constant) over the Maven
         # sidecar when present. Falls through to sidecar if empty.
@@ -3048,7 +3830,15 @@ function Set-ArtPackOption {
       is rewritten only when the list changes. Returns whether $PackName is
       on afterwards, or $null for a resourcePacks line it could not read.
     #>
-    param([string]$McDir, [string]$PackName, [switch]$Enable)
+    param([string]$McDir, [string]$PackName, [switch]$Enable, [string]$BuiltInResourcePack)
+    if (-not $BuiltInResourcePack) {
+        $BuiltInResourcePack = $script:LOADER_CATALOG[$script:DEFAULT_LOADER_ID].BuiltInResourcePack
+    }
+    # A loader whose built-in pack options.txt never lists keeps mod resources
+    # in a hidden pack above vanilla; a listed entry for it is stale.
+    $builtInListed = -not @($script:LOADER_CATALOG.Values | Where-Object {
+        $_.BuiltInResourcePack -eq $BuiltInResourcePack -and -not $_.BuiltInResourcePackListed
+    }).Count
     $path = Join-Path $McDir 'options.txt'
     $exists = Test-Path -LiteralPath $path -PathType Leaf
     if (-not $exists -and -not $Enable) { return $false }
@@ -3071,14 +3861,21 @@ function Set-ArtPackOption {
             if ($entry -and -not $placed) { $packs.Add($entry); $placed = $true }
             continue
         }
+        if (-not $builtInListed -and $pack -eq $BuiltInResourcePack) { continue }
         $packs.Add($pack)
     }
     if ($Enable -and $entry -and -not $placed) {
-        # 26.3 has no `fabric` pack: Fabric API keeps the mod's baseline in a
-        # hidden pack above vanilla and below every listed pack, so the art pack
-        # goes just above vanilla, as migrate_resource_packs.ps1 orders the list.
+        # The selected loader adds its own pack above every listed one when
+        # the list leaves it out, which would put the baseline over this pack.
+        # A loader whose pack is never listed keeps it hidden above vanilla
+        # and below every listed pack, so this one goes just above vanilla.
         if (-not $packs.Contains('vanilla')) { $packs.Insert(0, 'vanilla') }
-        $packs.Insert($packs.IndexOf('vanilla') + 1, $entry)
+        $below = 'vanilla'
+        if ($builtInListed) {
+            if (-not $packs.Contains($BuiltInResourcePack)) { $packs.Insert($packs.IndexOf('vanilla') + 1, $BuiltInResourcePack) }
+            $below = $BuiltInResourcePack
+        }
+        $packs.Insert($packs.IndexOf($below) + 1, $entry)
         $placed = $true
     }
     if ($exists -and ($packs -join "`n") -ceq ($listed -join "`n")) { return $placed }
@@ -3111,7 +3908,10 @@ function Install-ArtPack {
         Failed     the pack could not be copied, or an older one removed,
                    as while the game holds it
     #>
-    param([string]$McDir)
+    param([string]$McDir, [string]$BuiltInResourcePack)
+    if (-not $BuiltInResourcePack) {
+        $BuiltInResourcePack = $script:LOADER_CATALOG[$script:DEFAULT_LOADER_ID].BuiltInResourcePack
+    }
     $packaged = Get-DistArtPack
     if (-not $packaged) {
         Write-Warn 'This download carries no RTX Remix Materials pack, so none was installed.'
@@ -3147,7 +3947,7 @@ function Install-ArtPack {
             return 'Failed'
         }
     }
-    $on = Set-ArtPackOption -McDir $McDir -PackName $name -Enable:$enable
+    $on = Set-ArtPackOption -McDir $McDir -PackName $name -Enable:$enable -BuiltInResourcePack $BuiltInResourcePack
     if ($enable) {
         Write-Info "Installed and turned on $name"
         return 'Installed'
@@ -3241,6 +4041,47 @@ function Install-ShowcaseWorld {
     }
     Write-Info "Installed the RTX Remix Showcase World as $target"
     return 'Installed'
+}
+
+function Remove-FabricApiForNonFabric {
+    param(
+        [string]$McDir,
+        [ValidateSet('Prism','Microsoft')] [string]$Launcher,
+        [Parameter(Mandatory)] [string]$ModLoader
+    )
+    if ($Launcher -ne 'Prism') {
+        Write-Info 'Leaving Fabric API files untouched in the shared Microsoft mods directory.'
+        return
+    }
+    Get-ChildItem -LiteralPath (Join-Path $McDir 'mods') -Filter 'fabric-api-*.jar' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Write-Info "Removing Fabric-only dependency from $ModLoader Prism instance: $($_.Name)"
+            Remove-Item -LiteralPath $_.FullName -Force
+        }
+}
+
+function Install-LoaderCompanions {
+    param([string]$McDir, [string]$Launcher, [Parameter(Mandatory)] [string]$ModLoader)
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
+    if (-not $provider.Companion) { return }
+    switch ($provider.Companion.Kind) {
+        'FabricApi' { Install-FabricApi -McDir $McDir -Launcher $Launcher }
+        default { throw "Loader '$($provider.DisplayName)' declares unknown companion provider '$($provider.Companion.Kind)'." }
+    }
+}
+
+function Reconcile-OtherLoaderCompanions {
+    param([string]$McDir, [string]$Launcher, [Parameter(Mandatory)] [string]$ModLoader)
+    $selected = Get-LoaderProvider -ModLoader $ModLoader
+    foreach ($provider in $script:LOADER_CATALOG.Values | Where-Object Id -ne $selected.Id) {
+        if (-not $provider.Companion) { continue }
+        switch ($provider.Companion.Kind) {
+            'FabricApi' {
+                Remove-FabricApiForNonFabric -McDir $McDir -Launcher $Launcher -ModLoader $selected.DisplayName
+            }
+            default { throw "Loader '$($provider.DisplayName)' declares unknown companion provider '$($provider.Companion.Kind)'." }
+        }
+    }
 }
 
 function Get-ServersDatHosts {
@@ -3491,7 +4332,7 @@ function Invoke-InstallItem {
 }
 
 function Invoke-InstallOrUpgrade {
-    param([string]$PreferredLauncher, [switch]$Unattended, [string]$Mode)
+    param([string]$PreferredLauncher, [string]$PreferredModLoader, [switch]$Unattended, [string]$Mode)
     # An interactive run starts at the first step; the banner heads headless logs.
     if ($Unattended) { Write-Banner -Title "RTX Remix for Minecraft - $Mode" -Subtitle "v$($script:APP_VERSION)" }
     # Repair / Upgrade / Install all share this code path; differ only in
@@ -3520,44 +4361,71 @@ function Invoke-InstallOrUpgrade {
     $biasUpgrade = ($Mode -in @('Upgrade', 'Repair'))
     $launcher = Select-Launcher -State $state -Preferred $PreferredLauncher -Unattended:$Unattended -DetectedState $detected -BiasToInstalledLauncher:$biasUpgrade
     Write-Info "Using launcher: $($script:C_BOLD)$launcher$($script:C_RESET)"
-    $ticked = Select-InstallItems -Launcher $launcher -Unattended:$Unattended -ModChoice $Mod -ArtPackChoice $ArtPack -WorldChoice $World
+    $ticked = Select-InstallItems -Launcher $launcher -Unattended:$Unattended -ModLoader $PreferredModLoader -ModChoice $Mod -ArtPackChoice $ArtPack -WorldChoice $World
     $script:StepTotal = Get-InstallStepCount -Items $ticked
 
+    $selectedLoader = $null
     if ($ticked.Mod) {
+        Write-Step 'Selecting mod loader'
+        $selectedLoader = Select-ModLoader -Preferred $PreferredModLoader -Unattended:$Unattended -Mode $Mode -Launcher $launcher -DetectedState $detected
+        Write-Info "Using mod loader: $($script:C_BOLD)$selectedLoader$($script:C_RESET)"
+        if (-not (Get-DistModJar -ModLoader $selectedLoader)) {
+            $artifactDirectory = (Get-LoaderProvider -ModLoader $selectedLoader).ArtifactDirectory
+            throw "No $selectedLoader rtx-remix-renderer JAR found in $(Join-Path $script:SCRIPT_DIR $artifactDirectory)"
+        }
         if ($launcher -eq 'Microsoft' -and -not $Unattended) { Wait-MinecraftLauncherClosed }
 
         # Java handling matrix (same as install.bat original):
         #   ARM64           -> always install managed JDK
         #   x64 + Prism     -> no Java needed (Prism Wizard handles at runtime)
-        #   x64 + Microsoft -> probe + fallback for fabric-installer.jar
+        #   x64 + Microsoft -> resolve Java for the selected loader installer
         $installerJava = $null
         if (Test-HostIsArm64) {
             $installerJava = Resolve-GameJavaForArm
         } elseif ($launcher -eq 'Microsoft') {
-            $installerJava = Resolve-JavaForFabricInstaller
+            $installerJava = Resolve-JavaForLoaderInstaller -ModLoader $selectedLoader
         }
 
-        Write-Step 'Preparing launcher'
-        if ($launcher -eq 'Prism') {
-            $probeDataDir = if ($state.PrismDataDir) { $state.PrismDataDir } else { $script:PRISM_PORTABLE_DIR }
-            Test-PathLengthBudget -PrismDataDir $probeDataDir
-            $instanceDir = Initialize-Prism -State $state -Unattended:$Unattended
-            $mcDir = Join-Path $instanceDir '.minecraft'
+        $probeDataDir = if ($state.PrismDataDir) { $state.PrismDataDir } else { $script:PRISM_PORTABLE_DIR }
+        $launcherMetadataPath = if ($launcher -eq 'Prism') {
+            Join-Path (Get-PrismInstanceDir -DataDir $probeDataDir) 'mmc-pack.json'
         } else {
-            Initialize-MicrosoftLauncher -JavaExe $installerJava -Unattended:$Unattended
-            $mcDir = Join-Path $env:APPDATA '.minecraft'
+            Get-MsLauncherProfilesPath
         }
+        $launcherMetadataSnapshot = New-FileSnapshot -Path $launcherMetadataPath
+        try {
+            Write-Step 'Preparing launcher'
+            if ($launcher -eq 'Prism') {
+                Test-PathLengthBudget -PrismDataDir $probeDataDir
+                $instanceDir = Initialize-Prism -State $state -Unattended:$Unattended -ModLoader $selectedLoader
+                $mcDir = Join-Path $instanceDir '.minecraft'
+            } else {
+                Initialize-MicrosoftLauncher -JavaExe $installerJava -Unattended:$Unattended -ModLoader $selectedLoader
+                $mcDir = Get-McDirForLauncher -Launcher Microsoft -ModLoader $selectedLoader
+            }
 
-        Write-Step 'Installing mod files'
-        $script:ModFilesCopied = $true
-        Install-ModFiles -McDir $mcDir
+            Write-Step 'Configuring loader dependencies'
+            Install-LoaderCompanions -McDir $mcDir -Launcher $launcher -ModLoader $selectedLoader
 
-        Write-Step 'Configuring Fabric API'
-        Install-FabricApi -McDir $mcDir -Launcher $launcher
+            Write-Step 'Installing mod files'
+            Install-ModFiles -McDir $mcDir -ModLoader $selectedLoader
+            $script:ModFilesCopied = $true
+        } catch {
+            Restore-FileSnapshot -Snapshot $launcherMetadataSnapshot
+            Write-Warn 'Restored the previous launcher loader configuration after the install failed.'
+            throw
+        }
+        try {
+            Reconcile-OtherLoaderCompanions -McDir $mcDir -Launcher $launcher -ModLoader $selectedLoader
+        } catch {
+            Write-Warn "$selectedLoader is installed, but a stale companion dependency could not be removed: $($_.Exception.Message)"
+        }
     } else {
         # Without the mod, nothing prepares a launcher, so the pack and the
         # world need the game folder an earlier install made.
-        $mcDir = Get-ContentOnlyMcDir -Launcher $launcher -PrismDataDir $state.PrismDataDir
+        $selectedLoader = Select-ModLoader -Preferred $PreferredModLoader -Unattended:$Unattended `
+            -Mode $Mode -Launcher $launcher -DetectedState $detected
+        $mcDir = Get-ContentOnlyMcDir -Launcher $launcher -PrismDataDir $state.PrismDataDir -ModLoader $selectedLoader
         if (-not $mcDir) {
             $launcherName = if ($launcher -eq 'Prism') { 'Prism' } else { 'the Microsoft launcher' }
             Write-Err "Install RTX Remix Renderer first: $launcherName has no RTX Remix game folder yet."
@@ -3572,7 +4440,10 @@ function Invoke-InstallOrUpgrade {
     $worldResult = $null
     if ($ticked.ArtPack) {
         Write-Step 'Installing RTX Remix Materials'
-        $packResult = Invoke-InstallItem -Name 'RTX Remix Materials' -Step { Install-ArtPack -McDir $mcDir }
+        $builtInPack = (Get-LoaderProvider -ModLoader $selectedLoader).BuiltInResourcePack
+        $packResult = Invoke-InstallItem -Name 'RTX Remix Materials' -Step {
+            Install-ArtPack -McDir $mcDir -BuiltInResourcePack $builtInPack
+        }
         if ($packResult -eq 'Failed') { $failedItems += 'RTX Remix Materials' }
     }
     if ($ticked.World) {
@@ -3592,7 +4463,7 @@ function Invoke-InstallOrUpgrade {
         }
     }
 
-    Write-FinalInstructions -Launcher $launcher -PrismDataDir $state.PrismDataDir -Unattended:$Unattended -World:($worldResult -in 'Installed', 'Kept') -Failed $failedItems
+    Write-FinalInstructions -Launcher $launcher -PrismDataDir $state.PrismDataDir -ModLoader $selectedLoader -Unattended:$Unattended -World:($worldResult -in 'Installed', 'Kept') -Failed $failedItems
     # A headless run is a script or CI job; it must not open a window.
     if (-not $Unattended) { Start-InstalledLauncher -Launcher $launcher -PrismDataDir $state.PrismDataDir }
     if ($failedItems.Count -gt 0) { return 1 }
@@ -3698,7 +4569,7 @@ function Write-FinalInstructions {
     # the ticked items that were not installed: the box then says so in
     # yellow, and a line below it names each one, since the warning that
     # explains it has usually scrolled away by now.
-    param([string]$Launcher, [string]$PrismDataDir, [switch]$Unattended, [switch]$World, [string[]]$Failed = @())
+    param([string]$Launcher, [string]$PrismDataDir, [string]$ModLoader, [switch]$Unattended, [switch]$World, [string[]]$Failed = @())
     if ($Failed.Count -gt 0) {
         $msg   = 'RTX Remix for Minecraft installed with problems'
         $color = $script:C_YELLOW
@@ -3754,13 +4625,18 @@ function Write-FinalInstructions {
         if ($Unattended) { Write-Host "  $($script:ICON_INFO) Launch the Microsoft Minecraft Launcher." }
         else { Write-Host "  $($script:ICON_INFO) The Microsoft Minecraft Launcher opens next." }
         Write-Host "  $($script:ICON_INFO) Sign in if prompted."
-        Write-Host "  $($script:ICON_INFO) Select the $($script:C_NVGREEN)'$($script:FABRIC_PROFILE_NAME)'$($script:C_RESET) profile and click Play."
+        $profileName = if ($ModLoader) {
+            (Get-LoaderProvider -ModLoader $ModLoader).MicrosoftProfileName
+        } else {
+            'NVIDIA RTX Remix for Minecraft'
+        }
+        Write-Host "  $($script:ICON_INFO) Select the $($script:C_NVGREEN)'$profileName'$($script:C_RESET) profile and click Play."
     }
     if ($World) {
         Write-Host "  $($script:ICON_INFO) Open Singleplayer and choose $($script:WORLD_FOLDER_NAME)."
-        # The world was saved in 1.21.1, and 26.3 upgrades a save that old once,
-        # after its backup prompt, before it opens it.
-        Write-Host "  $($script:ICON_INFO) The first time, Minecraft upgrades it from 1.21.1: answer its backup question, then join."
+        if ($script:MC_VERSION -ne $script:WORLD_MINECRAFT_VERSION) {
+            Write-Host "  $($script:ICON_INFO) The first time, Minecraft upgrades it from $($script:WORLD_MINECRAFT_VERSION): answer its backup question, then join."
+        }
     }
     Write-Host "  $($script:ICON_INFO) Once in the world, verify with $($script:C_NVGREEN)/rtx status$($script:C_RESET) in chat."
     Write-Host ''
@@ -3768,40 +4644,57 @@ function Write-FinalInstructions {
 
 # --- Uninstall ---
 function Invoke-Uninstall {
-    param([string]$PreferredLauncher, [switch]$Unattended, [switch]$AcknowledgeDataLoss)
+    param([string]$PreferredLauncher, [string]$PreferredModLoader, [switch]$Unattended, [switch]$AcknowledgeDataLoss)
     if ($Unattended) { Write-Banner -Title 'RTX Remix for Minecraft - Uninstall' -Subtitle "v$($script:APP_VERSION)" }
     $detected = Get-DetectedState
     $launcherChoice = Select-LauncherForUninstall -State $detected -Preferred $PreferredLauncher -Unattended:$Unattended
     if (-not $launcherChoice) { Write-Info 'Cancelled.'; return 0 }
+    $loaderChoice = $null
+    if ($launcherChoice -ne 'Both' -or $PreferredModLoader) {
+        $loaderChoice = Select-ModLoader -Preferred $PreferredModLoader -Unattended:$Unattended -Mode Uninstall `
+            -Launcher $(if ($launcherChoice -eq 'Both') { $null } else { $launcherChoice }) -DetectedState $detected
+    }
 
-    # Resolve the list of (launcher, mcDir) pairs we'll act on.
+    # Resolve the launcher, loader, and game directory together. "Both" may
+    # mean Fabric in one launcher and Forge in the other; never collapse that
+    # into one loader choice and silently leave half the installation behind.
     $targets = @()
     if ($launcherChoice -in @('Prism', 'Both')) {
         if ($detected.PrismDataDir) {
+            $targetLoader = if ($loaderChoice) { $loaderChoice } else { $detected.ModLoaders['Prism'] }
+            if (-not (Test-LoaderName $targetLoader)) {
+                throw 'Cannot determine the Prism installation loader. Uninstall each loader explicitly with -ModLoader.'
+            }
             $targets += [pscustomobject]@{
                 Launcher = 'Prism'
-                McDir    = Join-Path $detected.PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)\.minecraft"
+                Loader   = $targetLoader
+                McDir    = Join-Path (Get-PrismInstanceDir -DataDir $detected.PrismDataDir) '.minecraft'
             }
         }
     }
     if ($launcherChoice -in @('Microsoft', 'Both')) {
+        $targetLoader = if ($loaderChoice) { $loaderChoice } else { $detected.ModLoaders['Microsoft'] }
+        if (-not (Test-LoaderName $targetLoader)) {
+            throw 'Cannot determine the Microsoft installation loader. Uninstall each loader explicitly with -ModLoader.'
+        }
         $targets += [pscustomobject]@{
             Launcher = 'Microsoft'
-            McDir    = Join-Path $env:APPDATA '.minecraft'
+            Loader   = $targetLoader
+            McDir    = Get-McDirForLauncher -Launcher Microsoft -ModLoader $targetLoader
         }
     }
 
     # Drop targets that have no installed mod; surface a warning if everything
     # we were asked to uninstall is already clean.
-    $actionable = @($targets | Where-Object { Get-InstalledModVersion -McDir $_.McDir })
+    $actionable = @($targets | Where-Object { Get-InstalledModVersion -McDir $_.McDir -ModLoader $_.Loader })
     if ($actionable.Count -eq 0) {
         Write-Warn "No RTX Remix mod found in any of the selected launcher target(s); nothing to uninstall."
         return 0
     }
 
     foreach ($t in $actionable) {
-        $ver = Get-InstalledModVersion -McDir $t.McDir
-        Write-Info "$($t.Launcher): found $ver  ($($t.McDir))"
+        $ver = Get-InstalledModVersion -McDir $t.McDir -ModLoader $t.Loader
+        Write-Info "$($t.Launcher): found $($t.Loader) $ver  ($($t.McDir))"
     }
 
     if ($Unattended) {
@@ -3812,10 +4705,15 @@ function Invoke-Uninstall {
     } else {
         Write-Host ''
         Write-Host '  The following will be removed from each target:'
-        Write-Host "    - $($script:C_DIM)<mc>/mods/rtx-remix-renderer-*.jar$($script:C_RESET)"
-        Write-Host "    - $($script:C_DIM)<mc>/mods/fabric-api-$($script:FABRIC_API_VERSION).jar$($script:C_RESET) (Microsoft: only our exact version; Prism: all fabric-api-*)"
+        foreach ($t in $actionable) {
+            Write-Host "    - $($script:C_DIM)$($t.Launcher): <mc>/mods/rtx-remix-renderer-* ($($t.Loader))$($script:C_RESET)"
+        }
+        $companions = @($actionable | ForEach-Object { (Get-LoaderProvider -ModLoader $_.Loader).Companion } | Where-Object { $_ })
+        foreach ($companion in $companions | Sort-Object DisplayName -Unique) {
+            Write-Host "    - $($script:C_DIM)<mc>/mods/$($companion.DisplayName.ToLowerInvariant().Replace(' ', '-'))-$($companion.Version).jar$($script:C_RESET) (provider-managed companion dependency)"
+        }
         Write-Host "    - $($script:C_DIM)<mc>/remix-sdk/, <mc>/rtx.conf, <mc>/.rtx-remix-version$($script:C_RESET)"
-        Write-Host "    - $($script:C_DIM)<mc>/textures/water_normals_flipbook.dds, <mc>/textures/overcast_thunderstorm_bc6u.dds$($script:C_RESET)"
+        Write-Host "    - $($script:C_DIM)<mc>/textures/overcast_thunderstorm_bc6u.dds and any legacy water_normals_flipbook.dds$($script:C_RESET)"
         Write-Host "    - $($script:C_DIM)<mc>/resourcepacks/RTX-Remix-Materials-*.zip$($script:C_RESET) (RTX Remix Materials, and its entry in options.txt)"
         Write-Host "    - $($script:C_DIM)<mc>/resourcepacks/RtxRemix-LabPBR/$($script:C_RESET) (if left by an earlier version)"
         Write-Host '  Preserved:'
@@ -3829,7 +4727,7 @@ function Invoke-Uninstall {
 
     foreach ($t in $actionable) {
         Write-Info "Uninstalling $($t.Launcher)..."
-        Remove-ModArtifacts -McDir $t.McDir -Launcher $t.Launcher
+        Remove-ModArtifacts -McDir $t.McDir -Launcher $t.Launcher -ModLoader $t.Loader
     }
     Write-Info 'Mod files removed.'
 
@@ -3846,7 +4744,7 @@ function Invoke-Uninstall {
             [pscustomobject]@{ Label = 'Leave everything else alone'; Hint = 'just removed mod files'; Value = 'none' }
         )
         if ($hasManagedJdk) {
-            $jdkHint = "$((Get-ManagedJdkSource).Name) $($script:GAME_JAVA_MAJOR) at $($script:MANAGED_JDK_DIR)"
+            $jdkHint = "$((Get-ManagedJdkSource).Name) $($script:JAVA_TARGET) at $($script:MANAGED_JDK_DIR)"
             if (Test-HostIsArm64) {
                 # On ARM64 this JDK IS what Prism uses to launch (we pinned it).
                 # Removing it without replacing with another ARM64 JDK will make
@@ -3861,12 +4759,12 @@ function Invoke-Uninstall {
             $menuItems += [pscustomobject]@{ Label = 'Also remove our Prism portable'; Hint = "$($script:PRISM_PORTABLE_DIR)"; Value = 'prism' }
         }
         if ($touchedPrism -and $detected.PrismDataDir) {
-            $instancePath = Join-Path $detected.PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)"
+            $instancePath = Get-PrismInstanceDir -DataDir $detected.PrismDataDir
             if (Test-Path -LiteralPath $instancePath) {
                 $menuItems += [pscustomobject]@{ Label = 'Remove the RTX Remix Prism instance only'; Hint = 'also deletes its worlds; keeps Prism and your other instances'; Value = 'instance' }
             }
         }
-        if ($touchedPrism -and ($hasManagedJdk -or $hasPortable -or ($detected.PrismDataDir -and (Test-Path -LiteralPath (Join-Path $detected.PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)"))))) {
+        if ($touchedPrism -and ($hasManagedJdk -or $hasPortable -or ($detected.PrismDataDir -and (Test-Path -LiteralPath (Get-PrismInstanceDir -DataDir $detected.PrismDataDir))))) {
             $menuItems += [pscustomobject]@{ Label = 'Scorched earth'; Hint = 'instance and its worlds + managed Java + our Prism portable'; Value = 'all' }
         }
 
@@ -3891,34 +4789,49 @@ function Invoke-Uninstall {
 }
 
 function Remove-ModArtifacts {
-    param([string]$McDir, [ValidateSet('Prism','Microsoft')] [string]$Launcher)
+    param(
+        [string]$McDir,
+        [ValidateSet('Prism','Microsoft')] [string]$Launcher,
+        [string]$ModLoader
+    )
+    if (-not $ModLoader) {
+        $ModLoader = $script:LOADER_CATALOG[$script:DEFAULT_LOADER_ID].DisplayName
+    }
+    $provider = Get-LoaderProvider -ModLoader $ModLoader
     if (-not (Test-Path -LiteralPath $McDir)) { return }
 
     Get-ChildItem -LiteralPath (Join-Path $McDir 'mods') -Filter 'rtx-remix-renderer-*.jar' -ErrorAction SilentlyContinue |
+        Where-Object { (Get-ModArtifactLoader -FileName $_.Name) -eq $provider.DisplayName } |
         ForEach-Object { Write-Info "Removing $($_.Name)"; Remove-Item -LiteralPath $_.FullName -Force }
 
     # Fabric API handling mirrors Install-FabricApi's scoping:
     #   Prism (isolated instance) -> clean up every fabric-api-*.jar we find.
     #   Microsoft (shared .minecraft/mods) -> only our version-pinned one.
-    if ($Launcher -eq 'Prism') {
+    if ($provider.Companion -and $provider.Companion.Kind -eq 'FabricApi' -and $Launcher -eq 'Prism') {
         Get-ChildItem -LiteralPath (Join-Path $McDir 'mods') -Filter 'fabric-api-*.jar' -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Info "Removing $($_.Name)"; Remove-Item -LiteralPath $_.FullName -Force }
-    } else {
-        $fabricJar = Join-Path $McDir "mods\fabric-api-$($script:FABRIC_API_VERSION).jar"
-        if (Test-Path -LiteralPath $fabricJar) { Write-Info "Removing fabric-api-$($script:FABRIC_API_VERSION).jar"; Remove-Item -LiteralPath $fabricJar -Force }
+    } elseif ($provider.Companion -and $provider.Companion.Kind -eq 'FabricApi') {
+        $fabricJar = Join-Path $McDir "mods\fabric-api-$($provider.Companion.Version).jar"
+        if (Test-Path -LiteralPath $fabricJar) { Write-Info "Removing $(Split-Path $fabricJar -Leaf)"; Remove-Item -LiteralPath $fabricJar -Force }
     }
-    foreach ($path in @(
-        (Join-Path $McDir 'remix-sdk')
-        (Join-Path $McDir 'rtx.conf')
-        (Join-Path $McDir '.rtx-remix-version')
-        (Join-Path $McDir 'textures\water_normals_flipbook.dds')
-        (Join-Path $McDir 'textures\overcast_thunderstorm_bc6u.dds')
-        (Join-Path $McDir $script:LEGACY_RESOURCE_PACK_PATH)
-    )) {
-        if (Test-Path -LiteralPath $path) {
-            Write-Info "Removing $((Split-Path $path -Leaf))"
-            Remove-Item -LiteralPath $path -Recurse -Force
+    $remainingMod = @(Get-ChildItem -LiteralPath (Join-Path $McDir 'mods') -Filter 'rtx-remix-renderer-*.jar' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -notmatch '-(sources|dev|javadoc)\.jar$' })
+    if ($remainingMod.Count -eq 0) {
+        foreach ($path in @(
+            (Join-Path $McDir 'remix-sdk')
+            (Join-Path $McDir 'rtx.conf')
+            (Join-Path $McDir '.rtx-remix-version')
+            (Join-Path $McDir 'textures\water_normals_flipbook.dds')
+            (Join-Path $McDir 'textures\overcast_thunderstorm_bc6u.dds')
+            (Join-Path $McDir $script:LEGACY_RESOURCE_PACK_PATH)
+        )) {
+            if (Test-Path -LiteralPath $path) {
+                Write-Info "Removing $((Split-Path $path -Leaf))"
+                Remove-Item -LiteralPath $path -Recurse -Force
+            }
         }
+    } else {
+        Write-Info 'Keeping shared RTX Remix runtime files because another loader-specific renderer JAR remains.'
     }
     foreach ($pack in (Get-InstalledArtPacks -McDir $McDir)) {
         Write-Info "Removing $($pack.Name)"
@@ -3949,7 +4862,7 @@ function Remove-PrismPortable {
 function Remove-PrismInstance {
     param([string]$DataDir, [string]$InstanceName = $script:PRISM_INSTANCE_NAME)
     if (-not $DataDir) { return }
-    $path = Join-Path $DataDir "instances\$InstanceName"
+    $path = Get-PrismInstanceDir -DataDir $DataDir -InstanceName $InstanceName
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
         Write-Info "Removed Prism instance at $path"
@@ -4011,7 +4924,7 @@ function Test-PathOutputValid {
 }
 
 function Invoke-Export {
-    param([string]$PreferredLauncher, [switch]$Unattended, [string]$OutputPath)
+    param([string]$PreferredLauncher, [string]$PreferredModLoader, [switch]$Unattended, [string]$OutputPath)
     if ($Unattended) { Write-Banner -Title 'RTX Remix for Minecraft - Export' -Subtitle "v$($script:APP_VERSION)" }
     $state = Get-LauncherState
 
@@ -4023,10 +4936,17 @@ function Invoke-Export {
     }
     if (-not $state.PrismDataDir) { throw 'Prism data dir not resolved; cannot locate instance to export.' }
 
-    $instanceDir = Join-Path $state.PrismDataDir "instances\$($script:PRISM_INSTANCE_NAME)"
+    $instanceDir = Get-PrismInstanceDir -DataDir $state.PrismDataDir
     if (-not (Test-Path -LiteralPath $instanceDir)) {
         Write-Err "No Prism instance found at $instanceDir; nothing to export."
         return 1
+    }
+    $detected = Get-DetectedState
+    $loader = Select-ModLoader -Preferred $PreferredModLoader -Unattended:$Unattended -Mode Export -Launcher Prism -DetectedState $detected
+    $installedLoader = Get-PrismLoader -DataDir $state.PrismDataDir
+    if ($installedLoader -ne $loader) {
+        Write-Err "Cannot export as ${loader}: the Prism instance loader is '$installedLoader'. Repair or switch it first."
+        return 2
     }
     $mcDir = Join-Path $instanceDir '.minecraft'
     $modVer = Get-InstalledModVersion -McDir $mcDir
@@ -4069,6 +4989,7 @@ function Invoke-Export {
 RTX Remix for Minecraft: portable export
 Generated (UTC): $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))
 Source instance: $modVer
+Mod loader: $loader
 
 To install on another machine:
 1. Install Prism Launcher: https://prismlauncher.org
@@ -4304,6 +5225,12 @@ try {
 
     Initialize-Session
 
+    if ($Unattended -and -not $MinecraftVersion) {
+        Write-Err "-MinecraftVersion $($script:AVAILABLE_MINECRAFT_VERSIONS -join '|') is required with -Unattended."
+        exit 2
+    }
+    $null = Select-MinecraftVersion -Preferred $MinecraftVersion -Unattended:$Unattended
+
     if (-not $Mode) {
         if ($Unattended) {
             Write-Err '-Unattended requires -Mode.'
@@ -4328,13 +5255,26 @@ try {
         }
         $Mode = $choice
     }
+    if ($Launcher -eq 'Both' -and $Mode -ne 'Uninstall') {
+        Write-Err '-Launcher Both is valid only with -Mode Uninstall.'
+        exit 2
+    }
+    if ($ModLoader -and -not (Test-LoaderName $ModLoader)) {
+        Write-Err "Unknown -ModLoader '$ModLoader'. Supported loaders: $((Get-LoaderDisplayNames) -join '|')."
+        exit 2
+    }
+    if ($Unattended -and -not $ModLoader -and
+        -not ($Mode -eq 'Uninstall' -and $Launcher -eq 'Both')) {
+        Write-Err "-ModLoader $((Get-LoaderDisplayNames) -join '|') is required with -Unattended."
+        exit 2
+    }
 
     switch ($Mode) {
-        'Install'   { $code = Invoke-InstallOrUpgrade -PreferredLauncher $Launcher -Unattended:$Unattended -Mode 'Install' }
-        'Upgrade'   { $code = Invoke-InstallOrUpgrade -PreferredLauncher $Launcher -Unattended:$Unattended -Mode 'Upgrade' }
-        'Repair'    { $code = Invoke-InstallOrUpgrade -PreferredLauncher $Launcher -Unattended:$Unattended -Mode 'Repair' }
-        'Uninstall' { $code = Invoke-Uninstall        -PreferredLauncher $Launcher -Unattended:$Unattended -AcknowledgeDataLoss:$AcknowledgeDataLoss }
-        'Export'    { $code = Invoke-Export           -PreferredLauncher $Launcher -Unattended:$Unattended -OutputPath $OutputPath }
+        'Install'   { $code = Invoke-InstallOrUpgrade -PreferredLauncher $Launcher -PreferredModLoader $ModLoader -Unattended:$Unattended -Mode 'Install' }
+        'Upgrade'   { $code = Invoke-InstallOrUpgrade -PreferredLauncher $Launcher -PreferredModLoader $ModLoader -Unattended:$Unattended -Mode 'Upgrade' }
+        'Repair'    { $code = Invoke-InstallOrUpgrade -PreferredLauncher $Launcher -PreferredModLoader $ModLoader -Unattended:$Unattended -Mode 'Repair' }
+        'Uninstall' { $code = Invoke-Uninstall        -PreferredLauncher $Launcher -PreferredModLoader $ModLoader -Unattended:$Unattended -AcknowledgeDataLoss:$AcknowledgeDataLoss }
+        'Export'    { $code = Invoke-Export           -PreferredLauncher $Launcher -PreferredModLoader $ModLoader -Unattended:$Unattended -OutputPath $OutputPath }
         default     { Write-Err "Unknown mode: $Mode"; $code = 2 }
     }
     # The mode functions return the exit code last; anything else they leaked

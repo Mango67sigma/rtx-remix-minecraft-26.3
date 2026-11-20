@@ -4,26 +4,69 @@ Context for AI coding agents working in this repository.
 
 ## Project Overview
 
-`rtx-remix-minecraft` is a Fabric mod that renders Minecraft 26.3 through
-NVIDIA RTX Remix. It captures terrain, entities, particles, sky, and clouds from
-the client and submits them to the Remix runtime as a path-traced scene. The
-Java facade and JNI bridge are tracked under `rtxremix-java/`; the native
-runtime and the Remix C API come from dxvk-remix. A change often spans all
-three layers.
+`rtx-remix-minecraft` renders Minecraft through NVIDIA RTX Remix. This
+repository is the unofficial community port to Minecraft 26.3, a fork of
+NVIDIA's project that is not affiliated with or supported by NVIDIA. It builds
+one target, a Fabric mod for Minecraft 26.3, which captures terrain, entities,
+particles, sky, and clouds from the client and submits them to the Remix
+runtime as a path-traced scene. The Java facade and JNI bridge are tracked
+under `rtxremix-java/`; the native runtime and the Remix C API come from
+dxvk-remix. A change often spans all three layers.
+
+The checkout follows NVIDIA's multi-version layout. The root
+`project-state.json` catalogs every Minecraft target; it declares NVIDIA's
+Minecraft 1.21.1 with Fabric, Forge, and NeoForge as well as 26.3 with Fabric,
+and its `builtVersions` lists only 26.3. NVIDIA's 1.21.1 sources
+(`versions/1.21.1/`) and shared core (`renderer-core/`) are carried
+byte-identical to NVIDIA's so that their changes merge cleanly. They are never
+edited here and are not built here: one Gradle wrapper serves the checkout,
+26.3 needs Gradle 9 and Java 25, and upstream's 1.21.1 targets need Gradle 8.
+
+The 26.3 port lives in `versions/26.3/`:
+
+- `minecraft/`: the 26.3 integration (`main/java`, `main/resources`,
+  `test/java`), including everything only the port has.
+- `fabric/`: the Gradle project `:versions:26.3:fabric`, with the Fabric entry
+  points (`RtxRemixMod`, `RtxRemixCommonMod`), `fabric.mod.json`, the access
+  widener, and `WindowMixin` (`src/main`, `src/test`).
+- `renderer-core/`: the port's own copy of the core (`src`, `test`,
+  `main/resources`), file for file the counterpart of `renderer-core/`.
+
+NVIDIA's architecture says a port does not copy the core. This fork still
+does, as a stated transitional state; converging onto the shared core is the
+next project. Meanwhile, a fix to shared renderer logic goes into the matching
+file under `versions/26.3/renderer-core/`, and nothing new is added there (a
+ledger test enforces it). An upstream change that a merge brings into
+`renderer-core/` or `versions/1.21.1/` is a porting to-do for the matching
+file under `versions/26.3/`. See [Upstream And The 26.3 Port](#upstream-and-the-263-port).
 
 ## Source Of Truth
 
 Prefer these sources in this order:
 
-1. source under `src/main/java/`
-2. `build.gradle`
+1. the 26.3 sources under `versions/26.3/` (`minecraft/main/java/`,
+   `renderer-core/src/`, `fabric/src/main/java/`)
+2. `project-state.json`, root `build.gradle`, `settings.gradle`,
+   `gradle/loader-module.gradle`, and `versions/26.3/fabric/build.gradle`
 3. the Architecture section below
 4. `README.md` and the guides under `docs/`
 
-There is deliberately no standalone architecture document. One existed and went
-stale faster than the code it described. Code standards and review expectations
-are in [CONTRIBUTING.md](CONTRIBUTING.md) and apply to agent-written code too. A
-subdirectory may carry its own `AGENTS.md`; read the nearest one as well.
+The three 26.3 directories compile as one source set, and a class keeps its
+`com.nvidia.rtxremix` package wherever it sits: each file is in the directory
+NVIDIA moved its counterpart to. A package path named below, such as `lod/dh/`
+or `mixin/`, is relative to `com/nvidia/rtxremix/minecraft/` in whichever of
+the three directories holds it. NVIDIA's `renderer-core/` and
+`versions/1.21.1/` describe NVIDIA's targets, not this build.
+
+There is deliberately no exhaustive standalone architecture specification; one
+went stale faster than the code it described.
+[Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md) is NVIDIA's
+guide to the ownership boundary, and its last section, written for this fork,
+describes how the port departs from it. The code and the Architecture section
+below remain authoritative for implementation details. Code standards and
+review expectations are in [CONTRIBUTING.md](CONTRIBUTING.md) and apply to
+agent-written code too. A subdirectory may carry its own `AGENTS.md`; read the
+nearest one as well.
 
 ## Build, Run, Package, Test
 
@@ -35,6 +78,7 @@ Remix runtime automatically. [Getting Started](docs/GETTING_STARTED.md) covers l
 .\tools\rtx.bat launch
 .\gradlew.bat test
 .\gradlew.bat package -Parch=win64
+.\gradlew.bat releaseArchive -Parch=win64
 ```
 
 `tools\rtx.bat launch` builds the mod, installs it into a checkout-specific
@@ -42,26 +86,66 @@ Prism Launcher instance, and starts Minecraft through Prism. Installed Prism
 reuses its normal account profile; portable Prism keeps its profile under
 `run-prism/`. Use `tools\rtx.bat prism signin` with a Microsoft account that
 owns Minecraft: Java Edition. See
-[Getting Started](docs/GETTING_STARTED.md#sign-in-to-prism).
+[Getting Started](docs/GETTING_STARTED.md#sign-in-to-prism). The tools default
+to the catalog's default target, Minecraft 26.3 and Fabric;
+`--minecraft-version` and `--loader` select another declared one, and
+`tools\rtx.bat versions` reports which versions this checkout builds.
 
-`classes` depends on `setupRuntime`, which compiles the JNI bridge, fetches a
-missing runtime, and stages it, so even `test` needs the C++ toolchain.
-`build` leaves a lightweight JAR in `build/libs/`; `package` embeds
-the runtime and payload in `build/distributions/`. It verifies inclusion of
-every `packaging/licenses/` file and excludes Python interpreter and binding
-payloads. Staged and packaged contents must agree with `NativeExtractor`.
-A release carries four files, which `stageReleaseAssets` collects: the JAR;
-the RTX Remix Materials and RTX Remix Showcase World zips, which
-`materialsArchive` and `worldArchive` build from what `fetchReleaseContent`
-pulls for the `resourcePack` and `world` pins in `tools/config.json`; and the
-installer bundle `releaseArchive` makes from those three and the installer.
-`build`, `test`, and `package` never fetch the pack or world. Both were made
-for 1.21.1: `materialsPackMeta` declares 26.3's resource pack format
-(`materialsPackFormat`) in the pack zip, because 26.3 drops a pack declaring
-only an older `pack_format` from `options.txt`, and 26.3 upgrades the world
-when a player first opens it.
-See [Getting Started](docs/GETTING_STARTED.md) and
-[`build.gradle`](build.gradle) for the staging inventory.
+The neutral root applies no loader plugin. `project-state.json` is the
+schema-versioned authority for the repository's Minecraft targets, Java
+targets, support tiers, loader catalogs, dependency pins, module paths, and
+the mod version (`mod.version`, 0.1.3 on this fork's release line).
+`-PmcVersion=<version>` selects one version at Gradle configuration time and
+`-Ploader=<loader>` narrows that build to one loader; both are read from the
+command line only. Omitting `-PmcVersion` selects `defaultMinecraftVersion`,
+26.3, and omitting `-Ploader` includes every loader declared for the selected
+version, for 26.3 only Fabric, so a bare `build` configures only
+`:versions:26.3:fabric`. PowerShell callers must quote a dotted value
+(`"-PmcVersion=26.3"`); unquoted, PowerShell passes `26`. A version outside
+`builtVersions` fails at settings evaluation with "Minecraft <v> is carried
+from upstream and is not built in this checkout"; `-PbuildUnlistedVersion=true`
+overrides that check, but 1.21.1 still cannot configure on this wrapper. The
+resulting JAR contains only the selected target; no runtime version switch or
+alternate loader code is packaged. Shared conventions in
+`gradle/loader-module.gradle` apply common source, test, license,
+runtime-payload, and package contracts; the loader plugin (the non-remapping
+`net.fabricmc.fabric-loom` 1.19.3, no mappings) and everything else specific
+to the 26.3 mod JAR stay in `versions/26.3/fabric/build.gradle`.
+
+The root owns native compilation, runtime fetching, and `setupRuntime`. The
+loader module's `classes` depends on `setupRuntime`, which compiles the JNI
+bridge, fetches a missing runtime, and stages it into `run/`, so even `test`
+needs the C++ toolchain. Only `runClient` also applies the resource-pack
+migration. `build` leaves the lightweight development JAR,
+`versions/26.3/fabric/build/libs/rtx-remix-renderer-<buildVersion>.jar`;
+`package` embeds the runtime and payload in
+`versions/26.3/fabric/build/distributions/rtx-remix-renderer-fabric-mc26.3-<buildVersion>.jar`.
+`<buildVersion>` is `mod.version`, a UTC timestamp, the short commit hash,
+`-dirty` for an uncommitted tree, and `-win64` or `-arm64` with `-Parch`.
+Packaging verifies inclusion of every `packaging/licenses/` file and excludes
+Python interpreter and binding payloads. Staged and packaged contents must
+agree with `NativeExtractor`. Tests run with the repository root as their
+working directory.
+
+A release carries four files, which `stageReleaseAssets` collects in
+`build/release-assets/`: the self-contained JAR; the RTX Remix Materials and
+RTX Remix Showcase World zips, which `materialsArchive` and `worldArchive`
+build from what `fetchReleaseContent` pulls for the `resourcePack` and `world`
+pins in `tools/config.json`; and the installer bundle `releaseArchive` makes
+from those three and the installer,
+`build/distributions/rtx-remix-renderer-mc26.3-<buildVersion>-installer.zip`.
+The bundle stages the JAR under `mods/fabric/` beside `project-state.json`;
+its `install.bat` offers the targets whose JARs it carries, so 26.3 alone, and
+asks for no loader. The installer installs the mod as
+`mods/rtx-remix-renderer-fabric.jar` and removes the versioned
+`rtx-remix-renderer-*.jar` earlier fork releases installed. `build`, `test`,
+and `package` never fetch the pack or world. Both were made for 1.21.1:
+`materialsPackMeta` declares 26.3's resource pack format, the catalog's
+`minecraft.resourcePackFormat`, in the pack zip, because 26.3 drops a pack
+declaring only an older `pack_format` from `options.txt`, and 26.3 upgrades
+the world when a player first opens it. See
+[Getting Started](docs/GETTING_STARTED.md) and root
+[`build.gradle`](build.gradle) for the shared staging inventory.
 
 Do not run Gradle while a client from the same checkout is up: staging can fail
 on locked DLLs or replace its live configuration. Stop the client or use another
@@ -69,11 +153,63 @@ worktree. Build guards should prevent a silently wrong artifact, as the
 mixed-runtime-source guard does, rather than police checkout cleanliness.
 
 Keep the unconditional tuning arguments in `loom.runs.client.vmArgs` in
-`build.gradle` and `RECOMMENDED_JVM_ARGS` in `packaging/installer.ps1`
-identical, and when `RECOMMENDED_JVM_ARGS` changes, append its outgoing value to
-`PREVIOUS_RECOMMENDED_JVM_ARGS`. Opt-in benchmark and profiling arguments are
-excluded. See
-[JVM Arguments](docs/TUNING.md#jvm-arguments).
+`versions/26.3/fabric/build.gradle` and `RECOMMENDED_JVM_ARGS` in
+`packaging/installer.ps1` identical, and when `RECOMMENDED_JVM_ARGS` changes,
+append its outgoing value to `PREVIOUS_RECOMMENDED_JVM_ARGS`. Opt-in benchmark
+and profiling arguments are excluded. See
+[JVM Arguments](docs/TUNING.md#jvm-arguments). NVIDIA's
+`versions/1.21.1/fabric/build.gradle` keeps its own copy, which is carried, not
+kept in step.
+
+## Upstream And The 26.3 Port
+
+NVIDIA's `main` contains every Minecraft target it maintains under
+`versions/`, marks each `primary`, `active`, `maintenance`, or `archived` in
+`project-state.json`, and expects a port to add a catalog entry, a
+version-specific Minecraft integration, and loader adapters without copying
+`renderer-core/`. This fork adds four catalog fields to that schema, each with
+a default that leaves NVIDIA's 1.21.1 block valid unchanged:
+
+- `builtVersions` (root): the versions this checkout builds, tests, and
+  releases; absent means every declared version. Here `["26.3"]`.
+  `settings.gradle` refuses another `-PmcVersion`,
+  `.github/scripts/validate-project-state.ps1` derives the CI matrix and the
+  release target from it, and `rtx versions` and `rtx target-status` report it.
+- `versions.<v>.rendererCore`: the directory whose `src`, `main/resources`,
+  and `test` `gradle/loader-module.gradle` compiles as the core; default
+  `renderer-core`, for 26.3 `versions/26.3/renderer-core`.
+- `versions.<v>.minecraft.resourcePackFormat`: when present, the Materials zip
+  and the tools' staged art pack declare exactly that format (97 for 26.3);
+  absent keeps the pack's own `pack.mcmeta`.
+- `versions.<v>.loaders.<l>.builtinResourcePackListed` (default `true`):
+  whether the loader's built-in pack is written to `options.txt`. For 26.3
+  Fabric it is `false`, so the tools, installer, and migration never list
+  `fabric` and remove a stale entry.
+
+Converging the port onto the shared `renderer-core/` is the next project; until
+then, these rules hold:
+
+- Never edit, add, or delete anything under `renderer-core/` or
+  `versions/1.21.1/`. `git diff upstream/main -- renderer-core versions/1.21.1`
+  stays empty.
+- The file list of `versions/26.3/renderer-core/` and the set of files under
+  `versions/26.3/minecraft/` that import a loader API only shrink. Their
+  ledgers sit beside `tools/tests/fork/test_transition_ledgers.py`; a deleted
+  file's line is deleted with it. New code and tests go in
+  `versions/26.3/minecraft/` (tests in `test/java/`) or `versions/26.3/fabric/`.
+- To sync, fetch `upstream`, merge `upstream/main` with `--no-ff` (never
+  rebase), and resolve shared files by taking upstream's structure and
+  re-applying the port's needs through the catalog where upstream made a thing
+  catalog data. Then list the porting to-dos with
+  `git diff --stat HEAD MERGE_HEAD -- renderer-core versions/1.21.1` during the
+  merge (`HEAD^1 HEAD` after it) and port each changed file to its counterpart
+  under `versions/26.3/`. [Syncing With Upstream](CONTRIBUTING.md#syncing-with-upstream)
+  has the procedure.
+- Upstream's Python tests run against 1.21.1 as their ambient reference target
+  (`tools/tests/conftest.py`) and stay as close to byte-identical as possible;
+  every assertion about 26.3 goes in a new file under `tools/tests/fork/`.
+
+Do not add source preprocessors or runtime version switches.
 
 ## Runtime And Install Model
 
@@ -82,25 +218,31 @@ unpacks the bundled payload on first launch, version or architecture change,
 or when `remix-sdk/` or its `d3d9.dll` is missing. Deleting
 `.rtx-remix-version` also forces full re-extraction. Full extraction replaces
 the mod-owned `remix-sdk/`, `rtx.conf`, and the shipped runtime textures in
-`textures/`, leaving anything else in that folder alone, so a JAR installed
-without the release installer is complete. With a matching marker and runtime
-present, launch restores a missing `rtx.conf`, a missing runtime texture, and
-any missing shipped files under `rtx-remix/` without replacing existing files. The `rtx-remix/` payload
-is author-owned: an existing file is replaced only when its content is a
-version of that file that has shipped, so an untouched old default takes the
-current one and edited confs are never overwritten, even during full
-extraction. `src/main/resources/rtx-remix-shipped-payload.sha256` records
-every shipped version; a payload change appends its line and never removes
-one, and `ShippedPayloadHistoryTest` fails with the missing line. Deleting a
-shipped conf restores its default on the next launch. A present conf that fails to acquire still prevents renderer
-initialization; the error identifies the file.
+`textures/`, now only `overcast_thunderstorm_bc6u.dds`, leaving anything else
+in that folder alone, so a JAR installed without the release installer is
+complete. With a matching marker and runtime present, launch restores a
+missing `rtx.conf`, a missing runtime texture, and any missing shipped files
+under `rtx-remix/` without replacing existing files. Both paths delete the
+obsolete `textures/water_normals_flipbook.dds`, retrying on the next launch if
+the delete fails; a development JAR carries no `native/` root and skips this.
+The `rtx-remix/` payload is author-owned: an existing file is replaced only
+when its content is a version of that file that has shipped, so an untouched
+old default takes the current one and edited confs are never overwritten, even
+during full extraction.
+`versions/26.3/renderer-core/main/resources/rtx-remix-shipped-payload.sha256`
+records every shipped version; a payload change appends its line and never
+removes one, and `ShippedPayloadHistoryTest` fails with the missing line.
+Deleting a shipped conf restores its default on the next launch. A present
+conf that fails to acquire still prevents renderer initialization; the error
+identifies the file.
 
-Baseline LabPBR textures live in `src/main/resources/assets/` and load through
-the mod's own hidden `rtx-remix-renderer` resource pack, which Fabric API keeps
-above vanilla and below user packs and leaves out of `options.txt`. Development
+Baseline LabPBR textures live in
+`versions/26.3/minecraft/main/resources/assets/` and load through the mod's
+own hidden `rtx-remix-renderer` resource pack, which Fabric API keeps above
+vanilla and below user packs and leaves out of `options.txt`. Development
 setup, `rtx install`, and the release installer use
-`packaging/migrate_resource_packs.ps1` to remove their exactly identified legacy
-baseline copies and migrate existing pack order.
+`packaging/migrate_resource_packs.ps1` to remove their exactly identified
+legacy baseline copies and migrate existing pack order.
 
 ## Architecture
 
@@ -126,7 +268,9 @@ over it the same way. Present goes through Remix by wrapping the backend call in
 `FrontendGpuSurface.present` (`FrontendGpuSurfaceMixin`). Remix presents into a
 child window it owns over Minecraft's window, so the host's default framebuffer
 holds nothing usable and the present copies the main render target's colour
-texture (`GlInterop.copyFromTexture`). Vanilla skips the
+texture (`GlInterop.copyFromTexture`). `GlInterop` marks each imported memory
+object a dedicated allocation (`GL_DEDICATED_MEMORY_OBJECT_EXT`) before
+`glImportMemoryWin32HandleEXT`, which Proton and Wine need. Vanilla skips the
 present while the window is iconified, so `MinecraftClientMixin` presents then
 too and every Remix submit stays paired with a present. The GL interop needs
 the OpenGL backend. `MinecraftClientMixin` starts the game on OpenGL when the
@@ -356,7 +500,22 @@ mirrored from the texture writes and buffer-to-texture copies of the frontend
 command encoder (`FrontendCommandEncoderMixin`, `GlyphAtlasTextureMixin`),
 because vanilla assembles them on the GPU and never keeps them on the CPU.
 Downloaded skins and other dynamic textures are snapshotted at
-`TextureManager.register` and `DynamicTexture.upload`.
+`TextureManager.register` and `DynamicTexture.upload`. LabPBR sidecars are read
+from their files and kept out of every atlas vanilla stitches:
+`SpriteSourceListMixin` appends `LabPBRSidecarFilter` to each atlas's
+`SpriteSourceList` in `SpriteSourceList.load`, after every source the packs
+define, and it drops a sprite named another sprite's name in the same atlas
+plus `_n`, `_s`, or `_sss` (the list is `LabPBRConverter.VARIANT_SUFFIXES`); a
+suffixed texture with no base stays. The runtime builds a full mip chain over
+the atlas copy it is given, and past a sprite's own size a mip texel averages
+the sprite with its neighbours, so a stitched sidecar tinted them. The water
+normal flipbook is generated in memory by the bridge
+(`RemixAPI.generateWaterNormals`, `rtxremix-java/native/water_normals.cpp`,
+seed 225) rather than shipped: `BlockTextureManager` creates it once per
+renderer lifetime as a 12288x10240 `RG8_UNORM` normal texture (12 by 10 frames
+of 1024 pixels), keeps it across resource reloads and water-setting commits,
+destroys it with the renderer, and falls back to a flat normal if generation
+fails.
 
 **Particles.** Vanilla still ticks and extracts particles; the mod withholds
 only the submit of the extracted state (`LevelRendererParticleMixin` on
@@ -475,7 +634,18 @@ diluting the sampler's candidate pool.
 - A local first-person light is submitted with a zero volumetric radiance scale,
   because the volumetric grid reuses the previous frame's radiance and a
   camera-locked emitter would smear into distant geometry (`LightManager`).
-- Ordinary classes must not live in the mixin package (`MixinPackageBoundaryTest`).
+- A LabPBR sidecar is never a sprite. An atlas copied to Remix holds base
+  colour only, so a sidecar stitched into it would tint its neighbours at
+  coarse mip levels; every consumer loads sidecars from their files through
+  `LabPBRConverter.VariantCache` (`LabPBRSidecarFilter`, `SpriteSourceListMixin`).
+- Ordinary classes must not live in the mixin package, in
+  `versions/26.3/minecraft/` or `versions/26.3/fabric/`
+  (`MixinPackageBoundaryTest`).
+- Nothing in this checkout edits, adds, or deletes a file under
+  `renderer-core/` or `versions/1.21.1/`; both stay byte-identical to NVIDIA's.
+  Nothing is added to `versions/26.3/renderer-core/`, and no new loader import
+  appears in `versions/26.3/minecraft/`
+  (`tools/tests/fork/test_transition_ledgers.py`).
 - Nothing outside `lod/dh/` and `mixin/distanthorizons/` names a Distant
   Horizons type, and `DistantHorizonsSupport` gates the hooks and the capture
   together, so without the supported version installed, or with
@@ -582,7 +752,12 @@ diluting the sampler's candidate pool.
 - `remix-sdk/` and `rtx.conf` stay mod-owned and the `rtx-remix/` payload
   author-owned, and the native compile tasks, `setupRuntime`, and `package` stay
   aligned with the packaged contents they verify (`NativeExtractor`,
-  `build.gradle`).
+  `build.gradle`, `gradle/loader-module.gradle`,
+  `packaging/runtime-payload.gradle`).
+- The water-normal flipbook is generated, never shipped, and is created once
+  per renderer lifetime on the render thread; the buffer it is generated into
+  is direct and released after upload (`BlockTextureManager`,
+  `RemixAPI.generateWaterNormals`).
 - The launcher's account options (`--username`, `--accessToken`, `--uuid`,
   `--xuid`, `--clientId`) are blanked in the process command line before the
   runtime loads, because its crash dumps copy that line (`RemixRenderer`,
@@ -626,6 +801,9 @@ diluting the sampler's candidate pool.
 
 ## Focused Engineering Guides
 
+- [Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md): NVIDIA's
+  ownership boundary, and, in its last section, the fork's layout, catalog
+  fields, and transitional rules.
 - [Rendering Diagnostics](docs/RENDERING_DIAGNOSTICS.md): lifecycle, recapture,
   material updates, entity precision, and runtime surface-capacity symptoms.
 - [Tuning](docs/TUNING.md): queue waiting, retirement gates, worker limits, and
@@ -639,10 +817,12 @@ diluting the sampler's candidate pool.
 ## Integrated JNI Wrapper
 
 `rtxremix-java/` is a Minecraft-agnostic Java facade and JNI shim over the
-RTX Remix C API. It must never import `net.minecraft` or `net.fabricmc`;
-`RemixJavaBoundaryTest.shimSourcesDoNotImportMinecraftOrFabric` enforces this
-boundary across `rtxremix-java/src/`. Keep game-state capture and Fabric
-integration in the mod, not in the shim. Wrapper and affected mod callers
+RTX Remix C API. It must never import `net.minecraft`, `net.fabricmc`,
+`net.minecraftforge`, or `net.neoforged`. In this checkout
+`RemixJavaBoundaryTest.shimSourcesDoNotImportMinecraftOrFabric`
+(`versions/26.3/minecraft/test/java/`) enforces the `net.minecraft` and
+`net.fabricmc` part of this boundary across `rtxremix-java/src/`. Keep
+game-state capture and loader integration in the mod, not in the shim. Wrapper and affected mod callers
 change in the same pull request.
 
 The wrapper's source of truth, in order, is:
@@ -652,16 +832,18 @@ The wrapper's source of truth, in order, is:
    are data holders, builders, constants, and handles.
 2. `rtxremix-java/native/remixbridge.cpp`: loads `d3d9.dll`, calls
    `remixapi_InitializeLibrary`, stores the native interface, and forwards calls.
-3. `rtxremix-java/native/include/remix_c.h`: the copied C API header.
-4. `rtxremix-java/native/build_native.bat`: the MSVC bridge build.
-5. `packman/remix-sdk.packman.xml`: the published runtime pins.
-6. SDK source management in `tools/src/rtx_tools/sdk.py` and fetching in `build.gradle`.
+3. `rtxremix-java/native/water_normals.{h,cpp}`: deterministic in-memory water-normal generation.
+4. `rtxremix-java/native/include/remix_c.h`: the copied C API header.
+5. `rtxremix-java/native/build_native.bat`: the MSVC bridge build.
+6. `packman/remix-sdk.packman.xml`: the published runtime pins.
+7. SDK source management in `tools/src/rtx_tools/sdk.py` and fetching in `build.gradle`.
 
-The root Gradle build compiles the Java sources directly and builds
-`remixbridge.dll` into `build/native/{win64|arm64}/`. There is no separate
-wrapper Java build or example launcher. The native build needs Visual Studio
-C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 25. It uses the
-copied header unless `REMIX_INCLUDE` explicitly selects another directory.
+The loader module compiles the Java sources directly, while the neutral root
+builds `remixbridge.dll` into
+`build/native/{win64|arm64}/`. There is no separate wrapper Java build or
+example launcher. The native build needs Visual Studio C++ tools and
+`JAVA_HOME` pointing to a 64-bit JDK 25. It uses the copied header unless
+`REMIX_INCLUDE` explicitly selects another directory.
 The supported targets are Windows x64 and ARM64; agent shells may be POSIX
 even though the Gradle wrapper and native compiler entry points are batch scripts.
 
@@ -753,6 +935,12 @@ ahead of it.
 
 ## Tests
 
+`.\gradlew.bat test` runs the 26.3 suite, `:versions:26.3:fabric:test`, from
+`versions/26.3/minecraft/test/java/`, `versions/26.3/renderer-core/test/`, and
+`versions/26.3/fabric/src/test/java/`, with the repository root as the working
+directory. A test tagged `@Tag("fabric")` runs instead in `fabricTest` under
+Fabric Loader's JUnit runner; none is tagged today. NVIDIA's tests under
+`renderer-core/` and `versions/1.21.1/` are carried and do not run here.
 `TerrainStateTest` is the entry point for the JVM-side chunk-pipeline tests.
 The suite does not cross the JNI boundary or render, so a rendering change is
 verified by launching with `tools\rtx.bat launch` and looking. It also never
@@ -767,6 +955,8 @@ their anchors are proven only by a launch with it; the LOD tests build their
 input in Distant Horizons' vertex format and need no Distant Horizons at all.
 
 Python tooling uses `tools\rtx.bat check --tests` for its test suite.
+Upstream's tests there run against 1.21.1 as the ambient reference target; the
+fork's 26.3 tests, including the transition ledgers, live in `tools/tests/fork/`.
 Its shared defaults pin the demo world and art pack without selecting a
 graphics preset; machine-local choices belong in ignored
 `tools/config.local.json`. See `tools/AGENTS.md` for the configuration and

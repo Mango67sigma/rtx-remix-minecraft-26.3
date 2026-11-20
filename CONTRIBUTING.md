@@ -3,6 +3,13 @@
 This project is maintained by NVIDIA and released under the Apache License,
 Version 2.0. Contributions are welcome.
 
+This repository is an unofficial community port of NVIDIA's project to
+Minecraft 26.3, not affiliated with or supported by NVIDIA. Contributions to
+the port are made here, on
+[this repository](https://github.com/Mango67sigma/rtx-remix-minecraft-26.3);
+[Syncing With Upstream](#syncing-with-upstream) describes how NVIDIA's own
+changes reach it.
+
 ## Which Repository
 
 The renderer spans three layers across two repositories, so the first question
@@ -13,9 +20,28 @@ for any change is which repository it belongs in.
 - The Minecraft-agnostic Java facade, API types, marshalling, and JNI bridge
   are tracked here under `rtxremix-java/`. Gradle acquires missing runtimes
   from the package pins in `packman/remix-sdk.packman.xml`.
-- Everything that reads Minecraft state and hands it to Remix lives here: the
-  terrain, entity, texture, particle, and cloud pipelines, the gameplay-driven
-  conf layers, the settings screen, and the Fabric mixins that feed them.
+- Everything that reads Minecraft 26.3 state and hands it to Remix lives here
+  under `versions/26.3/`: the terrain, entity, texture, particle, and cloud
+  pipelines, the gameplay-driven conf layers, the settings screen, and the
+  mixins that feed them in `versions/26.3/minecraft/`; the Fabric entry points
+  and metadata in `versions/26.3/fabric/`; and the port's own copy of the
+  renderer core in `versions/26.3/renderer-core/`.
+- NVIDIA's loader-neutral `renderer-core/` and its Minecraft 1.21.1
+  integration and Fabric, Forge, and NeoForge adapters under
+  `versions/1.21.1/` are carried here byte for byte so that NVIDIA's changes
+  merge cleanly. They are never edited in this repository and are not built
+  here. A change to them belongs in
+  [NVIDIA's repository](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft).
+
+The checkout follows NVIDIA's layout, in which the root `project-state.json`
+catalogs every Minecraft target, its support state, integration module, and
+loaders, and a version port adds one `versions/<version>/` subtree that uses
+the shared renderer core. The 26.3 port does not use the shared core yet: it
+compiles its own copy, `versions/26.3/renderer-core/`, file for file the
+counterpart of `renderer-core/`, as a stated transitional state. Moving it onto
+the shared core is the next project.
+[Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md#this-fork-the-263-port)
+describes the layout and the rules for changing it.
 
 Wrapper and mod changes belong in the same pull request. The pinned runtime is
 built from an NVIDIA branch of dxvk-remix whose source is not public yet, so
@@ -37,9 +63,25 @@ API version, and a runtime that predates it loads and then fails.
 
 ## Where To Start Reading
 
-Two classes are the way in. `RtxRemixMod` is the Fabric entrypoint: lifecycle
-hooks, key bindings, and the `/rtx` command tree. `RemixRenderer` is the render
-thread's bridge into Remix, and every frame passes through it.
+Read [Multi-Loader Architecture](docs/MULTI_LOADER_ARCHITECTURE.md) first for
+the ownership boundary between the canonical renderer, shared Minecraft
+integration, and loader adapters.
+
+In NVIDIA's 1.21.1 tree, `RendererFrameCoordinator` and `RendererScene` under
+`renderer-core/` own captured-frame order and scene-resource lifecycle, and
+`MinecraftClientRuntime`, `MinecraftRuntime`, and the narrow loader contracts
+sit in `versions/1.21.1/minecraft/`. The 26.3 port predates that split, so two
+classes are the way in here. `RtxRemixMod`, in `versions/26.3/fabric/`, is the
+Fabric entrypoint: lifecycle hooks, key bindings, and the `/rtx` command tree.
+`RemixRenderer`, in `versions/26.3/minecraft/`, is the render thread's
+bridge into Remix, and every frame passes through it.
+
+The three 26.3 directories compile as one source set, and a class sits in the
+one NVIDIA moved its counterpart to, so its package name says nothing about
+which directory holds it; search all three. New 26.3 tests go under
+`versions/26.3/minecraft/test/java/` (or `versions/26.3/fabric/src/test/java/`
+for Fabric-only wiring), never under `versions/26.3/renderer-core/test/`,
+whose file list may only shrink.
 
 From there, read by pipeline rather than by file. Packages are named for what
 they own, so the package holding a problem is usually the package named after
@@ -77,6 +119,18 @@ and traversal host Remix's frame. See
 helper class placed there crashes world load. `MixinPackageBoundaryTest` fails
 the build if an unconfigured class appears in it.
 
+**NVIDIA's trees are read-only here.** Never edit, add, or delete anything
+under `renderer-core/` or `versions/1.21.1/`; they stay byte-identical to
+NVIDIA's so that every merge from upstream applies cleanly. A fix to shared
+renderer logic for 26.3 goes into the matching file under
+`versions/26.3/renderer-core/`.
+
+**The 26.3 copy of the core only shrinks.** Add no file under
+`versions/26.3/renderer-core/`, and no new `net.fabricmc` import in
+`versions/26.3/minecraft/`. `tools/tests/fork/test_transition_ledgers.py`
+holds both lists and fails on a new entry; when a file leaves either list,
+delete its line from the ledger beside the test.
+
 **Runtime file changes touch three places at once.** The per-architecture native
 compile tasks, `setupRuntime`, and `package` must agree on what a runtime
 payload contains, and `NativeExtractor` must agree with what `package` produced.
@@ -84,11 +138,12 @@ A change to any one of them without the others produces a JAR that installs a
 broken game directory.
 
 **The JNI shim has no game dependencies.** `rtxremix-java/` must never import
-`net.minecraft` or `net.fabricmc`; `RemixJavaBoundaryTest` enforces the
-boundary. Java-side handles are raw `long` values, not wrapper objects or JNA
-`Pointer`s, and the C API is reached only through JNI, never a JNA interface
-table. Use direct `ByteBuffer`s wherever the native method requires them, and
-document whether buffers must be direct on every new JNI entry point.
+`net.minecraft`, `net.fabricmc`, `net.minecraftforge`, or `net.neoforged`;
+`RemixJavaBoundaryTest` enforces the boundary. Java-side handles are raw
+`long` values, not wrapper objects or JNA `Pointer`s, and the C API is reached
+only through JNI, never a JNA interface table. Use direct `ByteBuffer`s
+wherever the native method requires them, and document whether buffers must be
+direct on every new JNI entry point.
 
 **An API change crosses the whole boundary.** Keep `StructType.java` constants
 in step with the copied header and native runtime. Update the header, JNI
@@ -279,9 +334,10 @@ the extraction afterwards. Do not leave thousands of class files in the tree.
 `Mixing X from ... into net.minecraft...` (or `com.mojang...` for the
 `renderpearl` GPU classes such as `FrontendGpuSurface` and `GlBackend`) in
 `run/logs/debug.log` proves registration, not an applied injection or an
-executed target. The check reads Loom's development client, which `runClient`,
-Fabric's standard Gradle task, starts from `run/`. Temporarily add
-`-Dmixin.debug.export=true` to the client `vmArgs` in `build.gradle`, launch
+executed target. The check reads Loom's development client, which
+`:versions:26.3:fabric:runClient`, Fabric's standard Gradle task, starts from
+`run/` at the repository root. Temporarily add `-Dmixin.debug.export=true` to
+the client `vmArgs` in `versions/26.3/fabric/build.gradle`, launch
 `runClient`, and disassemble the transformed class under
 `run/.mixin.out/class/<package path>/<Class>.class` with `javap -p -c`, for
 example `run/.mixin.out/class/net/minecraft/client/renderer/chunk/ChunkSectionsToRender.class`.
@@ -295,13 +351,14 @@ and a call at the intended offset: `invokespecial` for a private instance
 handler, `invokestatic` for a static one. MixinExtras injectors
 (`@WrapOperation`, `@WrapWithCondition`, `@WrapMethod`,
 `@ModifyExpressionValue`) merge handlers under their own prefixes, such as
-`wrapOperation$` and `wrapWithCondition$`; search the export for the handler
-name. If the call is present but does not fire, investigate vanilla's frustum,
-dimension, cloud-mode, weather and render-state gates, and whether the frame
-reached `LevelExtractor.extract` at all. Minecraft 26.3 ships unobfuscated, so
-the exports, the classes loaded from `build/classes/`, and the JAR in
-`build/libs/` all use the game's own names; nothing is remapped. Remove the
-diagnostic flag and export afterwards.
+`wrapOperation$` and `wrapWithCondition$`, and a `@ModifyArg` under
+`modify$`; search the export for the handler name. If the call is present but
+does not fire, investigate vanilla's frustum, dimension, cloud-mode, weather and
+render-state gates, and whether the frame reached `LevelExtractor.extract` at
+all. Minecraft 26.3 ships unobfuscated, so the exports, the classes loaded from
+`versions/26.3/fabric/build/classes/`, and the JAR in
+`versions/26.3/fabric/build/libs/` all use the game's own names; nothing is
+remapped. Remove the diagnostic flag and export afterwards.
 
 ## Tests
 
@@ -309,16 +366,27 @@ diagnostic flag and export afterwards.
 .\gradlew.bat test
 ```
 
-The suite covers JVM-side behavior and data contracts.
+With no `-PmcVersion`, the root task runs the 26.3 Fabric suite,
+`:versions:26.3:fabric:test`, which covers JVM-side behavior and data
+contracts. It runs with the repository root as its working directory, so a
+test reads `packaging/`, `docs/`, or `rtxremix-java/` by those paths. Before
+launch, verify the distributable artifact too:
 
-It does not cross the JNI boundary and it does not render, so it cannot tell you
-that a change looks right. Two things follow. First, `test` still needs the C++
-toolchain, because every task that reaches `classes` builds the bridge and
-fetches and stages a missing runtime first. Second, a rendering change is not
-reviewed until someone has looked at it in a running game: build and launch it
-with `tools\rtx.bat launch`, and say in the pull request what you looked at and
-what you saw. Screenshots of the before and after, taken from the same
-position, are the most useful thing you can attach.
+```powershell
+.\gradlew.bat package -Parch=win64
+```
+
+The suite does not cross the JNI boundary and it does not render, so it cannot
+tell you that a change looks right. Two things follow. First, `test` still
+needs the C++ toolchain, because every task that reaches `classes` builds the
+bridge and fetches and stages a missing runtime first. Second, a rendering
+change is not reviewed until someone has looked at it in a running game: build
+and launch it with `tools\rtx.bat launch`, and say in the pull request what you
+looked at and what you saw. Screenshots of the before and after, taken from the
+same position, are the most useful thing you can attach.
+
+NVIDIA's offline mixin and packaging gates for its 1.21.1 targets, such as
+`ForgeMixinContractTest`, are carried with those sources and do not run here.
 
 For wrapper changes, the same root Gradle workflow compiles the shim with its
 mod callers and builds the bridge into `build/native/{win64|arm64}/`.
@@ -356,19 +424,22 @@ Use the actual target branch instead of `main` if the change targets another
 branch. Keep machine-local choices in ignored `tools/config.local.json`; the
 shipped defaults pin the demo world and art pack and select no graphics preset.
 
-To build the installer bundle, run `.\gradlew.bat releaseArchive`. It runs
-`package` and `verifyPackageJar`, stages the verified JAR, which carries the
-runtime textures, under `build/release/` with the installer scripts, installer
-documentation, license notices, and the RTX Remix Materials and RTX Remix
-Showcase World zips, and writes a ZIP with the same layout under
-`build/distributions/`. Use `-Parch=win64` or `-Parch=arm64` for one
-architecture; omitting it includes both. The baseline resource pack is built
-into the mod. The pack and the world come from the `resourcePack` and `world`
-pins in `tools/config.json` that development launches use, so moving a pin
-changes the next release too. `.\gradlew.bat stageReleaseAssets` collects the
-four files a release carries, the JAR, both zips, and the bundle, in
-`build/release-assets/`. Only these release tasks download the pack and the
-world; `build`, `test`, and `package` never do.
+To build an installable release, run `.\gradlew.bat releaseArchive`. It
+verifies the 26.3 Fabric package, stages its self-contained JAR under
+`build/release/mods/fabric/` with the RTX Remix Materials and RTX Remix
+Showcase World zips, the installer, its documentation, `project-state.json`,
+and the license notices, and writes a ZIP with the same layout,
+`build/distributions/rtx-remix-renderer-mc26.3-<buildVersion>-installer.zip`.
+Use `-Parch=win64` or `-Parch=arm64` for one architecture; omitting it
+includes both. The baseline resource pack is built into the JAR.
+
+The pack and world come from the `resourcePack` and `world` pins in
+`tools/config.json` that development launches use, so moving a pin changes the
+next release too. `.\gradlew.bat stageReleaseAssets` collects the four files a
+release carries in `build/release-assets/`:
+`rtx-remix-renderer-fabric-mc26.3-<buildVersion>.jar`, the Materials zip, the
+Showcase World zip, and the installer bundle. Only these release tasks download
+the pack and world; `build`, `test`, and `package` never do.
 
 ### Visual Comparisons
 
@@ -395,10 +466,84 @@ to the matching dxvk-remix source, not a stable mod enum. Read
 [Rendering Diagnostics](docs/RENDERING_DIAGNOSTICS.md) before attributing a
 clean geometry view with a final-image artifact to the capture path.
 
+## Porting A Minecraft Version
+
+Every supported target lives in the same checkout under
+`versions/<minecraft-version>/`. The root `project-state.json` marks each
+version `primary`, `maintenance`, or `archived` and declares exactly the
+loaders CI must validate.
+
+Keep a port low ceremony:
+
+1. add the version to `project-state.json`;
+2. add its `versions/<version>/minecraft/` integration;
+3. add only the declared loader-provider hooks affected by API drift;
+4. run target-specific build, package, and semantic fixtures; and
+5. record live checks in the target-status report and pull request.
+
+Use the same deterministic world, camera path, and shot set when comparing
+loaders or versions. These fixtures test semantic parity, not byte-identical
+sources. `tools\rtx.bat versions` reports the catalog in the checked-out
+manifest; `tools\rtx.bat target-status` reports automated-contract, build,
+artifact, and automated-live-run evidence and does not mutate or generate
+source. A completed benchmark proves the declared fixture ran to completion;
+visual or semantic parity remains an explicit reviewer attestation.
+
+Do not introduce Stonecutter or source preprocessors merely to avoid a small
+port. The canonical renderer and provider boundaries already share the stable
+code. Gradle selects a version and loader at configuration time, so built JARs
+contain no source-level version switches. Reconsider preprocessing only when
+repeated ports demonstrate substantial duplication those boundaries cannot
+absorb.
+
+This checkout departs from that process in one stated way: the 26.3 port
+keeps its own copy of the renderer core, `versions/26.3/renderer-core/`, named
+by the catalog field `rendererCore`, until it moves onto the shared
+`renderer-core/`. Until then, a fix to shared renderer logic for 26.3 goes into
+that copy, and nothing new is added to it.
+
+## Syncing With Upstream
+
+NVIDIA's repository is the upstream. A sync is a merge, never a rebase, so the
+fork's history stays intact:
+
+```powershell
+git remote add upstream https://github.com/NVIDIAGameWorks/rtx-remix-minecraft.git  # once
+git fetch upstream
+git switch -c sync/upstream-<date>
+git merge --no-ff upstream/main
+```
+
+`renderer-core/` and `versions/1.21.1/` merge without conflicts, because
+nothing here edits them. Conflicts land in the shared files both sides change:
+the guides, `build.gradle`, the installer, the tools, and the workflows. Take
+upstream's structure and re-apply what the port needs, through the catalog
+where upstream made a thing catalog data.
+
+A merge brings NVIDIA's changes to its own trees but not to the 26.3 port. Each
+change under `renderer-core/` or `versions/1.21.1/` is a porting to-do for the
+matching file under `versions/26.3/`. List them with:
+
+```powershell
+git diff --stat HEAD MERGE_HEAD -- renderer-core versions/1.21.1
+```
+
+while the merge is in progress, or `git diff --stat HEAD^1 HEAD -- renderer-core
+versions/1.21.1` once the merge commit exists. A file in `renderer-core/`
+has its counterpart at the same relative path under
+`versions/26.3/renderer-core/`; a file in `versions/1.21.1/minecraft/` has its
+counterpart under `versions/26.3/minecraft/` when the port has one. Read the
+upstream commit messages for intent, port each change to the 26.3 API, and add
+its tests under `versions/26.3/minecraft/test/java/`. Changes to
+`rtxremix-java/`, `packaging/`, and the tools are shared and merge directly.
+Finally run `.\gradlew.bat build`, `.\tools\rtx.bat check --tests`, and
+`tools\rtx.bat launch`, and confirm `git diff upstream/main -- renderer-core
+versions/1.21.1` is still empty.
+
 ## Pull Requests
 
 The GitHub repository is the source of truth. Fork it, make your change on a
-branch, and open a pull request against `main`; that is where review and
+branch, and open a pull request against `main`. That is where review and
 merging happen, for NVIDIA developers as much as for anyone else. A maintainer
 reviews on GitHub and, when a change warrants it, runs it on an RTX machine
 before approving.
@@ -417,16 +562,19 @@ with the code, since the squashed commit is composed from them.
 Every commit needs a `Signed-off-by` trailer. See
 [Developer Certificate of Origin](#developer-certificate-of-origin) below.
 
-Pull requests and pushes to `main` run two workflows on GitHub-hosted Windows
+Pull requests and pushes run manifest-derived workflows on GitHub-hosted Windows
 runners. [`check`](.github/workflows/check.yml) installs uv and runs
 `tools\rtx.bat check --tests`: Ruff formatting and lint, ty, the Python tests,
 and the public-boundary gate. On a pull request it also scans the commit
 messages from the base SHA to the head SHA.
-[`build`](.github/workflows/build.yml) installs JDK 25 and runs
-`gradlew.bat build test`. Both use read-only repository permissions and no
-secrets, including for fork pull requests. The build fetches the pinned
-runtime from public Packman, so it needs no credentials; never add private
-ones to a workflow.
+[`build`](.github/workflows/build.yml) validates `project-state.json`, then
+builds, tests, packages, and verifies every Minecraft-version/loader target of
+a version the catalog lists in `builtVersions`, here 26.3 on Fabric, on the JDK
+the catalog declares for it (25). NVIDIA's 1.21.1 targets, which the catalog
+declares but this checkout does not build, never enter the matrix.
+Both workflows use read-only repository permissions and no secrets, including
+for fork pull requests. The builds fetch the pinned runtime from public
+Packman, so they need no credentials; never add private ones to a workflow.
 
 Neither workflow launches Minecraft, measures GPU performance, or produces a
 release archive. Run `releaseArchive` locally when validating packaging; the
@@ -445,17 +593,16 @@ commit message you want to end up with.
 
 ## Releases
 
-A maintainer releases by raising `mod_version` in `gradle.properties` and
-`$script:APP_VERSION` in `packaging/installer.ps1` to the same version, which
-`test_version_consistency.py` checks, and closing the `## Unreleased` section
-of [CHANGELOG.md](CHANGELOG.md) under that version and the date in the same
-commit, merging that, and running the
+A maintainer releases by raising `mod.version` in `project-state.json`, which
+the build, the installer, and the release workflow all read, and closing the
+`## Unreleased` section of [CHANGELOG.md](CHANGELOG.md) under that version and
+the date in the same commit, merging that, and running the
 [`release`](.github/workflows/release.yml) workflow from the Actions tab. It
-builds the four release files with `stageReleaseAssets` on a GitHub-hosted
-runner and, run from `main`, creates a draft release `v<mod_version>` holding
-them. It stops if that release or tag already exists. With **create_draft**
-turned off, or from another branch, it builds the files without drafting, as a
-trial run.
+builds the selected Minecraft target's manifest-derived release assets with
+`stageReleaseAssets` on a GitHub-hosted runner. The default target uses
+`v<mod-version>`; another target uses
+`mc/<minecraft-version>/v<mod-version>` so versions can ship independently.
+Tags are immutable, and existing published tag names are never rewritten.
 
 A draft has no tag yet. A person writes the release notes from that changelog
 section and pastes them into the draft, installs the draft's bundle on an RTX

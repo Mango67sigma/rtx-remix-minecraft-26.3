@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, cast
 
-from .. import client, prism
+from .. import client, loader_registry
 from .. import config as tools_config
 from .. import sdk as runtime_sdk
 from . import catalog, gitmeta, gpu_telemetry, machine, tracy, util
@@ -67,15 +67,16 @@ RTX_SETTINGS_VERSION = 2
 # Not a mod setting: older harness versions pinned the preset under this id, and
 # the mod warns about an unknown id on every load until something removes it.
 STALE_RTX_PRESET_SETTING_ID = "preset"
-# Minecraft stamps options.txt with its DataVersion (world_version in the client jar's version.json, 5023 for 26.3) and
-# runs its data fixers over a file stamped older. The fixers behind 26.3's graphics options rewrite what write_options
-# pins: from a file older than 4651 they set graphicsPreset to "custom" and derive the options below from graphicsMode.
-OPTIONS_DATA_VERSION = 5023
-# 26.3 leaves a pack out of options.txt unless its pack.mcmeta declares the game's resource pack format, so the art
-# pack is staged declaring it (declare_pack_format). game_resource_pack_major reads that format,
-# SharedConstants.RESOURCE_PACK_FORMAT_MAJOR, from the client jar of the pinned game and answers this one, 97 for
-# 26.3, only when it cannot; test_version_consistency.py keeps the two equal.
-FALLBACK_RESOURCE_PACK_MAJOR = 97
+# Minecraft stamps options.txt with its DataVersion (versions.<v>.minecraft.dataVersion in project-state.json, the
+# world_version of the client jar's version.json) and runs its data fixers over a file stamped older. The tools know
+# two options.txt layouts: the one 1.21.1 reads, and the one from this DataVersion on, where OptionsGraphicsModeSplitFix
+# replaced graphicsMode with graphicsPreset and its parts. 26.3 (5023) also reads fullscreenResolution as JSON and has
+# no hideBundleTutorial. In that layout the fixers rewrite what write_options pins from a file stamped older than this:
+# they set graphicsPreset to "custom" and derive the options below from graphicsMode, so such a file is restamped.
+GRAPHICS_PRESET_DATA_VERSION = 4651
+# 26.3 leaves a pack out of options.txt unless its pack.mcmeta declares the game's resource pack format, so a target
+# whose catalog entry pins minecraft.resourcePackFormat gets the art pack staged declaring it (declare_pack_format), as
+# the build declares it in the Materials zip.
 PACK_METADATA_FILE = "pack.mcmeta"
 # render.graphicsMode keeps the numbers of the graphicsMode option Minecraft 1.21.1 had. 26.3 replaced that option with
 # the graphicsPreset enum, written as a JSON string, so the number picks the preset.
@@ -226,7 +227,8 @@ def verify_jvm_matches_arch(arch: str) -> None:
     raise RuntimeError(
         f"benchmark arch {arch} does not match the JVM architecture {jvm_raw} "
         f"reported by {java_executable()}; the native SDK and JNI bridge must "
-        "match the JVM. On ARM64 runners install Microsoft Build of OpenJDK 25 "
+        f"match the JVM. On ARM64 runners install Microsoft Build of OpenJDK "
+        f"{loader_registry.load_registry().java_target} "
         "(ARM64) and remove any x64 Adoptium JDK or stale JAVA_HOME; see "
         "tools/docs/BENCHMARKING.md."
     )
@@ -1355,8 +1357,8 @@ def configure_benchmark_selection(
     return selection
 
 
-def config_for_run(config: dict, *, ci: bool) -> dict:
-    if not ci:
+def config_for_run(config: dict, *, ci: bool, tracy_enabled: bool = True) -> dict:
+    if not ci or not tracy_enabled:
         return apply_env_config_overrides(config)
     config = copy.deepcopy(config)
     profiling = config.setdefault("profiling", {})
@@ -1410,6 +1412,8 @@ def env_bool(name: str) -> bool | None:
 
 
 def apply_env_config_overrides(config: dict) -> dict:
+    config["minecraftVersion"] = loader_registry.load_registry().minecraft_version
+    config["modLoader"] = tools_config.mod_loader(config)
     render = config.setdefault("render", {})
     profiling = config.setdefault("profiling", {})
     if (fullscreen := env_bool("BENCHMARK_RENDER_FULLSCREEN")) is not None:
@@ -1945,14 +1949,17 @@ def benchmark_run_plan(args) -> dict[str, Any]:
         camera_override=getattr(args, "camera", None),
         version_override=version_override,
     )
-    config = config_for_run(config, ci=ci)
     if getattr(args, "strip_entities", False):
         config["stripEntitiesOnStage"] = True
-    runs = getattr(args, "runs", 0) or (int(config.get("runs") or 3) if ci else 1)
     arch = host_arch()
     sdk_variant = getattr(args, "sdk_variant", "release")
     sdk = sdk_probe(sdk_variant, arch)
-    build_task = "build" if ci else "package"
+    config = config_for_run(config, ci=ci, tracy_enabled=bool(sdk.get("tracyEnabled")))
+    runs = getattr(args, "runs", 0) or (int(config.get("runs") or 3) if ci else 1)
+    mod_loader = tools_config.mod_loader(config)
+    registry = loader_registry.load_registry()
+    loader = registry.get(mod_loader)
+    build_task = loader.build_task if ci else loader.package_task
     resource_pack_files = resolve_resource_pack_files(config, selection)
     screenshots = _configured_screenshots(config)
     return {
@@ -1969,11 +1976,21 @@ def benchmark_run_plan(args) -> dict[str, Any]:
         "runs": runs,
         "ci": ci,
         "arch": arch,
+        "modLoader": mod_loader,
+        "minecraftVersion": registry.minecraft_version,
         "sdk": sdk,
         "build": {
             "enabled": not bool(getattr(args, "no_build", False)),
+            "project": str(util.PROJECT_DIR),
             "task": build_task,
-            "args": [build_task, "-x", "test", f"-Parch={arch}", "--quiet"],
+            "args": [
+                build_task,
+                "-x",
+                loader.test_task,
+                *registry.gradle_arguments(loader.id),
+                f"-Parch={arch}",
+                "--quiet",
+            ],
         },
         "stripEntitiesOnStage": strip_entities_on_stage(config),
         "resultDirPattern": str(util.RESULTS_DIR / "<timestamp>"),
@@ -2041,6 +2058,11 @@ def doctor_report(
         add("ok", "config", f"Loaded {util.BENCHMARK_DIR / 'config.json'}")
     except Exception as exc:
         add("error", "config", str(exc))
+    if config:
+        try:
+            add("ok", "mod loader", tools_config.mod_loader(config).title())
+        except Exception as exc:
+            add("error", "mod loader", str(exc))
 
     selection = None
     world_layout = ""
@@ -2088,7 +2110,8 @@ def doctor_report(
     if java_home:
         add("ok", "java", f"JAVA_HOME={java_home}", javaArch=java_arch or "", processArch=process_arch or "")
     else:
-        add("error", "java", "Could not find a Java 25-style JDK with include/jni.h.")
+        java_target = loader_registry.load_registry().java_target
+        add("error", "java", f"Could not find a Java {java_target}-style JDK with include/jni.h.")
 
     launcher_description = "Client launcher"
     try:
@@ -2361,27 +2384,10 @@ def remove_legacy_baseline_pack(root: Path) -> None:
     shutil.rmtree(legacy)
 
 
-def game_resource_pack_major() -> int:
-    """The resource pack format major of the game the tools launch.
-
-    The game takes it from pack_version.resource_major in the version.json of its client jar, and so does this, from
-    the jar Loom caches for the Minecraft version packaging/installer.ps1 pins, so a newer game moves the staged art
-    pack with it. FALLBACK_RESOURCE_PACK_MAJOR answers when Gradle has not cached the jar yet or its version.json is
-    laid out otherwise."""
-    try:
-        gradle_home = os.environ.get("GRADLE_USER_HOME")
-        jar = (
-            (Path(gradle_home) if gradle_home else Path.home() / ".gradle")
-            / "caches"
-            / "fabric-loom"
-            / prism.installer_constant("MC_VERSION")
-            / "minecraft-client.jar"
-        )
-        with zipfile.ZipFile(jar) as archive:
-            major = json.loads(archive.read("version.json"))["pack_version"]["resource_major"]
-    except OSError, RuntimeError, ValueError, KeyError, TypeError, zipfile.BadZipFile:
-        return FALLBACK_RESOURCE_PACK_MAJOR
-    return major if type(major) is int and major > 0 else FALLBACK_RESOURCE_PACK_MAJOR
+def target_resource_pack_format() -> int | None:
+    """The resource pack format the selected target's packs declare (minecraft.resourcePackFormat in
+    project-state.json, the pinned game's pack_version.resource_major), or None to stage a pack as published."""
+    return loader_registry.load_registry().resource_pack_format
 
 
 def amended_pack_metadata(text: str, major: int) -> str | None:
@@ -2464,7 +2470,8 @@ def stage_resource_packs(
     if art_pack is not None:
         copy_resource_pack(art_pack, root)
         # An art pack published for an earlier game would be dropped from options.txt as incompatible.
-        declare_pack_format(root / art_pack.file_name, game_resource_pack_major())
+        if (pack_format := target_resource_pack_format()) is not None:
+            declare_pack_format(root / art_pack.file_name, pack_format)
         enabled = append_art_pack_files(enabled, art_pack)
     return enabled
 
@@ -2623,26 +2630,40 @@ def write_rtx_settings(config: dict, *, run_dir: Path | None = None) -> None:
     )
 
 
-def fullscreen_resolution_option_value(width: int, height: int, *, pin_display: bool) -> str | None:
+def options_split_graphics(data_version: int | None = None) -> bool:
+    """Whether the target's options.txt has the layout of 26.3 rather than 1.21.1's (GRAPHICS_PRESET_DATA_VERSION),
+    for `data_version` or else the selected target's catalog dataVersion."""
+    if data_version is None:
+        data_version = loader_registry.load_registry().minecraft_data_version
+    return data_version >= GRAPHICS_PRESET_DATA_VERSION
+
+
+def fullscreen_resolution_option_value(
+    width: int, height: int, *, pin_display: bool, data_version: int | None = None
+) -> str | None:
     """The options.txt value for fullscreenResolution, or None for no line at all.
 
-    Unpinned there is no line. Minecraft reads an absent key as no preferred
-    fullscreen mode, the "Current" entry in the video settings, so the
-    monitor's own mode is used and going fullscreen follows whichever display
-    the player is actually on, which a play launch wants. An empty value gets
-    that mode only after VideoMode.read has failed to parse it and logged
-    "Failed to parse video mode".
+    Unpinned, 1.21.1 gets an empty value, which it reads as the "Current"
+    entry in the video settings: VideoMode.fromString fails to parse it and
+    Monitor.findClosestVideoMode falls through to the monitor's own mode. A
+    play launch wants that, so going fullscreen follows whichever display the
+    player is actually on. 26.3 gets no line: it reads an absent key as that
+    same mode, and an empty one only after VideoMode.read has failed to parse
+    it and logged "Failed to parse video mode".
 
     Pinned mirrors the windowed size, fixing the display mode so two machines
-    measure the same framebuffer. 26.3 reads the mode as a JSON object
-    (VideoMode.CODEC) rather than the 1920x1080@60:24 text of 1.21.1, and this
-    pins 8 bits per channel and 60 Hz as well."""
+    measure the same framebuffer. 1.21.1 reads 1920x1080@60:24, whose suffix is
+    refreshRate:bitDepth; 26.3 reads a JSON object (VideoMode.CODEC). Both pin
+    8 bits per channel and 60 Hz as well."""
+    split = options_split_graphics(data_version)
     if not pin_display:
-        return None
+        return None if split else ""
     if not (width and height):
         raise RuntimeError(
             "cannot pin the display without a window to match: set render.overrideWidth and render.overrideHeight"
         )
+    if not split:
+        return f"{width}x{height}@60:24"
     mode = {"width": width, "height": height, "red_bits": 8, "green_bits": 8, "blue_bits": 8, "refresh_rate": 60.0}
     return json.dumps(mode, separators=(",", ":"))
 
@@ -2660,42 +2681,55 @@ def graphics_preset(value: object) -> str:
     raise RuntimeError(f"invalid render.graphicsMode {value!r}: use 0 (fast), 1 (fancy) or 2 (fabulous)")
 
 
-def options_version_is_current(line: str) -> bool:
+def options_version_is_current(line: str, data_version: int) -> bool:
     """Whether an options.txt version line stamps a DataVersion that the game's data fixers leave alone, which is the
-    game's own or a newer one."""
+    game's own, `data_version`, or a newer one."""
     try:
-        return int(line.partition(":")[2]) >= OPTIONS_DATA_VERSION
+        return int(line.partition(":")[2]) >= data_version
     except ValueError:
         return False
 
 
 def write_options(config: dict, *, resource_pack_files: list[str] | None = None, pin_display: bool = False) -> None:
-    """Write options.txt in the game directory (util.RUN_DIR) from `config`.
+    """Write options.txt in the game directory (util.RUN_DIR) from `config`, in the selected target's layout.
 
-    An existing file keeps every other line, but is stamped with the game's DataVersion when it has none or an older
-    one (OPTIONS_DATA_VERSION), because the game's data fixers would otherwise rewrite the graphics options pinned here.
+    For a target with 26.3's layout, an existing file keeps every other line but is stamped with the game's
+    DataVersion when it has none or an older one, because the game's data fixers would otherwise rewrite the graphics
+    options pinned here.
 
     `pin_display` belongs to the measurement session rather than to config,
     because both paths load the same merged config: benchmark/config.json is
     merged for play launches too, so a config key could not tell them apart."""
+    registry = loader_registry.load_registry()
+    data_version = registry.minecraft_data_version
+    split = options_split_graphics(data_version)
     render = config.get("render") or {}
     override_width = max(0, int(render.get("overrideWidth") or 0))
     override_height = max(0, int(render.get("overrideHeight") or 0))
-    fullscreen_resolution = fullscreen_resolution_option_value(override_width, override_height, pin_display=pin_display)
+    fullscreen_resolution = fullscreen_resolution_option_value(
+        override_width, override_height, pin_display=pin_display, data_version=data_version
+    )
     if resource_pack_files is None:
         resource_pack_files = configured_resource_pack_names(config)
-    # The mod's built-in baseline needs no entry. Fabric API 26.x adds each mod's resources as a hidden pack named for
-    # the mod and slots them in above vanilla and below every other pack, which are the file/ packs here
-    # (ModPackResourcesUtil.refreshAutoEnabledPacks). The `fabric` pack that held them in 1.21.1 is gone, and the game
-    # removes an entry for it from options.txt with a warning.
-    resource_pack_options = ["vanilla", *(f"file/{file_name}" for file_name in resource_pack_files)]
-    preset = graphics_preset(render.get("graphicsMode", 1))
+    loader = registry.get(tools_config.mod_loader(config))
+    # Keep the selected loader's built-in mod resources below every file/ pack. A loader whose pack options.txt never
+    # lists (builtinResourcePackListed) slots it there itself: Fabric API 26.x adds each mod's resources as a hidden
+    # pack above vanilla and below every other pack, and the game drops an entry for 1.21.1's `fabric` with a warning.
+    resource_pack_options = [
+        "vanilla",
+        *([loader.builtin_resource_pack] if loader.builtin_resource_pack_listed else []),
+        *(f"file/{file_name}" for file_name in resource_pack_files),
+    ]
+    if split:
+        preset = graphics_preset(render.get("graphicsMode", 1))
+        graphics = {"graphicsPreset": json.dumps(preset), **GRAPHICS_PRESET_OPTIONS[preset]}
+    else:
+        graphics = {"graphicsMode": str(render.get("graphicsMode", 1))}
     values = {
         "enableVsync": "true" if render.get("vsync") else "false",
         "fullscreen": "true" if render.get("fullscreen") else "false",
         "fov": minecraft_fov_option_value(render.get("fov", 70)),
-        "graphicsPreset": json.dumps(preset),
-        **GRAPHICS_PRESET_OPTIONS[preset],
+        **graphics,
         "maxFps": str(render.get("maxFps", 260)),
         "renderDistance": str(render.get("renderDistance", 32)),
         "simulationDistance": str(render.get("simulationDistance", 12)),
@@ -2704,6 +2738,7 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         "onboardAccessibility": "false",
         "tutorialStep": "none",
         "skipMultiplayerWarning": "true",
+        **({} if split else {"hideBundleTutorial": "true"}),
         "overrideWidth": str(override_width),
         "overrideHeight": str(override_height),
     }
@@ -2716,8 +2751,8 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         out = []
         for line in lines:
             key = line.split(":", 1)[0] if ":" in line else ""
-            if key == "version":
-                out.append(line if options_version_is_current(line) else f"version:{OPTIONS_DATA_VERSION}")
+            if split and key == "version":
+                out.append(line if options_version_is_current(line, data_version) else f"version:{data_version}")
                 seen.add(key)
             elif key in values:
                 out.append(f"{key}:{values[key]}")
@@ -2727,8 +2762,8 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
                 continue
             else:
                 out.append(line)
-        if "version" not in seen:
-            out.insert(0, f"version:{OPTIONS_DATA_VERSION}")
+        if split and "version" not in seen:
+            out.insert(0, f"version:{data_version}")
         for key, value in values.items():
             if key not in seen:
                 out.append(f"{key}:{value}")
@@ -2736,7 +2771,7 @@ def write_options(config: dict, *, resource_pack_files: list[str] | None = None,
         return
 
     defaults = {
-        "version": str(OPTIONS_DATA_VERSION),
+        "version": str(data_version),
         "ao": "true",
         "biomeBlendRadius": "2",
         "prioritizeChunkUpdates": "1",
@@ -3252,22 +3287,26 @@ def started_client(request: client.LaunchRequest) -> Iterator[client.GameProcess
             print(f"WARNING: the game client did not exit within {CLIENT_EXIT_WAIT_SECONDS}s.")
 
 
-def run_gradle_build(arch: str, ci: bool) -> None:
-    task = "build" if ci else "package"
+def run_gradle_build(arch: str, ci: bool, mod_loader: str | None = None) -> None:
+    registry = loader_registry.load_registry()
+    loader = registry.get(mod_loader or registry.default_id)
+    task = loader.build_task if ci else loader.package_task
     timeout_seconds = 900 if ci else 1200
+    project = util.PROJECT_DIR
     args = [
-        str(util.PROJECT_DIR / "gradlew.bat"),
+        str(project / "gradlew.bat"),
         task,
         "-x",
-        "test",
+        loader.test_task,
+        *registry.gradle_arguments(loader.id),
         f"-Parch={arch}",
         "--console=plain",
         "--quiet",
     ]
     started = time.time()
-    print(f"Running Gradle {task} for arch={arch} (timeout={timeout_seconds}s)...")
-    util.run(args, env=gradle_env(), timeout=timeout_seconds)
-    print(f"Gradle {task} finished in {time.time() - started:.1f}s.")
+    print(f"Running {loader.display_name} Gradle {task} for arch={arch} (timeout={timeout_seconds}s)...")
+    util.run(args, cwd=project, env=gradle_env(), timeout=timeout_seconds)
+    print(f"{loader.display_name} Gradle {task} finished in {time.time() - started:.1f}s.")
 
 
 def creation_flags() -> int:
@@ -4747,10 +4786,8 @@ def run_benchmark(args) -> Path | None:
     )
     # configure_benchmark_selection set config["worldVersion"] from the staged
     # marker / pin; config_for_run preserves it for the manifest + dashboard.
-    config = config_for_run(config, ci=args.ci)
     if getattr(args, "strip_entities", False):
         config["stripEntitiesOnStage"] = True
-    runs = args.runs or (int(config.get("runs") or 3) if args.ci else 1)
     arch = host_arch(getattr(args, "arch", None))
     verify_jvm_matches_arch(arch)
     started = dt.datetime.now().astimezone()
@@ -4773,10 +4810,12 @@ def run_benchmark(args) -> Path | None:
     sdk_dll = fetch_sdk(args.sdk_variant, arch, auto_restage=runtime_sdk.configured_sdk_auto_restage(config))
     tools = tracy_tools(sdk_dll, required=args.sdk_variant == "tracy")
     sdk = sdk_metadata(sdk_dll, args.sdk_variant)
+    config = config_for_run(config, ci=args.ci, tracy_enabled=bool(sdk.get("tracyEnabled")))
+    runs = args.runs or (int(config.get("runs") or 3) if args.ci else 1)
     write_sdk_version(sdk)
 
     if not args.no_build:
-        run_gradle_build(arch, ci=args.ci)
+        run_gradle_build(arch, ci=args.ci, mod_loader=tools_config.mod_loader(config))
     # The jar is built, by the step above or by the caller of --no-build; this installs it into the game directory.
     client.active().prepare(arch, build=False)
 

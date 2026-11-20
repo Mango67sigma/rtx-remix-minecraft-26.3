@@ -8,19 +8,21 @@ locations given.
 
 ### Gradle wrapper
 
-- Files: `gradlew.bat`, `gradle/wrapper/`, `forge-1.12.2/gradlew*`, `forge-1.12.2/gradle/wrapper/`
+- Files: `gradlew*`, `gradle/wrapper/`
 - Copyright Gradle Inc. and the original authors
 - License: Apache License, Version 2.0 (see [LICENSE](LICENSE))
 - Source: https://github.com/gradle/gradle
 
-## Forge Java dependency
-
-The Forge 1.12.2 JAR bundles JOML 1.10.5, copyright JOML contributors,
-under the MIT license. The dependency's unmodified license is retained as
-`META-INF/licenses/JOML-LICENSE.txt` inside the Forge JAR.
-Source: https://github.com/JOML-CI/JOML/tree/1.10.5
-
 ## Redistributed binaries (packaged releases)
+
+NVIDIA's Forge release JAR for Minecraft 1.21.1 embeds MixinExtras 0.4.1:
+
+- [packaging/licenses/mixinextras/LICENSE.txt](packaging/licenses/mixinextras/LICENSE.txt)
+  covers MixinExtras, Copyright (c) 2022-present LlamaLad7, MIT License
+
+This port builds no Forge JAR, and its Minecraft 26.3 Fabric JAR does not embed
+MixinExtras. The license text still ships in the 26.3 JAR and installer bundle,
+because the shared packaging carries every file under `packaging/licenses/`.
 
 Packaged release JARs bundle the NVIDIA RTX Remix runtime (staged under
 `native/` inside the JAR). The runtime is built from
@@ -161,6 +163,22 @@ their own licenses; it does not redistribute them.
   Java 25
 - Prism Launcher, GPL-3.0; downloaded by the installer from the project's
   GitHub releases when the player chooses Prism
+
+The project catalog also declares NVIDIA's Minecraft 1.21.1 targets, and the
+shared installer can set them up from a bundle that carries their JARs. This
+port's 26.3 bundle carries none, so its installer never downloads the
+following:
+
+- Minecraft Forge (MinecraftForge), GNU Lesser General Public License,
+  version 2.1; downloaded by the installer from Forge's Maven repository when
+  Forge is selected
+- NeoForge (NeoForged), GNU Lesser General Public License, version 2.1 only;
+  downloaded by the installer from NeoForged's Maven repository when NeoForge
+  is selected
+- Java 21 runtime for those targets: Eclipse Temurin (Eclipse Adoptium) on
+  Windows x64 and Microsoft Build of OpenJDK on Windows ARM64, GPL-2.0 with
+  the Classpath Exception; downloaded by the installer when no suitable JDK is
+  present
 
 ## RTX Remix C API header (MIT)
 
