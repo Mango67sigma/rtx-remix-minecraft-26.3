@@ -47,7 +47,7 @@ def test_the_fork_target_pins_26_3_on_fabric():
     assert registry.minecraft_data_version == 5023
     assert registry.resource_pack_format == 97
     assert registry.renderer_core == "versions/26.3/renderer-core"
-    assert registry.mod_version == "0.1.3"
+    assert registry.mod_version == "0.1.4"
     assert fabric.version == "0.20.1"
     assert fabric.api_version == "0.165.0+26.3"
     assert fabric.gradle_plugin_id == "net.fabricmc.fabric-loom"

@@ -205,7 +205,7 @@ Each field has a default that leaves NVIDIA's 1.21.1 block valid unchanged.
 | `versions.<v>.minecraft.resourcePackFormat` | The resource pack format the target's RTX Remix Materials zip and the tools' staged art pack declare, as `min_format` = `max_format`, with `pack_format` and `supported_formats` removed. Here 97 | The pinned pack's own `pack.mcmeta` | Root `build.gradle` (`materialsPackMeta`), the tools' art-pack staging |
 | `versions.<v>.loaders.<l>.builtinResourcePackListed` | Whether the loader's `builtinResourcePack` is written to `options.txt`. `false` for 26.3 Fabric, which keeps mod resources in a hidden pack above vanilla; a stale `fabric` entry is removed instead | `true` | The tools' `options.txt` writer, `packaging/installer.ps1`, `packaging/migrate_resource_packs.ps1`, the validator |
 
-The mod version is `mod.version` (0.1.3 for this fork's release line) and the
+The mod version is `mod.version` (0.1.4 for this fork's release line) and the
 default target `defaultMinecraftVersion` (26.3).
 
 ### Commands And Artifacts

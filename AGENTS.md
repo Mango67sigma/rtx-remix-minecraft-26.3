@@ -94,7 +94,7 @@ to the catalog's default target, Minecraft 26.3 and Fabric;
 The neutral root applies no loader plugin. `project-state.json` is the
 schema-versioned authority for the repository's Minecraft targets, Java
 targets, support tiers, loader catalogs, dependency pins, module paths, and
-the mod version (`mod.version`, 0.1.3 on this fork's release line).
+the mod version (`mod.version`, 0.1.4 on this fork's release line).
 `-PmcVersion=<version>` selects one version at Gradle configuration time and
 `-Ploader=<loader>` narrows that build to one loader; both are read from the
 command line only. Omitting `-PmcVersion` selects `defaultMinecraftVersion`,

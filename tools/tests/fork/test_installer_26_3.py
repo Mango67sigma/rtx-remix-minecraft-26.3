@@ -199,7 +199,7 @@ def test_the_26_3_target_comes_from_the_catalog(run: Run):
         "prismUid": "net.fabricmc.fabric-loader",
     }
     assert TARGET.minecraft_data_version == 5023
-    assert TARGET.mod_version == "0.1.3"
+    assert TARGET.mod_version == "0.1.4"
 
 
 def test_a_26_3_bundle_offers_26_3_alone_although_the_catalog_declares_1_21_1(run: Run):

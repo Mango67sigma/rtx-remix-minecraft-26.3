@@ -616,6 +616,14 @@ section and pastes them into the draft, installs the draft's bundle on an RTX
 machine to smoke-test it, then publishes it; GitHub creates the tag at that
 moment, so do not push the tag beforehand.
 
+This fork's releases so far were made by hand instead, for x64 only: build the
+four files on the release commit with
+`.\gradlew.bat stageReleaseAssets -Parch=win64`, install the bundle on an RTX
+machine to smoke-test it, push the commit with an annotated tag
+`v<mod-version>`, and attach the files to a release made from that tag. The
+workflow builds both architectures and refuses a version whose release or tag
+exists, so a version takes one path or the other.
+
 ## Developer Certificate of Origin
 
 This project uses the Developer Certificate of Origin (DCO). There is no

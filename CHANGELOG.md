@@ -9,41 +9,50 @@ and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The version in a release is `mod.version` in `project-state.json`, and it is
 also part of every release file name.
 
-## Unreleased
+## 0.1.4 - 2026-11-22
 
-NVIDIA's changes to the project through 2026-11-20 are merged, and the three
+NVIDIA's changes to the project through 2026-11-19 are merged, and the three
 of them that change what the game does are carried over to 26.3.
 
 ### Changed
 
 - Animated water normals are generated when the game starts rendering instead
-  of being shipped as a 145 MB texture, so the download and the unpacked game
-  folder are smaller. The renderer builds them once, when it first sets up
-  water, which takes under a second, and keeps them across resource reloads.
-  The old `textures\water_normals_flipbook.dds` is deleted from the game folder
-  on the next launch.
-- LabPBR normal and specular textures (`_n`, `_s`, and `_sss`) are no longer
-  stitched into Minecraft's texture atlases, such as the block and item
-  atlases, as if they were textures of their own. Far surfaces lose a
-  blue-violet tint that bled from them into indirect light, and the atlases
-  are smaller. A pack texture named like a
-  sidecar of another texture in the same atlas, such as `pipe_n.png` beside
-  `pipe.png`, is now treated as a sidecar, so a model that uses it as a texture
-  shows the missing texture.
-- The installer bundle and the download names carry the loader and the
-  Minecraft version: the bundle is
+  of being shipped as a 168 MB texture, 147 MB of the download, so the download
+  and the unpacked game folder are smaller. The renderer builds them once, when
+  it first sets up water, which takes under a second, and keeps them across
+  resource reloads. The generated texture is not compressed, so it takes more
+  video memory than the shipped one did; NVIDIA measured about 131 MiB more in
+  use in the showcase world on 1.21.1. The old
+  `textures\water_normals_flipbook.dds` is deleted from the game folder on the
+  next launch.
+- LabPBR sidecar textures, the `_n` normal and `_s` specular maps and the mod's
+  `_sss` subsurface maps, are no longer stitched into Minecraft's texture
+  atlases, such as the block and item atlases, as if they were textures of
+  their own. Indirect light and far terrain lose a blue-violet tint that the
+  sidecars bled into them, and the atlases that held them shrink: with RTX
+  Remix Materials, the block atlas goes from 4096x4096 to 2048x2048. In the
+  showcase-world benchmark with RTX Remix Materials, the frame rate is about
+  3% lower with this change. A pack texture named like a sidecar of another
+  texture in the same atlas, such as `pipe_n.png` beside `pipe.png`, is now
+  treated as a sidecar, so a model that uses it as a texture shows the missing
+  texture.
+- The download names carry the Minecraft version, and the standalone mod's
+  also the loader: the bundle is
   `rtx-remix-renderer-mc26.3-<version>-installer.zip`, the standalone mod is
   `rtx-remix-renderer-fabric-mc26.3-<version>.jar`, and the bundle keeps the
   mod under `mods\fabric\`. The installer now installs the mod as
   `mods\rtx-remix-renderer-fabric.jar` and removes the versioned file an
-  earlier release left; `latest.log` still names the exact build. It no longer
-  asks for a mod loader, since Fabric is the only one this port offers.
+  earlier release left; `latest.log` still names the exact build. It asks for
+  no mod loader, since Fabric is the only one this port offers, and it switches
+  a Prism instance that NVIDIA's installer set up with Forge or NeoForge to
+  Fabric.
 
 ### Fixed
 
-- The memory RTX Remix shares with Minecraft's OpenGL window is marked as a
-  dedicated allocation, which Proton and Wine need to show the picture. This
-  has not been tested on Proton or Wine.
+- The images RTX Remix shares with Minecraft's OpenGL window are marked as
+  dedicated allocations, as OpenGL requires of an importer. Under Proton and
+  Wine, leaving them unmarked was reported to show the world upside down and
+  without Minecraft's interface. This has not been tested on Proton or Wine.
 
 ### For Contributors
 
