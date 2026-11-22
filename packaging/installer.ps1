@@ -3772,7 +3772,13 @@ function Install-FabricApi {
     if ((Get-Item -LiteralPath $tmp).Length -lt 1024) {
         throw 'Fabric API download looks truncated (<1 KB).'
     }
-    Move-Item -LiteralPath $tmp -Destination $target -Force
+    # Fork: a game folder no mod was ever put in has no mods folder, and the
+    # mod files, whose step makes it, are installed after the loader's
+    # companions. A move that fails also has to stop the install: under the
+    # script's 'Continue' preference it went on to report Fabric API installed.
+    $modsDir = Split-Path -Parent $target
+    if (-not (Test-Path -LiteralPath $modsDir)) { New-Item -ItemType Directory -Path $modsDir -Force | Out-Null }
+    Move-Item -LiteralPath $tmp -Destination $target -Force -ErrorAction Stop
 
     # Download succeeded; now safe to prune stale versions.
     $staleJars | ForEach-Object { Write-Info "Replacing stale Fabric API: $($_.Name)"; Remove-Item -LiteralPath $_.FullName -Force }

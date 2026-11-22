@@ -736,6 +736,33 @@ def test_fabric_api_of_another_version_is_replaced_in_a_prism_instance_only(
     ]
 
 
+@pytest.mark.parametrize("launcher", ["Prism", "Microsoft"])
+def test_fabric_api_goes_into_a_game_folder_that_has_no_mods_folder_yet(
+    harness: Harness, tmp_path: Path, launcher: str
+):
+    # A new Prism instance, or a .minecraft no mod was ever put in. The installer installs the loader's companions
+    # before the mod files, so nothing has made the mods folder by then.
+    mc_dir = tmp_path / ".minecraft"
+    mc_dir.mkdir()
+
+    output = harness("InstallFabricApi", McDir=mc_dir, Launcher=launcher)
+
+    assert "Thrown" not in output
+    assert (mc_dir / "mods" / f"fabric-api-{FABRIC_API_VERSION}.jar").stat().st_size >= 1024
+    assert f"Installed fabric-api-{FABRIC_API_VERSION}.jar" in output
+
+
+def test_fabric_api_that_cannot_be_put_in_place_stops_the_install(harness: Harness, tmp_path: Path):
+    mc_dir = tmp_path / ".minecraft"
+    mc_dir.mkdir()
+    (mc_dir / "mods").write_bytes(b"a file where the mods folder belongs")
+
+    output = harness("InstallFabricApi", McDir=mc_dir, Launcher="Prism")
+
+    assert "Thrown: " in output
+    assert "Installed fabric-api" not in output
+
+
 OLD_PROFILE_KEY = f"fabric-loader-{OLD_MC_VERSION}"
 OLD_VERSION_ID = f"fabric-loader-{OLD_LOADER_VERSION}-{OLD_MC_VERSION}"
 PROFILE_KEY = f"fabric-loader-{MC_VERSION}"
